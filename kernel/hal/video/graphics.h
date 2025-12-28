@@ -9,7 +9,8 @@ namespace Graphics {
     void Init(FramebufferInfo* fb);
     
     // Double buffering
-    void Flip();           // Copy backbuffer to framebuffer
+    void Flip();           // Copy entire backbuffer to framebuffer
+    void FlipRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);  // Partial flip (dirty rect)
     void Clear(uint32_t color);
     
     // Primitives (draw to backbuffer)
@@ -27,6 +28,7 @@ namespace Graphics {
     // Get dimensions
     uint32_t GetWidth();
     uint32_t GetHeight();
+    uint32_t GetPitch();
     
     // Direct access (for advanced use)
     uint32_t* GetBackbuffer();
@@ -43,3 +45,4 @@ namespace Graphics {
 #define COLOR_MAGENTA   0xFFFF00FF
 #define COLOR_GRAY      0xFF808080
 #define COLOR_DARKGRAY  0xFF404040
+

@@ -70,8 +70,8 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
 
     EarlyTerm::Print("[OK] Core Systems Validated.\n");
 
-    // 3. Initialize Heap
-    KHeap::Init((void*)0x400000, 16 * 1024 * 1024);  // 16 MB heap
+    // 3. Initialize Heap (64 MB for graphics buffers)
+    KHeap::Init((void*)0x400000, 64 * 1024 * 1024);
 
 
 
@@ -136,8 +136,10 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     // 7. Scheduler Init
     EarlyTerm::Print("[Kernel] Initializing Scheduler... ");
     Scheduler::Init();
-    Scheduler::CreateTask(BackgroundTask);
+    // BackgroundTask disabled - was showing Swift counter and interfering with graphics
+    // Scheduler::CreateTask(BackgroundTask);
     EarlyTerm::Print("DONE.\n");
+
 
     EarlyTerm::Print("--------------------------------------------------\n");
     EarlyTerm::Print("Morphic OS - Phase Swift HAL (v0.5)\n");

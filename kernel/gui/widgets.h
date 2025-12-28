@@ -14,19 +14,20 @@
 #define COLOR_BLACK        0xFF000000
 #define COLOR_WHITE        0xFFFFFFFF
 
-// Modern UI Colors
-#define COLOR_BG_DARK      0xFF0D1117  // Dark background
-#define COLOR_BG_MEDIUM    0xFF161B22  // Medium background
-#define COLOR_BG_LIGHT     0xFF21262D  // Light background
-#define COLOR_TASKBAR      0xFF161B22  // Taskbar
-#define COLOR_DESKTOP      0xFF0D1117  // Desktop background
-#define COLOR_BORDER       0xFF30363D  // Borders
+// Modern UI Colors (brighter for visibility)
+#define COLOR_BG_DARK      0xFF1A1A2E  // Dark background
+#define COLOR_BG_MEDIUM    0xFF16213E  // Medium background
+#define COLOR_BG_LIGHT     0xFF0F3460  // Light background
+#define COLOR_TASKBAR      0xFF1F4068  // Taskbar (blue tint)
+#define COLOR_DESKTOP      0xFF1A1A2E  // Desktop background
+#define COLOR_BORDER       0xFF4A5568  // Borders
 #define COLOR_ACCENT       0xFF238636  // Green accent
 #define COLOR_ACCENT_HOVER 0xFF2EA043  // Hover green
-#define COLOR_BUTTON       0xFF21262D  // Button background
-#define COLOR_BUTTON_HOVER 0xFF30363D  // Button hover
-#define COLOR_TEXT         0xFFC9D1D9  // Light gray text
-#define COLOR_TEXT_DIM     0xFF8B949E  // Dimmed text
+#define COLOR_BUTTON       0xFF2D3748  // Button background
+#define COLOR_BUTTON_HOVER 0xFF4A5568  // Button hover
+#define COLOR_TEXT         0xFFE2E8F0  // Light text
+#define COLOR_TEXT_DIM     0xFFA0AEC0  // Dimmed text
+
 
 
 // Widget types

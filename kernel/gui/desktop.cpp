@@ -181,9 +181,10 @@ namespace Desktop {
                 break;
             }
             
-            // Render
+            // Render (Draw() calls Flip() internally)
             MorphicGUI::Draw();
-            Graphics::Flip();
+            // Graphics::Flip() removed - already called in Draw()
+
         }
     }
 

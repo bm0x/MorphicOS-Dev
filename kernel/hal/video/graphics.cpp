@@ -2,6 +2,13 @@
 #include "../../mm/heap.h"
 #include "../../utils/std.h"
 #include "early_term.h"
+#include "alpha_lut.h"
+
+// SIMD optimized memory operations (from blit_fast.S)
+extern "C" {
+    void blit_fast_32(void* dest, void* src, size_t count);
+    void memset_fast_32(void* dest, uint32_t value, size_t count);
+}
 
 namespace Graphics {
     static FramebufferInfo* framebuffer = nullptr;
@@ -16,18 +23,21 @@ namespace Graphics {
         height = fb->height;
         pitch = fb->pixelsPerScanLine;
         
+        // Initialize Alpha LUT for fast blending
+        Alpha::InitLUT();
+        
         // Allocate backbuffer
         uint32_t bufferSize = pitch * height * sizeof(uint32_t);
         backbuffer = (uint32_t*)kmalloc(bufferSize);
         
         if (backbuffer) {
-            kmemset(backbuffer, 0, bufferSize);
+            // Use SIMD to clear buffer
+            memset_fast_32(backbuffer, 0, pitch * height);
             EarlyTerm::Print("[Graphics] Double buffer: ");
             EarlyTerm::PrintDec(bufferSize / 1024);
             EarlyTerm::Print(" KB allocated.\n");
         } else {
             EarlyTerm::Print("[Graphics] WARNING: Backbuffer alloc failed!\n");
-            // Fallback: draw directly to framebuffer
             backbuffer = (uint32_t*)fb->baseAddress;
         }
     }
@@ -36,21 +46,15 @@ namespace Graphics {
         if (!framebuffer || !backbuffer) return;
         if (backbuffer == (uint32_t*)framebuffer->baseAddress) return;
         
-        // Fast copy backbuffer to framebuffer
+        // SIMD copy: REP MOVSL (1 pixel per iteration)
         uint32_t* dest = (uint32_t*)framebuffer->baseAddress;
-        uint32_t size = pitch * height;
-        
-        // Use optimized copy (could be memcpy or rep movsq)
-        kmemcpy(dest, backbuffer, size * sizeof(uint32_t));
+        blit_fast_32(dest, backbuffer, pitch * height);
     }
     
     void Clear(uint32_t color) {
         if (!backbuffer) return;
-        
-        uint32_t size = pitch * height;
-        for (uint32_t i = 0; i < size; i++) {
-            backbuffer[i] = color;
-        }
+        // SIMD fill: REP STOSL
+        memset_fast_32(backbuffer, color, pitch * height);
     }
     
     void PutPixel(uint32_t x, uint32_t y, uint32_t color) {
@@ -61,23 +65,31 @@ namespace Graphics {
     void FillRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
         if (!backbuffer) return;
         
-        for (uint32_t py = y; py < y + h && py < height; py++) {
-            for (uint32_t px = x; px < x + w && px < width; px++) {
-                backbuffer[py * pitch + px] = color;
-            }
+        // Clamp to screen bounds
+        if (x >= width || y >= height) return;
+        uint32_t maxW = (x + w > width) ? (width - x) : w;
+        uint32_t maxH = (y + h > height) ? (height - y) : h;
+        
+        // SIMD fill each row
+        for (uint32_t row = 0; row < maxH; row++) {
+            memset_fast_32(&backbuffer[(y + row) * pitch + x], color, maxW);
         }
     }
     
     void DrawRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
-        // Top and bottom
-        for (uint32_t px = x; px < x + w && px < width; px++) {
-            if (y < height) PutPixel(px, y, color);
-            if (y + h - 1 < height) PutPixel(px, y + h - 1, color);
+        // Top and bottom lines (SIMD)
+        if (y < height) {
+            uint32_t lineW = (x + w > width) ? (width - x) : w;
+            memset_fast_32(&backbuffer[y * pitch + x], color, lineW);
         }
-        // Left and right
+        if (y + h - 1 < height) {
+            uint32_t lineW = (x + w > width) ? (width - x) : w;
+            memset_fast_32(&backbuffer[(y + h - 1) * pitch + x], color, lineW);
+        }
+        // Left and right (single pixels)
         for (uint32_t py = y; py < y + h && py < height; py++) {
-            if (x < width) PutPixel(x, py, color);
-            if (x + w - 1 < width) PutPixel(x + w - 1, py, color);
+            if (x < width) backbuffer[py * pitch + x] = color;
+            if (x + w - 1 < width) backbuffer[py * pitch + x + w - 1] = color;
         }
     }
     
@@ -85,13 +97,9 @@ namespace Graphics {
         if (!backbuffer || !data) return;
         
         for (uint32_t py = 0; py < h && (y + py) < height; py++) {
-            for (uint32_t px = 0; px < w && (x + px) < width; px++) {
-                uint32_t color = data[py * w + px];
-                // Skip transparent pixels (alpha = 0)
-                if ((color >> 24) != 0) {
-                    backbuffer[(y + py) * pitch + (x + px)] = color;
-                }
-            }
+            // Copy entire row if no alpha needed
+            uint32_t copyW = (x + w > width) ? (width - x) : w;
+            blit_fast_32(&backbuffer[(y + py) * pitch + x], &data[py * w], copyW);
         }
     }
     
@@ -111,18 +119,32 @@ namespace Graphics {
             return;
         }
         
-        // Alpha blending
+        // Fast alpha blend using LUT (no division!)
         uint32_t bg = backbuffer[y * pitch + x];
-        uint8_t invAlpha = 255 - alpha;
+        backbuffer[y * pitch + x] = Alpha::Blend(color, bg);
+    }
+    
+    // Partial flip - only copy specified rectangle (CRITICAL for performance)
+    void FlipRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+        if (!framebuffer || !backbuffer) return;
+        if (backbuffer == (uint32_t*)framebuffer->baseAddress) return;
         
-        uint8_t r = ((color & 0xFF) * alpha + (bg & 0xFF) * invAlpha) / 255;
-        uint8_t g = (((color >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * invAlpha) / 255;
-        uint8_t b = (((color >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * invAlpha) / 255;
+        // Clamp to screen
+        if (x >= width || y >= height) return;
+        if (x + w > width) w = width - x;
+        if (y + h > height) h = height - y;
         
-        backbuffer[y * pitch + x] = 0xFF000000 | (b << 16) | (g << 8) | r;
+        uint32_t* dest = (uint32_t*)framebuffer->baseAddress;
+        
+        // Copy each row of the dirty rectangle
+        for (uint32_t row = 0; row < h; row++) {
+            uint32_t offset = (y + row) * pitch + x;
+            blit_fast_32(&dest[offset], &backbuffer[offset], w);
+        }
     }
     
     uint32_t GetWidth() { return width; }
     uint32_t GetHeight() { return height; }
+    uint32_t GetPitch() { return pitch; }
     uint32_t* GetBackbuffer() { return backbuffer; }
 }

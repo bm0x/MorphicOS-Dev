@@ -1,42 +1,77 @@
 #!/bin/bash
+# Morphic OS Runner with Audio and Enhanced Graphics
+# Provides PC Speaker audio and high memory allocation
 
 # Configuration
 ISO=morphic.img
-OVMF=/usr/share/ovmf/OVMF.fd # Adjust path if needed, usually here on Ubuntu
-# If OVMF not found there, try typical locations
+OVMF=/usr/share/ovmf/OVMF.fd
+
+# Find OVMF
+if [ ! -f "$OVMF" ]; then OVMF=/usr/share/qemu/OVMF.fd; fi
 if [ ! -f "$OVMF" ]; then
-    OVMF=/usr/share/qemu/OVMF.fd
-fi
-if [ ! -f "$OVMF" ]; then
-    echo "Error: OVMF.fd not found. Please install 'ovmf' package."
+    echo "Error: OVMF.fd not found. Install 'ovmf' package."
     exit 1
 fi
 
 # Kill previous instances
-pkill -f "qemu-system-x86_64"
-pkill -f "websockify"
+pkill -f "qemu-system-x86_64" 2>/dev/null
+pkill -f "websockify" 2>/dev/null
+sleep 1
 
-echo "--- Starting Morphic OS in QEMU (Headless) ---"
-# Start QEMU with VNC on :0 (5900)
+echo "╔═══════════════════════════════════════════╗"
+echo "║       Morphic OS - QEMU Launcher          ║"
+echo "╚═══════════════════════════════════════════╝"
+
+# Memory configuration
+RAM=1024M          # 1GB RAM (plenty for video + kernel)
+
+# Start QEMU with audio support
+echo "[*] Starting QEMU with PC Speaker audio..."
 qemu-system-x86_64 \
     -bios "$OVMF" \
     -drive format=raw,file="$ISO" \
-    -m 512M \
+    -m $RAM \
     -vga std \
     -vnc :0 \
-    -daemonize
+    -audiodev pa,id=speaker \
+    -machine pcspk-audiodev=speaker \
+    -daemonize 2>/dev/null || {
+        # Fallback without PulseAudio
+        echo "[*] Trying SDL audio backend..."
+        qemu-system-x86_64 \
+            -bios "$OVMF" \
+            -drive format=raw,file="$ISO" \
+            -m $RAM \
+            -vga std \
+            -vnc :0 \
+            -audiodev sdl,id=speaker \
+            -machine pcspk-audiodev=speaker \
+            -daemonize 2>/dev/null || {
+                # Final fallback without audio
+                echo "[!] Audio not available, running without sound"
+                qemu-system-x86_64 \
+                    -bios "$OVMF" \
+                    -drive format=raw,file="$ISO" \
+                    -m $RAM \
+                    -vga std \
+                    -vnc :0 \
+                    -daemonize
+            }
+    }
 
-echo "--- Starting web bridge on :8080 ---"
-# Find location of noVNC
+# Start web bridge
+echo "[*] Starting web VNC bridge..."
 NOVNC_DIR=/usr/share/novnc
-if [ ! -d "$NOVNC_DIR" ]; then
-    echo "Warning: noVNC directory not found at standard location. Assuming websockify can serve generic."
-    # We will just run websockify blindly
-    websockify -D --web=/usr/share/novnc 8080 localhost:5900
-else
-    websockify -D --web="$NOVNC_DIR" 8080 localhost:5900
-fi
+websockify -D --web="$NOVNC_DIR" 8080 localhost:5900 2>/dev/null
 
-echo "--- Done! ---"
-echo "Open standard: http://localhost:8080/vnc.html?host=localhost&port=8080"
-echo "Use 'Connect' button in UI."
+echo ""
+echo "╔═══════════════════════════════════════════╗"
+echo "║              Ready!                       ║"
+echo "╚═══════════════════════════════════════════╝"
+echo ""
+echo "  RAM:   $RAM"
+echo "  Audio: PC Speaker (beep command)"
+echo ""
+echo "  Web:   http://localhost:8080/vnc.html"
+echo ""
+echo "  Test beep: type 'beep' in Morphic shell"

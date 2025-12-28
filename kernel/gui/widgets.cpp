@@ -196,61 +196,44 @@ namespace MorphicGUI {
         int mx = mouseState.x;
         int my = mouseState.y;
         
-        // Only do full redraw if needed (first draw or widget changes)
-        if (!backgroundDrawn || desktopState.needs_redraw) {
-            // Clear entire screen
-            Graphics::Clear(COLOR_DESKTOP);
+        // Full redraw each frame (SIMD is fast enough)
+        // This is simpler and avoids dirty rect tracking overhead
+        
+        // Clear screen
+        Graphics::Clear(COLOR_DESKTOP);
+        
+        // Taskbar
+        uint32_t taskbarY = desktopState.screen_h - desktopState.taskbar_h;
+        Graphics::FillRect(0, taskbarY, desktopState.screen_w, desktopState.taskbar_h, COLOR_TASKBAR);
+        Graphics::FillRect(0, taskbarY, desktopState.screen_w, 1, COLOR_BORDER);
+        
+        // Draw all widgets
+        for (int i = 0; i < GUI_MAX_WIDGETS; i++) {
+            Widget* w = &widgets[i];
+            if (w->type == WidgetType::NONE || !w->visible) continue;
             
-            // Taskbar
-            uint32_t taskbarY = desktopState.screen_h - desktopState.taskbar_h;
-            Graphics::FillRect(0, taskbarY, desktopState.screen_w, desktopState.taskbar_h, COLOR_TASKBAR);
-            Graphics::FillRect(0, taskbarY, desktopState.screen_w, 1, COLOR_BORDER);
-            
-            // Draw all widgets
-            for (int i = 0; i < GUI_MAX_WIDGETS; i++) {
-                Widget* w = &widgets[i];
-                if (w->type == WidgetType::NONE || !w->visible) continue;
-                
-                switch (w->type) {
-                    case WidgetType::BUTTON: {
-                        uint32_t bgColor = w->hover ? COLOR_BUTTON_HOVER : w->bg_color;
-                        uint32_t borderColor = w->hover ? COLOR_ACCENT : COLOR_BORDER;
-                        Graphics::FillRect(w->x, w->y, w->w, w->h, bgColor);
-                        Graphics::FillRect(w->x, w->y, w->w, 1, borderColor);
-                        Graphics::FillRect(w->x, w->y + w->h - 1, w->w, 1, borderColor);
-                        Graphics::FillRect(w->x, w->y, 1, w->h, borderColor);
-                        Graphics::FillRect(w->x + w->w - 1, w->y, 1, w->h, borderColor);
-                        uint32_t textColor = w->hover ? COLOR_ACCENT : COLOR_TEXT;
-                        Graphics::FillRect(w->x + 8, w->y + w->h/2 - 1, w->w - 16, 3, textColor);
-                        break;
-                    }
-                    case WidgetType::LABEL:
-                        Graphics::FillRect(w->x, w->y, 45, 10, w->fg_color);
-                        break;
-                    case WidgetType::PANEL:
-                        Graphics::FillRect(w->x, w->y, w->w, w->h, w->bg_color);
-                        Graphics::FillRect(w->x, w->y, w->w, 1, COLOR_BORDER);
-                        Graphics::FillRect(w->x, w->y, 1, w->h, COLOR_BORDER);
-                        break;
-                    default: break;
+            switch (w->type) {
+                case WidgetType::BUTTON: {
+                    uint32_t bgColor = w->hover ? COLOR_BUTTON_HOVER : w->bg_color;
+                    uint32_t borderColor = w->hover ? COLOR_ACCENT : COLOR_BORDER;
+                    Graphics::FillRect(w->x, w->y, w->w, w->h, bgColor);
+                    Graphics::FillRect(w->x, w->y, w->w, 1, borderColor);
+                    Graphics::FillRect(w->x, w->y + w->h - 1, w->w, 1, borderColor);
+                    Graphics::FillRect(w->x, w->y, 1, w->h, borderColor);
+                    Graphics::FillRect(w->x + w->w - 1, w->y, 1, w->h, borderColor);
+                    break;
                 }
-            }
-            backgroundDrawn = true;
-            desktopState.needs_redraw = false;
-        } else {
-            // Only erase old cursor position (small rect)
-            if (prevMouseX >= 0 && prevMouseY >= 0) {
-                // Determine background color for cursor area
-                uint32_t bgColor = COLOR_DESKTOP;
-                if (prevMouseY >= (int32_t)(desktopState.screen_h - desktopState.taskbar_h)) {
-                    bgColor = COLOR_TASKBAR;
-                }
-                Graphics::FillRect(prevMouseX, prevMouseY, 16, 18, bgColor);
+                case WidgetType::LABEL:
+                    Graphics::FillRect(w->x, w->y, 45, 10, w->fg_color);
+                    break;
+                case WidgetType::PANEL:
+                    Graphics::FillRect(w->x, w->y, w->w, w->h, w->bg_color);
+                    break;
+                default: break;
             }
         }
         
-        // Draw cursor (always)
-        // White arrow
+        // Draw cursor
         for (int i = 0; i < 12; i++) {
             Graphics::PutPixel(mx, my + i, COLOR_WHITE);
         }
@@ -259,15 +242,14 @@ namespace MorphicGUI {
                 Graphics::PutPixel(mx + j, my + i, COLOR_WHITE);
             }
         }
-        // Black inner line
         for (int i = 1; i < 8; i++) {
             Graphics::PutPixel(mx + 1, my + i, COLOR_BLACK);
         }
         
-        // Save cursor position
-        prevMouseX = mx;
-        prevMouseY = my;
+        // Single SIMD Flip
+        Graphics::Flip();
     }
+
 
 
 
@@ -288,3 +270,4 @@ namespace MorphicGUI {
         return desktopState.uptime_sec;
     }
 }
+
