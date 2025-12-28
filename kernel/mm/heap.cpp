@@ -112,6 +112,23 @@ namespace KHeap {
             CombineFreeSegments(header->prev, header);
         }
     }
+    
+    size_t GetSize() { return heapSize; }
+    void* GetBase() { return heapStart; }
+    
+    size_t GetFree() {
+        size_t free = 0;
+        HeapSegmentHeader* current = firstSegment;
+        while (current) {
+            if (current->free) free += current->length;
+            current = current->next;
+        }
+        return free;
+    }
+    
+    size_t GetUsed() {
+        return heapSize - GetFree() - sizeof(HeapSegmentHeader);
+    }
 }
 
 extern "C" {

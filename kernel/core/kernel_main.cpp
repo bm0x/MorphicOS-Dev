@@ -70,8 +70,14 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
 
     EarlyTerm::Print("[OK] Core Systems Validated.\n");
 
-    // 3. Initialize Heap (64 MB for graphics buffers)
-    KHeap::Init((void*)0x400000, 64 * 1024 * 1024);
+    // 3. Initialize Heap dynamically based on available RAM
+    size_t freeRAM = PMM::GetFreeMemory();
+    size_t heapSize = (freeRAM * 3) / 4;  // Use 75% of free RAM
+    
+    // Minimum 32MB, no maximum limit
+    if (heapSize < 32 * 1024 * 1024) heapSize = 32 * 1024 * 1024;
+    
+    KHeap::Init((void*)0x400000, heapSize);
 
 
 

@@ -10,12 +10,13 @@ echo "Starting Morphic OS with audio..."
 echo "Type 'beep' to test PC Speaker"
 echo ""
 
-# Direct run with visible window and audio
+# Direct run with visible window and audio (2GB RAM)
 qemu-system-x86_64 \
     -bios "$OVMF" \
     -drive format=raw,file="$ISO" \
-    -m 1024M \
+    -m 2048M \
     -vga std \
     -audiodev pa,id=snd0 \
     -machine pcspk-audiodev=snd0 \
     "$@"
+

@@ -4,11 +4,13 @@
 #include "mcl_parser.h"
 #include "../fs/vfs.h"
 #include "../mm/heap.h"
+#include "../mm/pmm.h"
 #include "../utils/std.h"
 #include "../hal/video/early_term.h"
 #include "../hal/input/keymap.h"
 #include "../hal/audio/mixer.h"
 #include "../process/scheduler.h"
+
 
 namespace MCL {
     
@@ -363,10 +365,31 @@ namespace MCL {
         // SHOW MEMORY
         if (kstrcmp(action, "show") == 0 && kstrcmp(target, "memory") == 0) {
             EarlyTerm::Print("Memory Information:\n");
-            EarlyTerm::Print("  Heap Base: 0x400000\n");
-            EarlyTerm::Print("  Heap Size: 16 MB\n");
+            
+            // Heap info
+            EarlyTerm::Print("  Heap Base:  0x");
+            EarlyTerm::PrintHex((uint64_t)KHeap::GetBase());
+            EarlyTerm::Print("\n  Heap Size:  ");
+            size_t heapMB = KHeap::GetSize() / (1024 * 1024);
+            EarlyTerm::PrintDec(heapMB);
+            EarlyTerm::Print(" MB\n");
+            EarlyTerm::Print("  Heap Used:  ");
+            EarlyTerm::PrintDec(KHeap::GetUsed() / 1024);
+            EarlyTerm::Print(" KB\n");
+            EarlyTerm::Print("  Heap Free:  ");
+            EarlyTerm::PrintDec(KHeap::GetFree() / (1024 * 1024));
+            EarlyTerm::Print(" MB\n");
+            
+            // Physical RAM info
+            EarlyTerm::Print("  Total RAM:  ");
+            EarlyTerm::PrintDec(PMM::GetTotalMemory() / (1024 * 1024));
+            EarlyTerm::Print(" MB\n");
+            EarlyTerm::Print("  Free RAM:   ");
+            EarlyTerm::PrintDec(PMM::GetFreeMemory() / (1024 * 1024));
+            EarlyTerm::Print(" MB\n");
             return 0;
         }
+
         
         // SHOW VERSION
         if (kstrcmp(action, "show") == 0 && kstrcmp(target, "version") == 0) {
