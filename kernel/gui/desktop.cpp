@@ -73,14 +73,15 @@ namespace Desktop {
         
         // === ENABLE ZERO-LATENCY CURSOR SYSTEM ===
         Mouse::InitOverlay(Graphics::GetBackbuffer(), Graphics::GetPitch());
-        Mouse::EnableFastPath(true);
-        EarlyTerm::Print("[Desktop] Fast cursor enabled.\n");
+        Mouse::SetVisualContext(VisualContext::GRAPHICAL_GUI);
+        EarlyTerm::Print("[Desktop] Visual context: GRAPHICAL_GUI\n");
         
         running = true;
         menuVisible = false;
         
         EarlyTerm::Print("[Desktop] Ready.\n");
     }
+
 
     
     static void UpdateClock() {
@@ -184,15 +185,25 @@ namespace Desktop {
             char c = Keyboard::GetChar();
             if (c == 27) {  // ESC
                 EarlyTerm::Print("\n[Desktop] Exiting...\n");
+                
+                // === CLEAN CONTEXT SWITCH ===
+                Mouse::SetVisualContext(VisualContext::TEXT_SHELL);
+                
+                // Full screen clear for clean text mode
+                Graphics::Clear(0xFF000000);  // Black
+                Graphics::Flip();
+                
                 break;
             }
             
             // Render (Draw() calls Flip() internally)
             MorphicGUI::Draw();
-            // Graphics::Flip() removed - already called in Draw()
-
+            
+            // Refresh cursor even if static (fixes disappearing cursor)
+            Mouse::RefreshCursor();
         }
     }
+
 
     
     void Stop() {

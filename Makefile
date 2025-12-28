@@ -24,6 +24,7 @@ KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/hal/video/graphics.cpp \
                  kernel/hal/video/verbose.cpp \
                  kernel/hal/video/compositor.cpp \
+                 kernel/hal/video/vsync.cpp \
                  kernel/hal/input/input_manager.cpp \
                  kernel/hal/input/mouse.cpp \
                  kernel/hal/input/keymap.cpp \

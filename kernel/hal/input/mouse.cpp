@@ -33,6 +33,12 @@ namespace Mouse {
     static int16_t lastX = -1;
     static int16_t lastY = -1;
     static bool hasStoredBackground = false;
+    static bool cursorDrawnThisFrame = false;
+    
+    // === CURSOR STATE MACHINE ===
+    static CursorVisibility cursorVisibility = CursorVisibility::HIDDEN;
+    static VisualContext currentContext = VisualContext::TEXT_SHELL;
+
     
     // Pre-rendered cursor sprite (16x16 white arrow with black outline)
     static const uint32_t cursorSprite[CURSOR_BUFFER_SIZE] = {
@@ -195,6 +201,71 @@ namespace Mouse {
         if (posY >= maxY) posY = maxY - 1;
     }
     
+    // === CURSOR STATE MACHINE ===
+    
+    void SetVisibility(CursorVisibility state) {
+        if (cursorVisibility == state) return;
+        
+        // If transitioning from visible to hidden, restore background
+        if (cursorVisibility == CursorVisibility::VISIBLE_GUI && state == CursorVisibility::HIDDEN) {
+            if (hasStoredBackground && backbufferPtr) {
+                RestoreBackground();
+                Graphics::FlipRect(lastX, lastY, CURSOR_WIDTH, CURSOR_HEIGHT);
+            }
+        }
+        
+        cursorVisibility = state;
+        visible = (state == CursorVisibility::VISIBLE_GUI);
+    }
+    
+    CursorVisibility GetVisibility() {
+        return cursorVisibility;
+    }
+    
+    void RefreshCursor() {
+        // Only refresh in GUI mode with fast path
+        if (cursorVisibility != CursorVisibility::VISIBLE_GUI) return;
+        if (!fastPathEnabled || !backbufferPtr) return;
+        
+        // ALWAYS redraw cursor after MorphicGUI::Draw() repainted the frame
+        // This ensures cursor stays visible even when static
+        SaveBackground(posX, posY);
+        DrawCursorFast();
+        Graphics::FlipRect(posX, posY, CURSOR_WIDTH, CURSOR_HEIGHT);
+    }
+
+    
+    void SetVisualContext(VisualContext mode) {
+        if (currentContext == mode) return;
+        
+        VisualContext oldContext = currentContext;
+        currentContext = mode;
+        
+        if (mode == VisualContext::GRAPHICAL_GUI) {
+            // Entering desktop mode
+            SetVisibility(CursorVisibility::VISIBLE_GUI);
+            EnableFastPath(true);
+        } else {
+            // Exiting to text shell
+            SetVisibility(CursorVisibility::HIDDEN);
+            EnableFastPath(false);
+            
+            // Clear any cursor artifacts
+            if (hasStoredBackground && backbufferPtr) {
+                RestoreBackground();
+            }
+            hasStoredBackground = false;
+            lastX = -1;
+            lastY = -1;
+            
+            // Full screen clear handled by caller
+        }
+    }
+    
+    VisualContext GetVisualContext() {
+        return currentContext;
+    }
+    
     void DrawCursor() {
         if (!visible) return;
         for (int y = 0; y < CURSOR_HEIGHT; y++) {
@@ -219,4 +290,3 @@ namespace Mouse {
         return false;
     }
 }
-

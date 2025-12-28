@@ -19,6 +19,19 @@ enum class MouseEventType {
 #define CURSOR_HEIGHT 16
 #define CURSOR_BUFFER_SIZE (CURSOR_WIDTH * CURSOR_HEIGHT)
 
+// === CURSOR STATE MACHINE ===
+enum class CursorVisibility {
+    HIDDEN,         // No cursor rendered (text shell)
+    VISIBLE_TEXT,   // Text mode cursor (blinking underscore)
+    VISIBLE_GUI     // GUI mode cursor (arrow sprite)
+};
+
+// === VISUAL CONTEXT SYSTEM ===
+enum class VisualContext {
+    TEXT_SHELL,     // Text-only terminal mode
+    GRAPHICAL_GUI   // Desktop environment mode
+};
+
 // Mouse event
 struct MouseEvent {
     MouseEventType type;
@@ -47,6 +60,17 @@ namespace Mouse {
     // Set screen bounds
     void SetBounds(uint16_t width, uint16_t height);
     
+    // === CURSOR STATE MACHINE ===
+    void SetVisibility(CursorVisibility state);
+    CursorVisibility GetVisibility();
+    
+    // Refresh cursor even when static (call from main loop)
+    void RefreshCursor();
+    
+    // === VISUAL CONTEXT SYSTEM ===
+    void SetVisualContext(VisualContext mode);
+    VisualContext GetVisualContext();
+    
     // === ZERO-LATENCY CURSOR SYSTEM ===
     
     // Enable/disable fast path rendering (IRQ-driven)
@@ -72,4 +96,3 @@ namespace Mouse {
     // Poll for mouse event
     bool PollEvent(MouseEvent* event);
 }
-
