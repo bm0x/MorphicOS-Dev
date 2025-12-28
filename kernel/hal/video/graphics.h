@@ -13,6 +13,11 @@ namespace Graphics {
     void FlipRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);  // Partial flip (dirty rect)
     void Clear(uint32_t color);
     
+    // === ATOMIC COMPOSITION ===
+    void FlipWithVSync();  // V-Blank wait + atomic flip
+    void DrawCursorOnFramebuffer(int16_t x, int16_t y, const uint32_t* sprite, uint32_t w, uint32_t h);
+    uint32_t* GetFramebuffer();  // Direct framebuffer access
+    
     // Primitives (draw to backbuffer)
     void PutPixel(uint32_t x, uint32_t y, uint32_t color);
     void FillRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
@@ -45,4 +50,3 @@ namespace Graphics {
 #define COLOR_MAGENTA   0xFFFF00FF
 #define COLOR_GRAY      0xFF808080
 #define COLOR_DARKGRAY  0xFF404040
-

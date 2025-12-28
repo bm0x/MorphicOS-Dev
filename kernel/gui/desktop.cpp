@@ -71,15 +71,22 @@ namespace Desktop {
         }
         menuItemCount = 4;
         
-        // === ENABLE ZERO-LATENCY CURSOR SYSTEM ===
+        // === POST-COMPOSITION CURSOR SYSTEM ===
+        // InitOverlay for cursor sprite access
         Mouse::InitOverlay(Graphics::GetBackbuffer(), Graphics::GetPitch());
         Mouse::SetVisualContext(VisualContext::GRAPHICAL_GUI);
-        EarlyTerm::Print("[Desktop] Visual context: GRAPHICAL_GUI\n");
+        
+        // IMPORTANT: Disable IRQ12 fast path - we use post-composition cursor now
+        // This prevents double-draw conflict (IRQ draws + post-flip draws)
+        Mouse::EnableFastPath(false);
+        
+        EarlyTerm::Print("[Desktop] Post-composition cursor enabled.\n");
         
         running = true;
         menuVisible = false;
         
         EarlyTerm::Print("[Desktop] Ready.\n");
+
     }
 
 

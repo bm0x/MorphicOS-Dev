@@ -11,6 +11,7 @@
 #include "../hal/audio/mixer.h"
 #include "../hal/serial/uart.h"
 #include "../mm/pmm.h"
+#include "../mm/write_combining.h"
 #include "../hal/arch/x86_64/gdt.h"
 #include "../hal/arch/x86_64/idt.h"
 #include "../hal/arch/x86_64/pic.h"
@@ -90,16 +91,20 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     UART::Init();
     SerialDebug::SetOutput(OUTPUT_BOTH);
     UART::WriteLine("[Serial] COM1 @ 115200 baud initialized.");
-
     
     // 5. Initialize Graphics HAL
     Graphics::Init(&bootInfo->framebuffer);
     Verbose::Init();
+    
+    // 5a. Enable Write-Combining for framebuffer acceleration
+    WriteCombining::InitPAT();
+    
     Mouse::Init();
     Mouse::SetBounds(bootInfo->framebuffer.width, bootInfo->framebuffer.height);
     
     // 5b. Initialize Compositor
     Compositor::Init();
+
 
     // 6. Initialize HAL Device Registry
     DeviceRegistry::Init();

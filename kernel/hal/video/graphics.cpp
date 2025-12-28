@@ -10,7 +10,15 @@ extern "C" {
     void memset_fast_32(void* dest, uint32_t value, size_t count);
 }
 
+// IO port inline function for V-Sync
+static inline uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    asm volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 namespace Graphics {
+
     static FramebufferInfo* framebuffer = nullptr;
     static uint32_t* backbuffer = nullptr;
     static uint32_t width = 0;
@@ -147,4 +155,67 @@ namespace Graphics {
     uint32_t GetHeight() { return height; }
     uint32_t GetPitch() { return pitch; }
     uint32_t* GetBackbuffer() { return backbuffer; }
+    uint32_t* GetFramebuffer() { return framebuffer ? (uint32_t*)framebuffer->baseAddress : nullptr; }
+    
+    // === ATOMIC COMPOSITION ===
+    
+    // Spinlock for atomic flip operations
+    static volatile uint32_t flipLock = 0;
+    
+    static inline void AcquireFlipLock() {
+        while (__atomic_test_and_set(&flipLock, __ATOMIC_ACQUIRE));
+    }
+    
+    static inline void ReleaseFlipLock() {
+        __atomic_clear(&flipLock, __ATOMIC_RELEASE);
+    }
+    
+    // V-Sync wait using VGA status port
+    static void WaitVBlank() {
+        const uint16_t VGA_STATUS = 0x3DA;
+        const uint8_t VSYNC_BIT = 0x08;
+        
+        // Wait for end of current retrace
+        while (inb(VGA_STATUS) & VSYNC_BIT);
+        // Wait for start of next retrace
+        while (!(inb(VGA_STATUS) & VSYNC_BIT));
+    }
+    
+    void FlipWithVSync() {
+        if (!framebuffer || !backbuffer) return;
+        if (backbuffer == (uint32_t*)framebuffer->baseAddress) return;
+        
+        // Wait for vertical blank
+        WaitVBlank();
+        
+        // Acquire lock for atomic flip
+        AcquireFlipLock();
+        
+        // SIMD copy backbuffer → framebuffer
+        uint32_t* dest = (uint32_t*)framebuffer->baseAddress;
+        blit_fast_32(dest, backbuffer, pitch * height);
+        
+        ReleaseFlipLock();
+    }
+    
+    void DrawCursorOnFramebuffer(int16_t x, int16_t y, const uint32_t* sprite, uint32_t w, uint32_t h) {
+        if (!framebuffer || !sprite) return;
+        if (x < 0 || y < 0) return;
+        
+        uint32_t* fb = (uint32_t*)framebuffer->baseAddress;
+        
+        // Acquire lock to prevent collision with flip
+        AcquireFlipLock();
+        
+        for (uint32_t row = 0; row < h && (y + row) < height; row++) {
+            for (uint32_t col = 0; col < w && (x + col) < width; col++) {
+                uint32_t pixel = sprite[row * w + col];
+                if (pixel != 0x00000000) {  // Not transparent
+                    fb[(y + row) * pitch + (x + col)] = pixel;
+                }
+            }
+        }
+        
+        ReleaseFlipLock();
+    }
 }

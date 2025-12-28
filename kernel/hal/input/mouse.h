@@ -88,6 +88,13 @@ namespace Mouse {
     // Draw cursor immediately (used in IRQ)
     void DrawCursorFast();
     
+    // === POST-COMPOSITION CURSOR ===
+    // Draw cursor directly on framebuffer AFTER flip (no flicker)
+    void DrawCursorPostFlip();
+    
+    // Get cursor sprite for external drawing
+    const uint32_t* GetCursorSprite();
+    
     // Legacy cursor rendering (for non-fast-path mode)
     void DrawCursor();
     void HideCursor();
@@ -96,3 +103,4 @@ namespace Mouse {
     // Poll for mouse event
     bool PollEvent(MouseEvent* event);
 }
+

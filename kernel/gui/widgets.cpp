@@ -233,12 +233,15 @@ namespace MorphicGUI {
             }
         }
         
-        // Cursor is now drawn by IRQ12 fast path (Mouse::OnInterrupt)
-        // No manual cursor drawing needed here
+        // === ATOMIC COMPOSITION RENDER FLOW ===
+        // 1. V-Sync wait + Atomic Flip (backbuffer → framebuffer)
+        Graphics::FlipWithVSync();
         
-        // Single SIMD Flip
-        Graphics::Flip();
+        // 2. Draw cursor AFTER flip (directly on framebuffer)
+        // This eliminates flicker by avoiding restore/save cycle
+        Mouse::DrawCursorPostFlip();
     }
+
 
 
 

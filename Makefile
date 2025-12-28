@@ -36,6 +36,7 @@ KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/hal/storage/buffer_cache.cpp \
                  kernel/hal/storage/partition.cpp \
                  kernel/mm/pmm.cpp \
+                 kernel/mm/write_combining.cpp \
                  kernel/hal/arch/x86_64/gdt.cpp \
                  kernel/hal/arch/x86_64/idt.cpp \
                  kernel/hal/arch/x86_64/tss.cpp \

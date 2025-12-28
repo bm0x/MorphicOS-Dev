@@ -289,4 +289,32 @@ namespace Mouse {
     bool PollEvent(MouseEvent* event) {
         return false;
     }
+    
+    // === POST-COMPOSITION CURSOR ===
+    
+    // Static position tracking for optimization
+    static int16_t lastDrawnPosX = -1;
+    static int16_t lastDrawnPosY = -1;
+    
+    void DrawCursorPostFlip() {
+        // Only draw in GUI mode
+        if (cursorVisibility != CursorVisibility::VISIBLE_GUI) return;
+        if (!visible) return;
+        
+        // Static state optimization: skip if position unchanged
+        if (posX == lastDrawnPosX && posY == lastDrawnPosY) {
+            // Position same - cursor already on framebuffer, skip redraw
+            return;
+        }
+        
+        // Draw cursor directly on framebuffer (post-flip)
+        Graphics::DrawCursorOnFramebuffer(posX, posY, cursorSprite, CURSOR_WIDTH, CURSOR_HEIGHT);
+        
+        lastDrawnPosX = posX;
+        lastDrawnPosY = posY;
+    }
+    
+    const uint32_t* GetCursorSprite() {
+        return cursorSprite;
+    }
 }
