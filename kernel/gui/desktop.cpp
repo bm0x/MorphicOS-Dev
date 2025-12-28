@@ -173,17 +173,9 @@ namespace Desktop {
         
         while (running) {
 
-            // Wait for next frame (60Hz)
-            uint64_t now = PIT::GetTicks();
-            if (now - lastTick < FRAME_TICKS) {
-
-                __asm__ volatile("hlt");  // Low power wait
-                continue;
-            }
-            lastTick = now;
-            
             // Update clock
             UpdateClock();
+
             
             // Process input events
             MorphicGUI::ProcessEvents();
@@ -203,11 +195,9 @@ namespace Desktop {
                 break;
             }
             
-            // Render (Draw() calls Flip() internally)
+            // Render (Draw() calls FlipWithVSync() internally)
             MorphicGUI::Draw();
-            
-            // Refresh cursor even if static (fixes disappearing cursor)
-            Mouse::RefreshCursor();
+
         }
     }
 
