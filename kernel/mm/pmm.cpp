@@ -8,12 +8,21 @@ size_t PMM::freeRAM = 0;
 size_t PMM::bitmapSize = 0;
 uint64_t PMM::highestAddr = 0;
 
+// Helper: Check if memory type is usable
+static bool IsUsableMemory(uint32_t type) {
+    return type == (uint32_t)MemoryType::ConventionalMemory ||
+           type == (uint32_t)MemoryType::BootServicesCode ||
+           type == (uint32_t)MemoryType::BootServicesData ||
+           type == (uint32_t)MemoryType::LoaderCode ||
+           type == (uint32_t)MemoryType::LoaderData;
+}
+
 void PMM::Init(BootInfo* bootInfo) {
     MemoryDescriptor* map = bootInfo->memoryMap;
     uint64_t mapEntries = bootInfo->memoryMapSize / bootInfo->memoryMapDescriptorSize;
-    uint64_t descriptorSize = bootInfo->memoryMapDescriptorSize; // Needed for pointer arithmetic if we used byte offsets
+    uint64_t descriptorSize = bootInfo->memoryMapDescriptorSize;
 
-    // 1. Calculate Highest Address
+    // 1. Calculate Highest Address from usable memory
     highestAddr = 0;
     for (uint64_t i = 0; i < mapEntries; i++) {
         MemoryDescriptor* desc = (MemoryDescriptor*)((uint8_t*)map + i * descriptorSize);
@@ -22,25 +31,57 @@ void PMM::Init(BootInfo* bootInfo) {
             highestAddr = regionEnd;
         }
     }
+    
+    // Sanity check: ensure we have at least 16MB addressable
+    if (highestAddr < 0x1000000) {
+        highestAddr = 0x1000000;
+    }
 
     // 2. Calculate Bitmap Size
     size_t totalPages = highestAddr / 4096;
     bitmapSize = (totalPages / 8) + 1;
 
-    // 3. Find space for Bitmap
+    // 3. Find space for Bitmap - search all usable memory types
     void* bitmapBuffer = nullptr;
-    for (uint64_t i = 0; i < mapEntries; i++) {
+    for (uint64_t i = 0; i < mapEntries && !bitmapBuffer; i++) {
         MemoryDescriptor* desc = (MemoryDescriptor*)((uint8_t*)map + i * descriptorSize);
-        if (desc->type == (uint32_t)MemoryType::ConventionalMemory && desc->numPages * 4096 >= bitmapSize) {
-            bitmapBuffer = (void*)desc->physAddr;
-            break;
+        if (IsUsableMemory(desc->type) && desc->numPages * 4096 >= bitmapSize) {
+            // Skip first 1MB to avoid BIOS/firmware areas
+            if (desc->physAddr >= 0x100000) {
+                bitmapBuffer = (void*)desc->physAddr;
+            }
+        }
+    }
+    
+    // Fallback: try any usable memory
+    if (!bitmapBuffer) {
+        for (uint64_t i = 0; i < mapEntries; i++) {
+            MemoryDescriptor* desc = (MemoryDescriptor*)((uint8_t*)map + i * descriptorSize);
+            if (IsUsableMemory(desc->type) && desc->numPages * 4096 >= bitmapSize) {
+                bitmapBuffer = (void*)desc->physAddr;
+                break;
+            }
         }
     }
 
     if (!bitmapBuffer) {
-        EarlyTerm::Print("Start Panic: No RAM for PMM Bitmap!\n");
+        EarlyTerm::Print("Panic: No usable RAM for PMM! Entries: ");
+        EarlyTerm::PrintHex(mapEntries);
+        EarlyTerm::Print("\n");
+        // Print first few entries for debug
+        for (uint64_t i = 0; i < mapEntries && i < 5; i++) {
+            MemoryDescriptor* desc = (MemoryDescriptor*)((uint8_t*)map + i * descriptorSize);
+            EarlyTerm::Print("  Type:");
+            EarlyTerm::PrintHex(desc->type);
+            EarlyTerm::Print(" Addr:");
+            EarlyTerm::PrintHex(desc->physAddr);
+            EarlyTerm::Print(" Pages:");
+            EarlyTerm::PrintHex(desc->numPages);
+            EarlyTerm::Print("\n");
+        }
         while(1);
     }
+
 
     bitmap.Init(bitmapBuffer, bitmapSize);
 
@@ -56,8 +97,8 @@ void PMM::Init(BootInfo* bootInfo) {
     for (uint64_t i = 0; i < mapEntries; i++) {
         MemoryDescriptor* desc = (MemoryDescriptor*)((uint8_t*)map + i * descriptorSize);
         
-        // Count usable RAM
-        if (desc->type == (uint32_t)MemoryType::ConventionalMemory) {
+        // Count usable RAM (all usable types, not just ConventionalMemory)
+        if (IsUsableMemory(desc->type)) {
             uint64_t startPage = desc->physAddr / 4096;
             uint64_t count = desc->numPages;
             
@@ -69,6 +110,7 @@ void PMM::Init(BootInfo* bootInfo) {
             }
         }
     }
+
 
     // 6. Protect Critical Regions (Mark as Used)
     
