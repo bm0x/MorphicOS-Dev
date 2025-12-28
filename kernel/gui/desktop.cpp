@@ -71,11 +71,17 @@ namespace Desktop {
         }
         menuItemCount = 4;
         
+        // === ENABLE ZERO-LATENCY CURSOR SYSTEM ===
+        Mouse::InitOverlay(Graphics::GetBackbuffer(), Graphics::GetPitch());
+        Mouse::EnableFastPath(true);
+        EarlyTerm::Print("[Desktop] Fast cursor enabled.\n");
+        
         running = true;
         menuVisible = false;
         
         EarlyTerm::Print("[Desktop] Ready.\n");
     }
+
     
     static void UpdateClock() {
         uint64_t uptime = MorphicGUI::GetUptime();

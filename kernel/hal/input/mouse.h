@@ -14,6 +14,11 @@ enum class MouseEventType {
 #define MOUSE_RIGHT  0x02
 #define MOUSE_MIDDLE 0x04
 
+// Cursor overlay constants
+#define CURSOR_WIDTH  16
+#define CURSOR_HEIGHT 16
+#define CURSOR_BUFFER_SIZE (CURSOR_WIDTH * CURSOR_HEIGHT)
+
 // Mouse event
 struct MouseEvent {
     MouseEventType type;
@@ -27,7 +32,7 @@ namespace Mouse {
     // Initialize mouse driver
     void Init();
     
-    // Update position (called from IRQ handler)
+    // Update position (called from IRQ handler) - FAST PATH ENABLED
     void OnInterrupt();
     
     // Get current position
@@ -42,7 +47,24 @@ namespace Mouse {
     // Set screen bounds
     void SetBounds(uint16_t width, uint16_t height);
     
-    // Cursor rendering
+    // === ZERO-LATENCY CURSOR SYSTEM ===
+    
+    // Enable/disable fast path rendering (IRQ-driven)
+    void EnableFastPath(bool enable);
+    
+    // Initialize overlay system with backbuffer pointer
+    void InitOverlay(uint32_t* backbuffer, uint32_t pitch);
+    
+    // Save background under cursor position
+    void SaveBackground(int16_t x, int16_t y);
+    
+    // Restore previously saved background
+    void RestoreBackground();
+    
+    // Draw cursor immediately (used in IRQ)
+    void DrawCursorFast();
+    
+    // Legacy cursor rendering (for non-fast-path mode)
     void DrawCursor();
     void HideCursor();
     void SetCursorVisible(bool visible);
@@ -50,3 +72,4 @@ namespace Mouse {
     // Poll for mouse event
     bool PollEvent(MouseEvent* event);
 }
+

@@ -4,63 +4,85 @@
 #include "../video/early_term.h"
 #include "../../utils/std.h"
 
+// SIMD blit functions
+extern "C" {
+    void blit_fast_32(void* dest, void* src, size_t count);
+}
+
 namespace Mouse {
+    // Position and button state
     static int16_t posX = 0;
     static int16_t posY = 0;
     static uint8_t buttons = 0;
-    static uint16_t maxX = 640;
-    static uint16_t maxY = 480;
+    static uint16_t maxX = 1024;
+    static uint16_t maxY = 768;
     static bool visible = true;
     
     // PS/2 Mouse state machine
     static uint8_t cycle = 0;
     static uint8_t packet[3];
     
-    // Simple arrow cursor (8x8)
-    static const uint8_t cursorData[8] = {
-        0b10000000,
-        0b11000000,
-        0b11100000,
-        0b11110000,
-        0b11111000,
-        0b11100000,
-        0b10100000,
-        0b00100000
+    // === ZERO-LATENCY OVERLAY SYSTEM ===
+    static bool fastPathEnabled = false;
+    static uint32_t* backbufferPtr = nullptr;
+    static uint32_t* framebufferPtr = nullptr;
+    static uint32_t bufferPitch = 0;
+    
+    // Background restoration buffer (32x32 max cursor)
+    static uint32_t restoreBuffer[CURSOR_BUFFER_SIZE];
+    static int16_t lastX = -1;
+    static int16_t lastY = -1;
+    static bool hasStoredBackground = false;
+    
+    // Pre-rendered cursor sprite (16x16 white arrow with black outline)
+    static const uint32_t cursorSprite[CURSOR_BUFFER_SIZE] = {
+        0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     };
     
     void Init() {
         // Enable PS/2 mouse (auxiliary device)
-        // Wait for controller ready
         while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0xA8);  // Enable auxiliary device
+        IO::outb(0x64, 0xA8);
         
-        // Enable interrupts for mouse
         while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0x20);  // Get compaq status
+        IO::outb(0x64, 0x20);
         while (!(IO::inb(0x64) & 1));
         uint8_t status = IO::inb(0x60);
         status |= 2;  // Enable IRQ12
         
         while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0x60);  // Set compaq status
+        IO::outb(0x64, 0x60);
         while (IO::inb(0x64) & 2);
         IO::outb(0x60, status);
         
-        // Tell mouse to use default settings
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0xD4);  // Write to mouse
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x60, 0xF6);  // Set defaults
-        while (!(IO::inb(0x64) & 1));
-        IO::inb(0x60);  // ACK
-        
-        // Enable data reporting
         while (IO::inb(0x64) & 2);
         IO::outb(0x64, 0xD4);
         while (IO::inb(0x64) & 2);
-        IO::outb(0x60, 0xF4);  // Enable
+        IO::outb(0x60, 0xF6);
         while (!(IO::inb(0x64) & 1));
-        IO::inb(0x60);  // ACK
+        IO::inb(0x60);
+        
+        while (IO::inb(0x64) & 2);
+        IO::outb(0x64, 0xD4);
+        while (IO::inb(0x64) & 2);
+        IO::outb(0x60, 0xF4);
+        while (!(IO::inb(0x64) & 1));
+        IO::inb(0x60);
         
         posX = maxX / 2;
         posY = maxY / 2;
@@ -68,35 +90,95 @@ namespace Mouse {
         EarlyTerm::Print("[Mouse] PS/2 initialized.\n");
     }
     
+    void InitOverlay(uint32_t* backbuffer, uint32_t pitch) {
+        backbufferPtr = backbuffer;
+        bufferPitch = pitch;
+        hasStoredBackground = false;
+        lastX = -1;
+        lastY = -1;
+    }
+    
+    void EnableFastPath(bool enable) {
+        fastPathEnabled = enable;
+    }
+    
+    void SaveBackground(int16_t x, int16_t y) {
+        if (!backbufferPtr || x < 0 || y < 0) return;
+        
+        for (int row = 0; row < CURSOR_HEIGHT && (y + row) < maxY; row++) {
+            for (int col = 0; col < CURSOR_WIDTH && (x + col) < maxX; col++) {
+                restoreBuffer[row * CURSOR_WIDTH + col] = 
+                    backbufferPtr[(y + row) * bufferPitch + (x + col)];
+            }
+        }
+        lastX = x;
+        lastY = y;
+        hasStoredBackground = true;
+    }
+    
+    void RestoreBackground() {
+        if (!backbufferPtr || !hasStoredBackground || lastX < 0 || lastY < 0) return;
+        
+        for (int row = 0; row < CURSOR_HEIGHT && (lastY + row) < maxY; row++) {
+            for (int col = 0; col < CURSOR_WIDTH && (lastX + col) < maxX; col++) {
+                backbufferPtr[(lastY + row) * bufferPitch + (lastX + col)] = 
+                    restoreBuffer[row * CURSOR_WIDTH + col];
+            }
+        }
+    }
+    
+    void DrawCursorFast() {
+        if (!backbufferPtr || !visible) return;
+        
+        for (int row = 0; row < CURSOR_HEIGHT && (posY + row) < maxY; row++) {
+            for (int col = 0; col < CURSOR_WIDTH && (posX + col) < maxX; col++) {
+                uint32_t pixel = cursorSprite[row * CURSOR_WIDTH + col];
+                if (pixel != 0x00000000) {  // Not transparent
+                    backbufferPtr[(posY + row) * bufferPitch + (posX + col)] = pixel;
+                }
+            }
+        }
+    }
+    
     void OnInterrupt() {
         uint8_t status = IO::inb(0x64);
-        if (!(status & 0x20)) return;  // Not mouse data
+        if (!(status & 0x20)) return;
         
         uint8_t data = IO::inb(0x60);
-        
         packet[cycle] = data;
         cycle = (cycle + 1) % 3;
         
         if (cycle == 0) {
-            // Complete packet
-            if (!(packet[0] & 0x08)) return;  // Invalid packet
+            if (!(packet[0] & 0x08)) return;
             
             buttons = packet[0] & 0x07;
             
             int16_t dx = packet[1];
             int16_t dy = packet[2];
             
-            if (packet[0] & 0x10) dx |= 0xFF00;  // Sign extend X
-            if (packet[0] & 0x20) dy |= 0xFF00;  // Sign extend Y
+            if (packet[0] & 0x10) dx |= 0xFF00;
+            if (packet[0] & 0x20) dy |= 0xFF00;
+            
+            int16_t oldX = posX;
+            int16_t oldY = posY;
             
             posX += dx;
-            posY -= dy;  // Y is inverted
+            posY -= dy;
             
-            // Clamp to bounds
             if (posX < 0) posX = 0;
             if (posY < 0) posY = 0;
             if (posX >= maxX) posX = maxX - 1;
             if (posY >= maxY) posY = maxY - 1;
+            
+            // === FAST PATH: Immediate cursor update ===
+            if (fastPathEnabled && backbufferPtr && (posX != oldX || posY != oldY)) {
+                RestoreBackground();
+                SaveBackground(posX, posY);
+                DrawCursorFast();
+                // Direct flip of cursor region to framebuffer
+                Graphics::FlipRect(oldX, oldY, CURSOR_WIDTH, CURSOR_HEIGHT);
+                Graphics::FlipRect(posX, posY, CURSOR_WIDTH, CURSOR_HEIGHT);
+            }
         }
     }
     
@@ -115,25 +197,26 @@ namespace Mouse {
     
     void DrawCursor() {
         if (!visible) return;
-        
-        for (int y = 0; y < 8; y++) {
-            for (int x = 0; x < 8; x++) {
-                if (cursorData[y] & (0x80 >> x)) {
-                    Graphics::PutPixel(posX + x, posY + y, COLOR_WHITE);
+        for (int y = 0; y < CURSOR_HEIGHT; y++) {
+            for (int x = 0; x < CURSOR_WIDTH; x++) {
+                uint32_t pixel = cursorSprite[y * CURSOR_WIDTH + x];
+                if (pixel != 0x00000000) {
+                    Graphics::PutPixel(posX + x, posY + y, pixel);
                 }
             }
         }
     }
     
     void HideCursor() {
-        // With double buffering, just don't draw cursor before flip
+        if (fastPathEnabled && hasStoredBackground) {
+            RestoreBackground();
+        }
     }
     
     void SetCursorVisible(bool v) { visible = v; }
     
     bool PollEvent(MouseEvent* event) {
-        // For now, events are handled via interrupts
-        // This could be extended for event queue
         return false;
     }
 }
+

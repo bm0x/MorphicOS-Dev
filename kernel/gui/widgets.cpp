@@ -233,22 +233,13 @@ namespace MorphicGUI {
             }
         }
         
-        // Draw cursor
-        for (int i = 0; i < 12; i++) {
-            Graphics::PutPixel(mx, my + i, COLOR_WHITE);
-        }
-        for (int i = 0; i < 8; i++) {
-            for (int j = 0; j <= i; j++) {
-                Graphics::PutPixel(mx + j, my + i, COLOR_WHITE);
-            }
-        }
-        for (int i = 1; i < 8; i++) {
-            Graphics::PutPixel(mx + 1, my + i, COLOR_BLACK);
-        }
+        // Cursor is now drawn by IRQ12 fast path (Mouse::OnInterrupt)
+        // No manual cursor drawing needed here
         
         // Single SIMD Flip
         Graphics::Flip();
     }
+
 
 
 
