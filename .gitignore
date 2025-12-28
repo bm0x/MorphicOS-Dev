@@ -1,0 +1,26 @@
+# Build outputs
+build/
+*.o
+*.elf
+*.img
+*.iso
+
+# ISO temporary directory
+iso_root/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Debug symbols
+*.dSYM/
