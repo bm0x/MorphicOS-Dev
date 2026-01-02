@@ -90,7 +90,9 @@ namespace Mouse {
     
     // === POST-COMPOSITION CURSOR ===
     // Draw cursor directly on framebuffer AFTER flip (no flicker)
-    void DrawCursorPostFlip();
+    // Asynchronous Atomic version using Scratchpad
+    void RenderCursorAtomic();
+
     
     // Get cursor sprite for external drawing
     const uint32_t* GetCursorSprite();

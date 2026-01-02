@@ -7,7 +7,8 @@ ASM = nasm
 
 # Flags
 CXXFLAGS = -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mno-red-zone -mcmodel=large \
-           -mno-sse -mno-sse2 -mno-mmx -mno-80387 -I ./shared -c
+           -mno-sse -mno-sse2 -mno-mmx -mno-80387 -I ./shared -c \
+           -DEMBED_DESKTOP
 ASMFLAGS = -f elf64
 EFI_CXXFLAGS = -target x86_64-pc-win32-coff -fno-stack-protector -fshort-wchar -mno-red-zone -nostdlibinc -I ./boot/src -I ./shared -c
 EFI_LDFLAGS = /subsystem:efi_application /entry:EfiMain
@@ -56,6 +57,7 @@ KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/process/scheduler.cpp \
                  kernel/fs/vfs.cpp \
                  kernel/fs/initrd.cpp \
+                 kernel/core/loader.cpp \
                  kernel/fs/mount.cpp \
                  kernel/mcl/mcl_parser.cpp \
                  kernel/mcl/mcl_commands.cpp \
@@ -106,13 +108,36 @@ kernel: build/morph_kernel.elf
 kernel/hal/video/blit_fast.o: kernel/hal/video/blit_fast.S
 	$(CXX) -target x86_64-elf -c $< -o $@
 
-build/morph_kernel.elf: $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o
+build/morph_kernel.elf: $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o kernel/fs/desktop_mpk.o
 	mkdir -p build
-	$(LD) -T kernel/linker.ld -o build/morph_kernel.elf $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o
+	$(LD) -T kernel/linker.ld -o build/morph_kernel.elf $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o kernel/fs/desktop_mpk.o
+
+
+
+
+# --- Userspace ---
+userspace/syscalls.o: userspace/syscalls.asm
+	$(ASM) $(ASMFLAGS) $< -o $@
+
+userspace/desktop.bin: userspace/desktop.cpp userspace/syscalls.o
+	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -c userspace/desktop.cpp -o userspace/desktop.o
+	$(LD) -T userspace/linker.ld -o userspace/desktop.bin userspace/desktop.o userspace/syscalls.o --oformat binary
+
+
+userspace/desktop.mpk: userspace/desktop.bin
+	python3 tools/mpk_pack.py userspace/desktop.mpk userspace/desktop.bin userspace/wallpaper.raw userspace/icon.raw
+
+kernel/fs/desktop_mpk.cpp: userspace/desktop.mpk
+	python3 tools/bin2h.py userspace/desktop.mpk kernel/fs/desktop_mpk.cpp desktop_mpk
+
+kernel/fs/desktop_mpk.o: kernel/fs/desktop_mpk.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 
 # --- Image ---
-image: bootloader kernel
+image: bootloader kernel userspace/desktop.mpk
+
+
 	dd if=/dev/zero of=morphic.img bs=1M count=64
 	mformat -i morphic.img -F ::
 	# Copy EFI Structure
@@ -121,9 +146,12 @@ image: bootloader kernel
 	mcopy -i morphic.img build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
 	# Copy Kernel to Root
 	mcopy -i morphic.img build/morph_kernel.elf ::/
+	# Copy Desktop Package to Root
+	mcopy -i morphic.img userspace/desktop.mpk ::/
+
 
 clean:
-	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso
+	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/desktop_mpk.cpp kernel/fs/desktop_mpk.o
 
 iso:
 	bash ./scripts/make_iso.sh

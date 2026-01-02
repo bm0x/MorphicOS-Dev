@@ -27,7 +27,11 @@ namespace Graphics {
     void DrawImage(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t* data);
     void DrawImageCentered(uint32_t w, uint32_t h, uint32_t* data);
     
+    // Alpha blending helper (R,G,B mixing)
+    uint32_t BlendPixelRaw(uint32_t bg, uint32_t fg);
+    
     // Alpha blending for transparency
+
     void BlendPixel(uint32_t x, uint32_t y, uint32_t color);
     
     // Get dimensions

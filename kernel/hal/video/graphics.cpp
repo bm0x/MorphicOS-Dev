@@ -1,6 +1,7 @@
 #include "graphics.h"
 #include "../../mm/heap.h"
 #include "../../utils/std.h"
+#include "../serial/uart.h"
 #include "early_term.h"
 #include "alpha_lut.h"
 
@@ -26,28 +27,78 @@ namespace Graphics {
     static uint32_t pitch = 0;
     
     void Init(FramebufferInfo* fb) {
+        UART::Write("[Graphics::Init] START\n");
+        
         framebuffer = fb;
         width = fb->width;
         height = fb->height;
         pitch = fb->pixelsPerScanLine;
         
+        UART::Write("[Graphics::Init] fb assigned, w=");
+        UART::WriteDec(width);
+        UART::Write(" h=");
+        UART::WriteDec(height);
+        UART::Write(" pitch=");
+        UART::WriteDec(pitch);
+        UART::Write("\n");
+        
         // Initialize Alpha LUT for fast blending
+        UART::Write("[Graphics::Init] About to call Alpha::InitLUT\n");
         Alpha::InitLUT();
+        UART::Write("[Graphics::Init] Alpha::InitLUT done\n");
         
         // Allocate backbuffer
         uint32_t bufferSize = pitch * height * sizeof(uint32_t);
-        backbuffer = (uint32_t*)kmalloc(bufferSize);
+        UART::Write("[Graphics::Init] Requesting kmalloc for ");
+        UART::WriteDec(bufferSize);
+        UART::Write(" bytes\n");
+        
+        // TEMPORARY FIX: Force single buffering to bypass memory mapping crash
+        // The heap memory beyond 1MB seems unmapped. We need to implement proper paging later.
+        UART::Write("[Graphics] WARN: Forcing single-buffer mode to avoid unmapped memory crash\n");
+        backbuffer = nullptr; // Force failure of alloc logic below
+        
+        // backbuffer = (uint32_t*)kmalloc(bufferSize);
+        
+        /* 
+        UART::Write("[Graphics::Init] kmalloc returned: ");
+        UART::WriteHex((uint64_t)backbuffer);
+        UART::Write("\n");
         
         if (backbuffer) {
-            // Use SIMD to clear buffer
-            memset_fast_32(backbuffer, 0, pitch * height);
+            // DEBUG: Write in small chunks to find where crash occurs
+            UART::Write("[Graphics::Init] Writing backbuffer in 1MB chunks...\n");
+            uint32_t totalPixels = pitch * height;
+            uint32_t chunkSize = 256 * 1024;  // 256K pixels = 1MB per chunk
+            uint32_t written = 0;
+            
+            while (written < totalPixels) {
+                uint32_t remaining = totalPixels - written;
+                uint32_t toWrite = (remaining < chunkSize) ? remaining : chunkSize;
+                
+                // Simple byte-by-byte write instead of SIMD
+                for (uint32_t i = 0; i < toWrite; i++) {
+                    backbuffer[written + i] = 0x00000000;
+                }
+                
+                written += toWrite;
+            }
+            
+            UART::Write("[Graphics::Init] All chunks written successfully!\n");
+            
             EarlyTerm::Print("[Graphics] Double buffer: ");
             EarlyTerm::PrintDec(bufferSize / 1024);
             EarlyTerm::Print(" KB allocated.\n");
         } else {
-            EarlyTerm::Print("[Graphics] WARNING: Backbuffer alloc failed!\n");
+        */
+            EarlyTerm::Print("[Graphics] WARNING: Backbuffer alloc skipped/failed. Using direct FB.\n");
             backbuffer = (uint32_t*)fb->baseAddress;
-        }
+            // Clear screen directly
+            memset_fast_32(backbuffer, 0, pitch * height);
+       // }
+
+        
+        UART::Write("[Graphics::Init] COMPLETE\n");
     }
     
     void Flip() {
@@ -117,20 +168,35 @@ namespace Graphics {
         DrawImage(x, y, w, h, data);
     }
     
+    // Pure blending logic (static helper)
+    // Formula: ((FG * Alpha) + (BG * (255 - Alpha))) >> 8
+    uint32_t BlendPixelRaw(uint32_t bg, uint32_t fg) {
+        uint32_t alpha = (fg >> 24) & 0xFF;
+        if (alpha == 0) return bg;
+        if (alpha == 255) return fg;
+        
+        uint32_t invA = 255 - alpha;
+        
+        uint32_t rb_fg = fg & 0x00FF00FF;
+        uint32_t g_fg  = fg & 0x0000FF00;
+        
+        uint32_t rb_bg = bg & 0x00FF00FF;
+        uint32_t g_bg  = bg & 0x0000FF00;
+        
+        uint32_t rb = (rb_fg * alpha + rb_bg * invA) >> 8;
+        uint32_t g  = (g_fg * alpha + g_bg * invA) >> 8;
+        
+        return (rb & 0x00FF00FF) | (g & 0x0000FF00) | 0xFF000000;
+    }
+
+
     void BlendPixel(uint32_t x, uint32_t y, uint32_t color) {
         if (!backbuffer || x >= width || y >= height) return;
-        
-        uint8_t alpha = (color >> 24) & 0xFF;
-        if (alpha == 0) return;
-        if (alpha == 255) {
-            backbuffer[y * pitch + x] = color;
-            return;
-        }
-        
-        // Fast alpha blend using LUT (no division!)
         uint32_t bg = backbuffer[y * pitch + x];
-        backbuffer[y * pitch + x] = Alpha::Blend(color, bg);
+        backbuffer[y * pitch + x] = BlendPixelRaw(bg, color);
     }
+
+
     
     // Partial flip - only copy specified rectangle (CRITICAL for performance)
     void FlipRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {

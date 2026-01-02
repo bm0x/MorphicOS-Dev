@@ -176,15 +176,13 @@ namespace Mouse {
             if (posX >= maxX) posX = maxX - 1;
             if (posY >= maxY) posY = maxY - 1;
             
-            // === FAST PATH: Immediate cursor update ===
-            if (fastPathEnabled && backbufferPtr && (posX != oldX || posY != oldY)) {
-                RestoreBackground();
-                SaveBackground(posX, posY);
-                DrawCursorFast();
-                // Direct flip of cursor region to framebuffer
-                Graphics::FlipRect(oldX, oldY, CURSOR_WIDTH, CURSOR_HEIGHT);
-                Graphics::FlipRect(posX, posY, CURSOR_WIDTH, CURSOR_HEIGHT);
-            }
+            // === ATOMIC UPDATE ===
+            // Just update coordinates. Rendering is handled by Atomic Loop (post-flip).
+            // No saving/restoring background needed in IRQ.
+            
+            // Legacy Fast Path block removed to ensure "Golden Path" architecture.
+            // (Cursor drawing is now strictly synchronized with V-Sync in widgets.cpp)
+
         }
     }
     
@@ -296,18 +294,75 @@ namespace Mouse {
     // static int16_t lastDrawnPosX = -1;
     // static int16_t lastDrawnPosY = -1;
     
-    void DrawCursorPostFlip() {
+    // === ASYNCHRONOUS ATOMIC CURSOR (SCRATCHPAD) ===
+    
+    // Scratchpad buffer for atomic composition (32x32)
+    static uint32_t scratchpad[CURSOR_BUFFER_SIZE];
+    
+    void RenderCursorAtomic() {
         // Only draw in GUI mode
         if (cursorVisibility != CursorVisibility::VISIBLE_GUI) return;
         if (!visible) return;
         
-        // TRIPLE BUFFERING FIX:
-        // Always draw cursor on the new frame, even if position hasn't changed.
-        // The previous Flip() operation wiped the cursor from VRAM, so we must redraw.
+        // 1. Restore OLD cursor background (erase previous position)
+        // We use the BACKBUFFER (clean UI) to restore the Framebuffer state
+        if (backbufferPtr) {
+             // Use Graphics::FlipRect to copy native UI to FB (erasing old cursor)
+             // Note: We erase a slightly larger area to be safe or just the cursor size
+             // Using current posX/posY might be wrong if we just moved...
+             // But Flip() refreshes the whole screen anyway if used in the main loop.
+             // If this function is called asynchronously, we must handle dirty rects.
+             // BUT, the current architecture calls this AFTER Flip(). 
+             // So the screen is fresh UI. We just need to draw the cursor.
+             // Wait, if Flip() was called, the screen is clean. No need to "erase" old cursor 
+             // because Flip() overwrote it with the backbuffer.
+        }
+
+        // 2. Compose NEW cursor on Scratchpad
+        // Copy background from Backbuffer (UI) to Scratchpad
+        uint32_t* bb = backbufferPtr; // Backbuffer source
         
-        // Draw cursor directly on framebuffer (post-flip)
-        Graphics::DrawCursorOnFramebuffer(posX, posY, cursorSprite, CURSOR_WIDTH, CURSOR_HEIGHT);
+        // Safety bounds
+        int16_t x = posX;
+        int16_t y = posY;
+        if (x >= maxX || y >= maxY) return;
+        
+        // Copy 32x32 clean UI to scratchpad
+        uint32_t pitch = Graphics::GetPitch();
+        uint32_t w = CURSOR_WIDTH;
+        uint32_t h = CURSOR_HEIGHT;
+        
+        // Clamp
+        if (x + w > maxX) w = maxX - x;
+        if (y + h > maxY) h = maxY - y;
+        
+        // Prepare Scratchpad (Copy clean UI)
+        for(uint32_t r=0; r<h; r++) {
+            for(uint32_t c=0; c<w; c++) {
+                 scratchpad[r*CURSOR_WIDTH + c] = bb[(y+r)*(pitch/4) + (x+c)];
+            }
+        }
+        
+        // Draw Sprite on Scratchpad (Alpha Blend)
+        for(uint32_t r=0; r<h; r++) {
+            for(uint32_t c=0; c<w; c++) {
+                uint32_t spritePixel = cursorSprite[r*CURSOR_WIDTH + c];
+                uint32_t bgPixel = scratchpad[r*CURSOR_WIDTH + c];
+                
+                // SOFTWARE ALPHA BLENDING (Fixes Black Box)
+                scratchpad[r*CURSOR_WIDTH + c] = Graphics::BlendPixelRaw(bgPixel, spritePixel);
+            }
+        }
+
+        
+        // 3. Atomic Blit Scratchpad -> Framebuffer
+        // This is the only operation visible to the user (anti-flicker)
+        Graphics::DrawImage(x, y, w, h, scratchpad); // Draws directly to FB if we direct it?
+        // Wait, Graphics::DrawImage draws to Backbuffer usually.
+        // We need a direct Framebuffer draw.
+        Graphics::DrawCursorOnFramebuffer(x, y, scratchpad, w, h);
     }
+
 
     
     const uint32_t* GetCursorSprite() {

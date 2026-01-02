@@ -3,7 +3,9 @@
 
 #include "../../../../kernel/arch/common/mmu.h"
 #include "../../../../kernel/mm/heap.h"
+#include "../../../../kernel/mm/pmm.h"
 #include "../../../../kernel/utils/std.h"
+#include "../../serial/uart.h"
 
 
 // x86-64 Page Table Entry bits
@@ -44,11 +46,19 @@ namespace MMU {
     }
     
     // Allocate a page-aligned page for tables
+    // CRITICAL: Page table entries require PHYSICAL addresses!
+    // Since we're running with identity mapping in low memory, PMM returns
+    // addresses that can be used directly as both physical and virtual pointers.
     static uint64_t* AllocateTable() {
-        void* table = kmalloc(4096);
-        if (!table) return nullptr;
-        kmemset(table, 0, 4096);
-        return (uint64_t*)table;
+        // Get a physical page from PMM
+        void* phys_page = PMM::AllocPage();
+        if (!phys_page) return nullptr;
+        
+        // In identity-mapped region, physical == virtual, so we can use directly
+        // Clear the page (required for page tables)
+        kmemset(phys_page, 0, 4096);
+        
+        return (uint64_t*)phys_page;
     }
     
     void Init() {
@@ -61,6 +71,11 @@ namespace MMU {
     bool MapPage(uint64_t virt, uint64_t phys, uint32_t flags) {
         uint64_t pte_flags = ConvertFlags(flags);
         
+        // Flags to verify/add to parent directories if they exist
+        uint64_t dir_flags = PTE_PRESENT;
+        if (flags & PAGE_WRITABLE) dir_flags |= PTE_WRITABLE;
+        if (flags & PAGE_USER) dir_flags |= PTE_USER;
+        
         // Get or create page table entries at each level
         uint64_t* pml4 = kernel_pml4;
         if (!pml4) return false;
@@ -72,6 +87,8 @@ namespace MMU {
             if (!pdpt) return false;
             pml4[PML4_INDEX(virt)] = ((uint64_t)pdpt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
         } else {
+            // FIX: Ensure existing directory entry propagates permissions
+            pml4[PML4_INDEX(virt)] |= dir_flags;
             pdpt = (uint64_t*)(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
         }
         
@@ -82,6 +99,13 @@ namespace MMU {
             if (!pd) return false;
             pdpt[PDPT_INDEX(virt)] = ((uint64_t)pd & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
         } else {
+            // Check for Huge Page collision
+            if (pdpt[PDPT_INDEX(virt)] & PTE_HUGE) {
+                 // For now, fail to avoid corruption. Later: split page.
+                 return false;
+            }
+            // FIX: Ensure existing directory entry propagates permissions
+            pdpt[PDPT_INDEX(virt)] |= dir_flags;
             pd = (uint64_t*)(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
         }
         
@@ -92,11 +116,48 @@ namespace MMU {
             if (!pt) return false;
             pd[PD_INDEX(virt)] = ((uint64_t)pt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
         } else {
+            // Check for Huge Page collision
+            if (pd[PD_INDEX(virt)] & PTE_HUGE) {
+                 return false;
+            }
+            // FIX: Ensure existing directory entry propagates permissions
+            pd[PD_INDEX(virt)] |= dir_flags;
             pt = (uint64_t*)(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
         }
         
         // PT -> Page
-        pt[PT_INDEX(virt)] = (phys & PTE_ADDR_MASK) | pte_flags;
+        uint64_t pte_value = (phys & PTE_ADDR_MASK) | pte_flags;
+        pt[PT_INDEX(virt)] = pte_value;
+        
+        // DEBUG: Hierarchy Dump for User Address
+        if (virt == 0x8000000000ULL) {
+            UART::Write("\n[MMU] HIERARCHY CHECK for 0x8000000000:\n");
+            
+            uint64_t pml4_e = pml4[PML4_INDEX(virt)];
+            UART::Write("  PML4["); UART::WriteDec(PML4_INDEX(virt)); UART::Write("]: "); UART::WriteHex(pml4_e);
+            UART::Write(" NX="); UART::WriteDec((pml4_e >> 63) & 1);
+            UART::Write(" U="); UART::WriteDec((pml4_e >> 2) & 1);
+            UART::Write(" W="); UART::WriteDec((pml4_e >> 1) & 1);
+            UART::Write("\n");
+
+            uint64_t pdpt_e = pdpt[PDPT_INDEX(virt)];
+            UART::Write("  PDPT["); UART::WriteDec(PDPT_INDEX(virt)); UART::Write("]: "); UART::WriteHex(pdpt_e);
+            UART::Write(" NX="); UART::WriteDec((pdpt_e >> 63) & 1);
+            UART::Write(" U="); UART::WriteDec((pdpt_e >> 2) & 1);
+            UART::Write("\n");
+
+            uint64_t pd_e = pd[PD_INDEX(virt)];
+            UART::Write("  PD  ["); UART::WriteDec(PD_INDEX(virt)); UART::Write("]: "); UART::WriteHex(pd_e);
+            UART::Write(" NX="); UART::WriteDec((pd_e >> 63) & 1);
+            UART::Write(" U="); UART::WriteDec((pd_e >> 2) & 1);
+            UART::Write("\n");
+
+            uint64_t pt_e = pt[PT_INDEX(virt)];
+            UART::Write("  PT  ["); UART::WriteDec(PT_INDEX(virt)); UART::Write("]: "); UART::WriteHex(pt_e);
+            UART::Write(" NX="); UART::WriteDec((pt_e >> 63) & 1);
+            UART::Write(" U="); UART::WriteDec((pt_e >> 2) & 1);
+            UART::Write("\n");
+        }
         
         // Flush TLB for this address
         FlushTLB(virt);

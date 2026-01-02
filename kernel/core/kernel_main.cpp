@@ -22,6 +22,7 @@
 #include "../fs/initrd.h"
 #include "shell.h"
 #include "bootconfig.h"
+#include "loader.h"
 #include "../process/scheduler.h"
 #include "../utils/std.h"
 
@@ -80,73 +81,133 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     
     KHeap::Init((void*)0x400000, heapSize);
 
-
+    // 4b. Initialize Serial for debugging - MOVED BEFORE TSS
+    UART::Init();
+    SerialDebug::SetOutput(OUTPUT_BOTH);
+    UART::WriteLine("[Serial] COM1 @ 115200 baud initialized.");
+    
+    // Debug heap info
+    UART::Write("[DEBUG] Free RAM: ");
+    UART::WriteDec(freeRAM);
+    UART::Write(" bytes\n");
+    UART::Write("[DEBUG] Heap size: ");
+    UART::WriteDec(heapSize);
+    UART::Write(" bytes at 0x400000\n");
+    
+    // Test small allocation first
+    UART::Write("[DEBUG] Testing small heap allocation...\n");
+    void* testPtr = kmalloc(64);
+    UART::Write("[DEBUG] Small alloc returned: ");
+    UART::WriteHex((uint64_t)testPtr);
+    UART::Write("\n");
+    
+    if (testPtr) {
+        UART::Write("[DEBUG] Writing to test memory...\n");
+        // Try to write to it
+        volatile uint8_t* p = (volatile uint8_t*)testPtr;
+        for (int i = 0; i < 64; i++) {
+            p[i] = (uint8_t)i;
+        }
+        UART::Write("[DEBUG] Small write successful!\n");
+        kfree(testPtr);
+        UART::Write("[DEBUG] Small free successful!\n");
+    }
 
     // 4. Initialize TSS and Syscalls (Ring 3 support)
     TSS::Init((uint64_t)&kernel_tss_stack[4096]);
     GDT::LoadTSS(TSS::GetTSS());
     Syscall::Init();
     
-    // 4b. Initialize Serial for debugging
-    UART::Init();
-    SerialDebug::SetOutput(OUTPUT_BOTH);
-    UART::WriteLine("[Serial] COM1 @ 115200 baud initialized.");
+    // ===== TRACE CHECKPOINTS =====
+    UART::Write("[BOOT-TRACE] After UART init\n");
     
     // 5. Initialize Graphics HAL
     Graphics::Init(&bootInfo->framebuffer);
+    UART::Write("[BOOT-TRACE] After Graphics::Init\n");
+    
     Verbose::Init();
+    UART::Write("[BOOT-TRACE] After Verbose::Init\n");
     
     // 5a. Enable Write-Combining for framebuffer acceleration
     WriteCombining::InitPAT();
+    UART::Write("[BOOT-TRACE] After WriteCombining::InitPAT\n");
     
     Mouse::Init();
+    UART::Write("[BOOT-TRACE] After Mouse::Init\n");
+    
     Mouse::SetBounds(bootInfo->framebuffer.width, bootInfo->framebuffer.height);
+    UART::Write("[BOOT-TRACE] After Mouse::SetBounds\n");
     
     // 5b. Initialize Compositor
-    Compositor::Init();
-
+    UART::Write("[BOOT-TRACE] Skipping Compositor::Init to avoid large alloc crash\n");
+    // Compositor::Init();
+    UART::Write("[BOOT-TRACE] After Compositor::Init (Skipped)\n");
 
     // 6. Initialize HAL Device Registry
     DeviceRegistry::Init();
+    UART::Write("[BOOT-TRACE] After DeviceRegistry::Init\n");
 
     // 7. Initialize VFS and InitRD
     VFS::Init();
+    UART::Write("[BOOT-TRACE] After VFS::Init\n");
+    
     InitRD::Init();
+    UART::Write("[BOOT-TRACE] After InitRD::Init\n");
     
     // 8. Load BootConfig from VFS
     BootConfiguration::Init();
+    UART::Write("[BOOT-TRACE] After BootConfiguration::Init\n");
+    
     BootConfiguration::LoadFromFile("/etc/boot.cfg");
+    UART::Write("[BOOT-TRACE] After BootConfig::LoadFromFile\n");
     
     // 8b. Initialize Keymap HAL with config
     KeymapHAL::Init();
+    UART::Write("[BOOT-TRACE] After KeymapHAL::Init\n");
+    
     KeymapHAL::SetKeymap(BootConfiguration::GetKeymap());
+    UART::Write("[BOOT-TRACE] After KeymapHAL::SetKeymap\n");
     
     // 8c. Initialize Font Renderer
     FontRenderer::Init();
+    UART::Write("[BOOT-TRACE] After FontRenderer::Init\n");
     
     // 8d. Initialize Audio HAL and Mixer
     Audio::Init();
+    UART::Write("[BOOT-TRACE] After Audio::Init\n");
+    
     AudioMixer::Init();
+    UART::Write("[BOOT-TRACE] After AudioMixer::Init\n");
 
     // 9. Initialize Drivers (register with HAL)
     PIT::Init(100); 
+    UART::Write("[BOOT-TRACE] After PIT::Init\n");
+    
     Keyboard::Init();
+    UART::Write("[BOOT-TRACE] After Keyboard::Init\n");
+    
     RAMDisk::Init();
-
+    UART::Write("[BOOT-TRACE] After RAMDisk::Init\n");
 
     
     // 10. Enable Interrupts
     EarlyTerm::Print("[Kernel] Enabling Interrupts... ");
+    UART::Write("[BOOT-TRACE] About to enable interrupts...\n");
     IDT::EnableInterrupts();
+    UART::Write("[BOOT-TRACE] After IDT::EnableInterrupts\n");
+    
     // Unmask: IRQ0 (timer), IRQ1 (keyboard), IRQ2 (cascade to slave)
     __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0xF8), "Nd"((uint16_t)0x21));
     // Unmask: IRQ12 (mouse) on slave = bit 4 of slave mask
     __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0xEF), "Nd"((uint16_t)0xA1));
     EarlyTerm::Print("DONE. (IRQ0,1,2,12)\\n");
+    UART::Write("[BOOT-TRACE] After IRQ unmasking\n");
     
     // 7. Scheduler Init
     EarlyTerm::Print("[Kernel] Initializing Scheduler... ");
     Scheduler::Init();
+    UART::Write("[BOOT-TRACE] After Scheduler::Init\n");
+    
     // BackgroundTask disabled - was showing Swift counter and interfering with graphics
     // Scheduler::CreateTask(BackgroundTask);
     EarlyTerm::Print("DONE.\n");
@@ -155,6 +216,35 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     EarlyTerm::Print("--------------------------------------------------\n");
     EarlyTerm::Print("Morphic OS - Phase Swift HAL (v0.5)\n");
     EarlyTerm::Print("Type 'help' for commands. HAL: Active.\n");
+    UART::Write("[BOOT-TRACE] Kernel boot complete, entering AUTO-TEST\n");
+    
+    // =======================================================================
+    // AUTO-TEST: Trigger package loader immediately for debugging
+    // Comment out / remove this block after debugging is complete
+    // =======================================================================
+    UART::Write("\n");
+    UART::Write("*****************************************************\n");
+    UART::Write("*** AUTO-TEST: Loading desktop.mpk for debugging ***\n");
+    UART::Write("*****************************************************\n");
+    UART::Write("\n");
+    
+    EarlyTerm::Print("\n[AUTO-TEST] Loading desktop.mpk...\n");
+    
+    // Call loader directly (loader.h included at top)
+    int loadResult = PackageLoader::Load("/initrd/desktop.mpk");
+    
+    // If we get here, something went wrong (should not return)
+    UART::Write("!!! PackageLoader::Load returned: ");
+    UART::WriteDec(loadResult);
+    UART::Write(" !!!\n");
+    UART::Write("This means the loader failed before JumpToUser.\n");
+    
+    EarlyTerm::Print("[AUTO-TEST] Load returned: ");
+    EarlyTerm::PrintDec(loadResult);
+    EarlyTerm::Print("\n");
+    // =======================================================================
+    // END AUTO-TEST
+    // =======================================================================
     
     Shell::Init();
 
@@ -166,3 +256,4 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
         }
     }
 }
+

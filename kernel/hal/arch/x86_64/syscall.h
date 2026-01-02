@@ -26,7 +26,9 @@ namespace Syscall {
     // Jump to user mode (Ring 3)
     // entry: User code entry point
     // stack: User stack pointer
-    void JumpToUser(void* entry, void* stack);
+    // arg1: First argument (RDI)
+    void JumpToUser(void* entry, void* stack, void* arg1);
+
 }
 
 // C handler called from assembly

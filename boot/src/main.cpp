@@ -38,7 +38,54 @@ void PrintHex(UINT64 Value) {
     Print(u" ");
 }
 
+void PrintDec(UINT64 Value) {
+    CHAR16 buffer[24];
+    buffer[23] = 0;
+    int i = 22;
+    if (Value == 0) {
+        buffer[i--] = u'0';
+    } else {
+        while (Value > 0) {
+            buffer[i--] = u'0' + (Value % 10);
+            Value /= 10;
+        }
+    }
+    Print(&buffer[i+1]);
+}
+
+// Print 8-bit ASCII string (converted to CHAR16)
+void PrintStr(const char* str) {
+    while (*str) {
+        CHAR16 c[2] = { (CHAR16)*str, 0 };
+        Print(c);
+        str++;
+    }
+}
+
+// === BOOT PANIC ===
+// Halts the system with detailed error info
+void _BootPanic(const char* file, int line, UINT64 errCode, const char16_t* msg) {
+    gST->ConOut->SetAttribute(gST->ConOut, 0x4F); // Red background, white text
+    Print(u"\r\n!!! BOOT PANIC !!!\r\n");
+    
+    Print(u"File: ");
+    PrintStr(file);
+    Print(u"\r\nLine: ");
+    PrintDec(line);
+    Print(u"\r\nError Code: ");
+    PrintHex(errCode);
+    Print(u"\r\nMessage: ");
+    Print(msg);
+    Print(u"\r\n\r\nSystem Halted.\r\n");
+    
+    while(1) { __asm__ volatile("hlt"); }
+}
+
+#define BOOT_PANIC(code, msg) _BootPanic(__FILE__, __LINE__, code, msg)
+#define BOOT_CHECK(status, msg) if ((status) != EFI_SUCCESS) { BOOT_PANIC((UINT64)(status), msg); }
+
 int MemCmp(const void* a, const void* b, UINTN n) {
+
     const UINT8* s1 = (const UINT8*)a;
     const UINT8* s2 = (const UINT8*)b;
     for (UINTN i = 0; i < n; i++) {
@@ -210,19 +257,15 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
     bootInfo->magic = 0xDEADBEEFCAFEBABE;
     
     // 2. Setup Graphics
-    if (InitializeGOP(&bootInfo->framebuffer) != EFI_SUCCESS) {
-         Print(u"Graphics Init Failed.\r\n");
-         while(1) __asm__("hlt");
-    }
+    EFI_STATUS gopStatus = InitializeGOP(&bootInfo->framebuffer);
+    BOOT_CHECK(gopStatus, u"Graphics (GOP) initialization failed.");
+
 
     // 3. Load Kernel
     void (*kernelEntry)(BootInfo*) = nullptr;
-    if (LoadKernel(bootInfo, (void**)&kernelEntry) != EFI_SUCCESS) {
-        Print(u"Kernel Load Failed.\r\n");
-        // For development, we might not have the file yet, continue to test Handover loop
-        // return EFI_ABORTED;
-        while(1) {}; 
-    }
+    EFI_STATUS kernelStatus = LoadKernel(bootInfo, (void**)&kernelEntry);
+    BOOT_CHECK(kernelStatus, u"Failed to load kernel ELF file.");
+
 
     Print(u"Kernel Loaded. Preparing Handover...\r\n");
 
@@ -253,11 +296,9 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
         // Get Map again immediately
         gBS->GetMemoryMap(&mapSize, map, &mapKey, &descriptorSize, &descriptorVersion);
         status = gBS->ExitBootServices(ImageHandle, mapKey);
-        if (status != EFI_SUCCESS) {
-            // Panic state
-             while(1) {};
-        }
+        BOOT_CHECK(status, u"ExitBootServices failed after retry.");
     }
+
 
     // --- WE ARE NOW IN UNSAFE TERRITORY ---
     // No UEFI functions available.

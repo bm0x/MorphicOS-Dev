@@ -233,14 +233,16 @@ namespace MorphicGUI {
             }
         }
         
-        // === ATOMIC COMPOSITION RENDER FLOW ===
-        // 1. V-Sync wait + Atomic Flip (backbuffer → framebuffer)
-        Graphics::FlipWithVSync();
         
-        // 2. Draw cursor AFTER flip (directly on framebuffer)
-        // This eliminates flicker by avoiding restore/save cycle
-        Mouse::DrawCursorPostFlip();
+        // === ZERO-LATENCY RENDER FLOW (ASYNCHRONOUS) ===
+        // 1. Fast, non-blocking flip (UI might tear, but mouse is fluid)
+        Graphics::Flip();
+        
+        // 2. Atomic Scratchpad Cursor (Anti-Flicker)
+        // Eliminates flicker without waiting for V-Sync
+        Mouse::RenderCursorAtomic();
     }
+
 
 
 

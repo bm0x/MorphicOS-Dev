@@ -15,6 +15,7 @@
 #include "../hal/storage/buffer_cache.h"
 #include "../mcl/mcl_parser.h"
 #include "../gui/desktop.h"
+#include "loader.h"
 
 namespace Shell {
     const int CMD_BUFFER_SIZE = 128;
@@ -455,6 +456,16 @@ namespace Shell {
         EarlyTerm::Print("Compositor test complete.\n");
     }
 
+    void CmdDesktop() {
+        EarlyTerm::Print("Starting Morphic Desktop Environment (.mpk)...\n");
+        // Use PackageLoader to load the structured application container
+        int result = PackageLoader::Load("/initrd/desktop.mpk");
+        if (result != 0) {
+            EarlyTerm::Print("Error: Failed to load desktop.mpk\n");
+        }
+    }
+
+
     void ExecuteCommand() {
 
         EarlyTerm::Print("\n");
@@ -485,7 +496,10 @@ namespace Shell {
             CmdCompTest();
         } else if (kstrcmp(cmdBuffer, "beep") == 0) {
             CmdBeep();
+        } else if (kstrcmp(cmdBuffer, "desktop") == 0) {
+            CmdDesktop();
         } else if (kstrcmp(cmdBuffer, "keymap") == 0) {
+
 
             CmdKeymap(nullptr);
         } else if (StartsWith(cmdBuffer, "keymap ")) {
