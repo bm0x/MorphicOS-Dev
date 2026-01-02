@@ -122,9 +122,12 @@ userspace/syscalls.o: userspace/syscalls.asm
 userspace/entry.o: userspace/entry.asm
 	$(ASM) $(ASMFLAGS) $< -o $@
 
-userspace/desktop.bin: userspace/entry.o userspace/desktop.cpp userspace/syscalls.o
-	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -c userspace/desktop.cpp -o userspace/desktop.o
-	$(LD) -T userspace/linker.ld -o userspace/desktop.bin userspace/entry.o userspace/desktop.o userspace/syscalls.o --oformat binary
+userspace/compositor.o: userspace/compositor.cpp
+	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -c userspace/compositor.cpp -o userspace/compositor.o
+
+userspace/desktop.bin: userspace/entry.o userspace/desktop.cpp userspace/syscalls.o userspace/compositor.o
+	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -I ./shared -c userspace/desktop.cpp -o userspace/desktop.o
+	$(LD) -T userspace/linker.ld -o userspace/desktop.bin userspace/entry.o userspace/desktop.o userspace/compositor.o userspace/syscalls.o --oformat binary
 
 
 userspace/desktop.mpk: userspace/desktop.bin
@@ -154,7 +157,7 @@ image: bootloader kernel userspace/desktop.mpk
 
 
 clean:
-	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/desktop_mpk.cpp kernel/fs/desktop_mpk.o
+	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/desktop_mpk.cpp kernel/fs/desktop_mpk.o userspace/desktop.mpk
 
 iso:
 	bash ./scripts/make_iso.sh

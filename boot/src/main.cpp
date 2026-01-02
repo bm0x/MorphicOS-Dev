@@ -96,6 +96,56 @@ int MemCmp(const void* a, const void* b, UINTN n) {
 
 // --- Logic ---
 
+// === MEMORY MAP DUMPER ===
+void PrintMemoryMap() {
+    UINTN mapSize = 0, mapKey, descSize;
+    UINT32 descVersion;
+    EFI_MEMORY_DESCRIPTOR* map = nullptr;
+    EFI_STATUS status;
+
+    // 1. Get Buffer Size
+    gBS->GetMemoryMap(&mapSize, nullptr, &mapKey, &descSize, &descVersion);
+    mapSize += 4 * descSize; // Padding
+    
+    status = gBS->AllocatePool(EfiLoaderData, mapSize, (void**)&map);
+    if (status != EFI_SUCCESS) {
+        Print(u"MemMap Alloc Failed.\r\n");
+        return;
+    }
+
+    // 2. Get Actual Map
+    status = gBS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVersion);
+    if (status != EFI_SUCCESS) {
+        Print(u"MemMap Get Failed.\r\n");
+        gBS->FreePool(map);
+        return;
+    }
+
+    Print(u"\r\n--- UEFI MEMORY MAP ---\r\n");
+    Print(u"Type | Physical Start | Pages\r\n");
+    
+    UINT8* ptr = (UINT8*)map;
+    UINTN entries = mapSize / descSize;
+    
+    for (UINTN i = 0; i < entries; i++) {
+        EFI_MEMORY_DESCRIPTOR* d = (EFI_MEMORY_DESCRIPTOR*)ptr;
+        
+        // Format: [Type] [Start] [Pages]
+        // Alignment formatting is manual with spaces
+        PrintDec(d->Type);
+        if (d->Type < 10) Print(u"    | "); else Print(u"   | ");
+        
+        PrintHex(d->PhysicalStart);
+        Print(u" | ");
+        PrintDec(d->NumberOfPages);
+        Print(u"\r\n");
+        
+        ptr += descSize;
+    }
+    Print(u"-----------------------\r\n");
+    gBS->FreePool(map);
+}
+
 EFI_STATUS InitializeGOP(FramebufferInfo* fbInfo) {
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
     EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = nullptr;
@@ -201,41 +251,78 @@ EFI_STATUS LoadKernel(BootInfo* bootInfo, void** kernelEntry) {
 
     *kernelEntry = (void*)ehdr->e_entry;
 
-    // Load Segments
+    // 1. Calculate Total Memory Range
+    UINT64 minAddr = 0xFFFFFFFFFFFFFFFF;
+    UINT64 maxAddr = 0;
+    
+    // First Pass: Determine Extents
     Elf64_Phdr* phdr = (Elf64_Phdr*)((UINT8*)fileBuffer + ehdr->e_phoff);
     for (int i = 0; i < ehdr->e_phnum; i++) {
         if (phdr[i].p_type == PT_LOAD) {
-            UINTN pages = (phdr[i].p_memsz + 0xFFF) / 0x1000;
-            UINT64 targetAddr = phdr[i].p_vaddr;
+            UINT64 vaddr = phdr[i].p_vaddr;
+            UINT64 memsz = phdr[i].p_memsz;
             
-            // Allocate Memory at precise address
-            // We MUST use AllocateAddress (2) because the ELF is not Position Independent.
-            // It expects to run at 0x100000.
+            if (vaddr < minAddr) minAddr = vaddr;
+            if (vaddr + memsz > maxAddr) maxAddr = vaddr + memsz;
+        }
+    }
+    
+    // Align to Page Boundaries
+    minAddr &= ~0xFFF;
+    maxAddr = (maxAddr + 0xFFF) & ~0xFFF;
+    
+    UINTN totalPages = (maxAddr - minAddr) / 0x1000;
+    
+    Print(u"Kernel Region: [");
+    PrintHex(minAddr);
+    Print(u" - ");
+    PrintHex(maxAddr);
+    Print(u"] Pages: ");
+    PrintDec(totalPages);
+    Print(u"\r\n");
+
+    // 2. Allocate Contiguous Block
+    EFI_PHYSICAL_ADDRESS allocAddr = minAddr;
+    status = gBS->AllocatePages(AllocateAddress, EfiLoaderCode, totalPages, &allocAddr);
+    
+    if (status != EFI_SUCCESS) {
+        Print(u"Failed to allocate contiguous kernel memory block.\r\n");
+        return status;
+    }
+    
+    // 3. Zero Out Memory (BSS handling implicitly covered if we zero everything first)
+    // Manually clearing memory (simple memset)
+    UINT8* kernelMem = (UINT8*)allocAddr;
+    for (UINTN i = 0; i < totalPages * 0x1000; i++) {
+        kernelMem[i] = 0;
+    }
+    
+    // 4. Load Segments
+    for (int i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type == PT_LOAD) {
+            UINT64 fileOff = phdr[i].p_offset;
+            UINT64 vaddr = phdr[i].p_vaddr;
+            UINT64 filesz = phdr[i].p_filesz;
             
-            status = gBS->AllocatePages(2 /* AllocateAddress */, 
-                                        EfiLoaderCode, pages, &targetAddr);
+            // Calculate destination in our allocated block
+            // Note: vaddr is physical address here (Identity mapped static kernel)
+            // We can write directly to vaddr because Identity Map is active in UEFI
             
-            if (status != EFI_SUCCESS) {
-                 Print(u"Error: Could not allocate kernel memory at specific address: ");
-                 PrintHex(targetAddr);
-                 Print(u"\r\n");
-                 return status;
-            }
-            // For Hito 2, we assume 0x100000 range is free (usually is).
+            UINT8* dest = (UINT8*)vaddr;
+            UINT8* src = (UINT8*)fileBuffer + fileOff;
             
-            // Copy segment
-            UINT8* dest = (UINT8*)targetAddr; // Physical mapping assumption
-            UINT8* src = (UINT8*)fileBuffer + phdr[i].p_offset;
-            for (UINTN j = 0; j < phdr[i].p_filesz; j++) {
+            // Debug Info
+            // Print(u"Seg: "); PrintHex(vaddr); Print(u" Sz: "); PrintHex(filesz); Print(u"\r\n");
+            
+            for (UINTN j = 0; j < filesz; j++) {
                 dest[j] = src[j];
-            }
-            // Zero out BSS
-            for (UINTN j = phdr[i].p_filesz; j < phdr[i].p_memsz; j++) {
-                dest[j] = 0;
             }
         }
     }
 
+    // Free the file buffer? Usually yes, but for now we leave it or free it.
+    gBS->FreePool(fileBuffer);
+    
     return EFI_SUCCESS;
 }
 
@@ -249,7 +336,7 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
     gST->ConOut->SetAttribute(gST->ConOut, 0x0F); 
     gST->ConOut->ClearScreen(gST->ConOut);
     
-    Print(u"--- Morphic OS: Phase Origin Hito 2 ---\r\n");
+    Print(u"--- Morphic OS: Init Booting Services ---\r\n");
 
     // 1. Alloc BootInfo
     BootInfo* bootInfo = nullptr;
@@ -262,6 +349,7 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
 
 
     // 3. Load Kernel
+    PrintMemoryMap(); // Debug: Show available memory before allocation
     void (*kernelEntry)(BootInfo*) = nullptr;
     EFI_STATUS kernelStatus = LoadKernel(bootInfo, (void**)&kernelEntry);
     BOOT_CHECK(kernelStatus, u"Failed to load kernel ELF file.");

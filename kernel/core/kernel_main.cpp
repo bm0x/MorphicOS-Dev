@@ -5,6 +5,7 @@
 #include "../hal/video/compositor.h"
 #include "../hal/video/font_renderer.h"
 #include "../hal/device_registry.h"
+#include "../hal/input/input_device.h"
 #include "../hal/input/mouse.h"
 #include "../hal/input/keymap.h"
 #include "../hal/audio/audio_device.h"
@@ -53,6 +54,24 @@ void BackgroundTask() {
         EarlyTerm::PrintAt(70, 0, "Swift: ");
         EarlyTerm::PrintAt(77, 0, buffer);
     }
+}
+
+// Global Mouse Adapter
+struct MouseAdapter : public IInputDevice {
+    MouseAdapter() { 
+        const char* s = "PS/2 Mouse";
+        for(int i=0; i<31 && s[i]; i++) name[i] = s[i];
+        name[31] = 0; // Null terminate
+        
+        init = Mouse::Init;
+        on_interrupt = Mouse::OnInterrupt; 
+        poll_event = nullptr; 
+    }
+};
+
+IInputDevice* GetMouseAdapter() {
+    static MouseAdapter instance;
+    return &instance;
 }
 
 extern "C" void kernel_main(BootInfo* bootInfo) {
@@ -185,6 +204,16 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     PIT::Init(100); 
     UART::Write("[BOOT-TRACE] After PIT::Init\n");
     
+    // --- MOUSE DRIVER REGISTRATION ---
+    // Moved to global scope to avoid local class issues
+    DeviceRegistry::Register(DeviceType::INPUT, GetMouseAdapter());
+    UART::Write("[BOOT-TRACE] Mouse Registered with InputManager\n");
+    
+    // Check if Keyboard namespace has OnInterrupt
+    // Assuming Keyboard::Init and Keyboard::OnInterrupt exist (based on typical structure)
+    // If NOT, we skip it or check header. 
+    // Let's register Mouse first as priority.
+
     Keyboard::Init();
     UART::Write("[BOOT-TRACE] After Keyboard::Init\n");
     

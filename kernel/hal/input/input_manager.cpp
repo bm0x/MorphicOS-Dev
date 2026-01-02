@@ -54,6 +54,40 @@ namespace InputManager {
         return deviceCount;
     }
     
+    // === RING BUFFER IMPLEMENTATION ===
+    struct EventRB {
+        static const int SIZE = 64;
+        OSEvent events[SIZE];
+        volatile int head = 0; // Write index
+        volatile int tail = 0; // Read index
+    };
+    static EventRB eventBuffer;
+    
+    void PushEvent(const OSEvent& ev) {
+        int next = (eventBuffer.head + 1) % EventRB::SIZE;
+        
+        // If buffer full, overwrite oldest (advance tail)
+        if (next == eventBuffer.tail) {
+            eventBuffer.tail = (eventBuffer.tail + 1) % EventRB::SIZE;
+        }
+        
+        eventBuffer.events[eventBuffer.head] = ev;
+        eventBuffer.head = next;
+    }
+    
+    bool GetNextOSEvent(OSEvent* outEv) {
+        if (!outEv) return false;
+        
+        // Empty check
+        if (eventBuffer.head == eventBuffer.tail) {
+            return false;
+        }
+        
+        *outEv = eventBuffer.events[eventBuffer.tail];
+        eventBuffer.tail = (eventBuffer.tail + 1) % EventRB::SIZE;
+        return true;
+    }
+
     // Called by IRQ dispatcher to notify all input devices
     void DispatchInterrupt(uint32_t irq) {
         // IRQ1 = Keyboard, IRQ12 = Mouse (PS/2)

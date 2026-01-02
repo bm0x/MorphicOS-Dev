@@ -146,6 +146,13 @@ typedef struct {
     UINT64          Attribute;
 } EFI_MEMORY_DESCRIPTOR;
 
+typedef enum {
+    AllocateAnyPages,
+    AllocateMaxAddress,
+    AllocateAddress,
+    MaxAllocateType
+} EFI_ALLOCATE_TYPE;
+
 typedef EFI_STATUS (EFIAPI *EFI_ALLOCATE_PAGES)(int Type, EFI_MEMORY_TYPE MemoryType, UINTN Pages, UINT64 *Memory);
 typedef EFI_STATUS (EFIAPI *EFI_FREE_PAGES)(UINT64 Memory, UINTN Pages);
 typedef EFI_STATUS (EFIAPI *EFI_GET_MEMORY_MAP)(UINTN *MemoryMapSize, EFI_MEMORY_DESCRIPTOR *MemoryMap, UINTN *MapKey, UINTN *DescriptorSize, UINT32 *DescriptorVersion);

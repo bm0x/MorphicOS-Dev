@@ -1,21 +1,23 @@
-ENTRY(main)
+ENTRY(_start)
 SECTIONS
 {
     . = 0x600000000000; /* Load address for userspace apps (matches loader.cpp) */
     
     .text : {
-        *(.text)
+        *(.text.entry)
+        *(.text*)
     }
     
     .rodata : {
-        *(.rodata)
+        *(.rodata*)
     }
     
     .data : {
-        *(.data)
+        *(.data*)
     }
     
     .bss : {
-        *(.bss)
+        *(.bss*)
+        *(COMMON)
     }
 }

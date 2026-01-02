@@ -2,12 +2,11 @@
 global _start
 extern main
 
-section .text
+section .text.entry
 _start:
     ; Entry point for userspace applications
     ; The loader jumps here with:
     ; RSP = top of stack
-    ; RDI = assets pointer (arg1)
     
     ; Align stack to 16 bytes (x86-64 System V ABI)
     and rsp, -16

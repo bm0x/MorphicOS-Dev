@@ -42,6 +42,8 @@ struct IInputDevice {
     InputPollFunc poll_event;
 };
 
+#include "../../../shared/os_event.h"
+
 // Input Manager - Central event dispatcher
 namespace InputManager {
     void Init();
@@ -49,9 +51,15 @@ namespace InputManager {
     // Register an input device
     void RegisterDevice(IInputDevice* device);
     
-    // Poll for next event from any device
-    // Returns true if event available
+    // Poll for next event from any device (Internal HAL polling)
     bool PollEvent(InputEvent* outEvent);
+    
+    // === NEW EVENT PIPELINE (Ring 3 Support) ===
+    // Push an event to the global Kernel Ring Buffer
+    void PushEvent(const OSEvent& ev);
+    
+    // Pop an event for the Syscall
+    bool GetNextOSEvent(OSEvent* outEv);
     
     // Get registered device count
     uint32_t GetDeviceCount();

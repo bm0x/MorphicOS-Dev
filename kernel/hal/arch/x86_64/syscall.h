@@ -16,6 +16,10 @@
 #define SYS_UPDATE_SCREEN  10   // Compose and flip
 #define SYS_GET_SCREEN_INFO 11  // Get screen dimensions
 #define SYS_BEEP           12   // Play beep (freq, duration_ms)
+#define SYS_SLEEP          13   // Sleep (ms)
+#define SYS_GET_TIME_MS    20   // Get system time in milliseconds
+#define SYS_GET_EVENT      21   // Get next input event (OSEvent)
+#define SYS_ALLOC_BACKBUFFER 53 // Allocate and map userspace backbuffer
 
 
 

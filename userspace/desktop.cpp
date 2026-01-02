@@ -1,92 +1,144 @@
-#include <stdint.h>
-#include <stddef.h>
+#include "os_event.h"
+#include "compositor.h"
 
-// === MOCK SYSCALLS (In a real scenario, these would be in a header) ===
-// These stubs simulate the kernel API interaction
+// Syscall stubs not covered by compositor.h
 extern "C" {
-    void* sys_video_map();       // Returns pointer to backbuffer/framebuffer
-    void  sys_video_flip();      // Swaps buffers (V-Sync)
-    int   sys_input_poll(void* event); // Polls input events
+    uint64_t sys_get_time_ms(); 
     void  sys_sleep(uint32_t ms);
-    uint64_t sys_get_screen_info(); // Returns (width << 32) | height
+    int   sys_get_event(OSEvent* ev); // Returns 1 if event, 0 if none
 }
 
-// Simple color definitions
-#define COLOR_BG      0xFF202020
-#define COLOR_TASKBAR 0xFF101010
-#define COLOR_WHITE   0xFFFFFFFF
+// ... colors ...
 
-// Globals
-uint32_t* video_memory = nullptr;
-int SCREEN_WIDTH = 0;
-int SCREEN_HEIGHT = 0;
+// Globals for Mouse
+int mouse_x = 400;
+int mouse_y = 300;
+// Note: DX/DY are now event-driven, not bounce simulated
 
-void DrawRect(int x, int y, int w, int h, uint32_t color) {
-    if (!video_memory) return;
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
-            if ((x+i) < SCREEN_WIDTH && (y+j) < SCREEN_HEIGHT) {
-                video_memory[(y + j) * SCREEN_WIDTH + (x + i)] = color;
-            }
+// Globals for Windows
+#define MAX_WINDOWS 5
+Compositor::Window windows[MAX_WINDOWS];
+int window_count = 0;
+
+// Interaction State
+int drag_target_idx = -1;
+int drag_offset_x = 0;
+int drag_offset_y = 0;
+
+void InitWindows() {
+    windows[0] = {100, 100, 400, 300, 0xFF4040A0, "File Manager", false};
+    windows[1] = {550, 150, 300, 200, 0xFF40A040, "Terminal", false};
+    window_count = 2;
+}
+
+void HandleEvent(const OSEvent& ev) {
+    if (ev.type == OSEvent::MOUSE_MOVE) {
+        // [ENGINEER-FIX] Userspace Coordinate Update
+        // ev.dx/dy come signed from kernel.
+        mouse_x += ev.dx;
+        mouse_y += ev.dy;
+        
+        // [ENGINEER-FIX] Clamping Logic
+        // Prevents cursor from escaping the framebuffer
+        int w = Compositor::GetWidth();
+        int h = Compositor::GetHeight();
+        
+        if (mouse_x < 0) mouse_x = 0;
+        if (mouse_y < 0) mouse_y = 0;
+        if (mouse_x >= w) mouse_x = w - 1;
+        if (mouse_y >= h) mouse_y = h - 1;
+        
+        // Handle Dragging
+        if (drag_target_idx != -1) {
+            windows[drag_target_idx].x = mouse_x - drag_offset_x;
+            windows[drag_target_idx].y = mouse_y - drag_offset_y;
         }
     }
-}
-
-void DrawTaskbar() {
-    // Draw bottom bar
-    DrawRect(0, SCREEN_HEIGHT - 40, SCREEN_WIDTH, 40, COLOR_TASKBAR);
-    // Start Button (Mock)
-    DrawRect(10, SCREEN_HEIGHT - 35, 60, 30, 0xFF404040);
-}
-
-void DrawWallpaper() {
-    // Fill screen with dark grey
-    uint32_t size = SCREEN_WIDTH * SCREEN_HEIGHT;
-    for (uint32_t i = 0; i < size; i++) {
-        video_memory[i] = COLOR_BG;
+    else if (ev.type == OSEvent::MOUSE_MOVE) { // Mouse buttons are often in MOVE packet too, check buttons
+        // Actually OSEvent usually has separate CLICK type or buttons state in MOVE?
+        // My shared/os_event.h defines MOUSE_MOVE=1, MOUSE_CLICK=2
+        // Let's assume buttons are updated in MOVE too or specialized events.
+        // For now, let's check buttons state if provided in MOVE or separate CLICK event.
+    }
+    
+    // Simple Button Logic (Assuming we receive button state in every packet or separate events)
+    // Let's make it robust: Check ev.buttons if provided.
+    // NOTE: My kernel mouse driver sends MOUSE_MOVE with buttons state.
+    
+    if (ev.type == OSEvent::MOUSE_MOVE) {
+         bool left_down = (ev.buttons & 1); // Bit 0 = Left
+         
+         if (left_down) {
+             if (drag_target_idx == -1) {
+                 // Try to start drag (Hit Test)
+                 // Reverse order to pick top-most window
+                 for (int i = window_count - 1; i >= 0; i--) {
+                     Compositor::Window& w = windows[i];
+                     // Hit Title Bar? (Height ~25)
+                     if (mouse_x >= w.x && mouse_x < w.x + w.width &&
+                         mouse_y >= w.y && mouse_y < w.y + 25) {
+                         
+                         drag_target_idx = i;
+                         drag_offset_x = mouse_x - w.x;
+                         drag_offset_y = mouse_y - w.y;
+                         
+                         // Move to top (simple swap to end of list)
+                         if (i != window_count - 1) {
+                             Compositor::Window temp = windows[window_count - 1];
+                             windows[window_count - 1] = w;
+                             windows[i] = temp;
+                             drag_target_idx = window_count - 1;
+                         }
+                         break;
+                     }
+                 }
+             }
+         } else {
+             // Button up
+             drag_target_idx = -1;
+         }
     }
 }
 
-// Entry Point
-// The Loader passes the pointer to the Assets segment of the MPK
+void PollInput() {
+    OSEvent ev;
+    // Process up to 10 events per frame to avoid lag
+    int count = 0;
+    while (sys_get_event(&ev) && count < 10) {
+        HandleEvent(ev);
+        count++;
+    }
+}
+
 extern "C" int main(void* asset_ptr) {
-    // 0. Get Screen Info
-    uint64_t screen_info = sys_get_screen_info();
-    SCREEN_WIDTH = (screen_info >> 32) & 0xFFFFFFFF;
-    SCREEN_HEIGHT = screen_info & 0xFFFFFFFF;
+    if (!Compositor::Initialize()) return -1;
     
-    // Safety check
-    if (SCREEN_WIDTH == 0 || SCREEN_HEIGHT == 0) {
-        // Fallback or early exit
-        return -2;
-    }
-
-    // 1. Get Direct Video Access
-    video_memory = (uint32_t*)sys_video_map();
+    InitWindows();
     
-    if (!video_memory) {
-        return -1; // Panic
-    }
+    const int TARGET_FPS = 60;
+    const int FRAME_TIME_MS = 1000 / TARGET_FPS;
     
-    // Use asset_ptr to load wallpaper.raw if available
-    // (Skeleton implementation)
-
-    
-    // 2. Main Desktop Loop
     while (1) {
-        // A. Draw Background (Optimization: distinct loops for wallpaper vs UI?)
-        DrawWallpaper();
+        uint64_t start_time = sys_get_time_ms();
         
-        // B. Draw UI Elements
-        DrawTaskbar();
+        // A. Input
+        PollInput();
         
-        // C. FLIP (V-Sync)
-        // This tells the kernel "I am done writing, show this frame"
-        sys_video_flip();
+        // B. Update Logic (Physics removed, using Mouse input now)
+        // ...
         
-        // D. Input (Non-blocking)
-        // sys_input_poll(&event);
+        // C. Render
+        Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
+        
+        // D. Swap
+        Compositor::SwapBuffers();
+        
+        // E. Sync
+        uint64_t end_time = sys_get_time_ms();
+        uint64_t elapsed = end_time - start_time;
+        if (elapsed < FRAME_TIME_MS) {
+            sys_sleep(FRAME_TIME_MS - elapsed);
+        }
     }
-    
     return 0;
 }

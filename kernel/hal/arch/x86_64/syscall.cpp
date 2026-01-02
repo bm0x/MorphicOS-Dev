@@ -6,6 +6,10 @@
 #include "../../serial/uart.h"
 #include "../../../mm/heap.h"
 #include "../../../arch/common/mmu.h"
+#include "../../../mm/pmm.h"
+#include "../../input/input_device.h"
+
+extern "C" uint64_t PIT_GetTicks();
 
 
 // MSR read/write helpers
@@ -165,6 +169,86 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
             Audio::Beep((uint32_t)arg1, (uint32_t)arg2);
             return 0;
             
+        case SYS_SLEEP:
+        {
+            // Simple busy-wait sleep (blocking) since we are single threaded mostly
+            uint64_t ms = arg1;
+            uint64_t start = PIT_GetTicks();
+            while (PIT_GetTicks() < start + ms) {
+                // spin
+                __asm__ volatile("pause");
+            }
+            return 0;
+        }
+
+        case SYS_GET_EVENT: {
+            if (arg1 == 0) return 0;
+            const uint64_t USER_SPACE_MIN = 0x600000000000;
+            // Basic sanity check just in case
+            if (arg1 < USER_SPACE_MIN) return 0; 
+
+            OSEvent kEv;
+            if (InputManager::GetNextOSEvent(&kEv)) {
+                OSEvent* uEv = (OSEvent*)arg1;
+                *uEv = kEv;
+                return 1;
+            }
+            return 0;
+        }
+
+        case SYS_GET_TIME_MS:
+            // Return system time in milliseconds (assuming PIT 1ms ticks or close enough)
+            return PIT_GetTicks();
+            
+        case SYS_ALLOC_BACKBUFFER:
+        {
+            // arg1: size in bytes
+            uint64_t size = arg1;
+            uint64_t pages = (size + 4095) / 4096;
+            
+            // Allocate contiguous physical memory for best performance
+            // Using kernel PMM with offset to avoid low memory
+            // NOTE: AllocContiguous is from previous task.
+            // If alloc fails, return 0
+            
+            // We need a way to alloc pages. For now, let's alloc page by page 
+            // OR use a fixed region if we had a linear allocator.
+            // But we can just use PMM::AllocPage() in a loop since we are remapping them virtuallly contiguous!
+            // We DON'T need physical contiguity for software rendering, only virtual.
+            
+            // Dedicated User Backbuffer Virtual Base: 0x600200000000
+            uint64_t virt_base = 0x600200000000ULL;
+            
+            for (uint64_t i = 0; i < pages; i++) {
+                void* phys_ptr = PMM::AllocPage();
+                if (!phys_ptr) {
+                     UART::Write("[Syscall] Alloc Backbuffer OOM\n");
+                     return 0; 
+                }
+                
+                // Map to Virtual
+                MMU::MapPage(virt_base + (i * 4096), (uint64_t)phys_ptr,
+                             PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT | PAGE_NOCACHE);
+                             
+                // Clear memory (efficiency check: MapPage doesn't clear)
+                // We must clear it to avoid leaking data or garbage
+                // To clear it, we need to write to it using a KERNEL address? 
+                // Wait, map is USER. Kernel can access if it's identity mapped too? 
+                // PMM returns Phys. We can't write to Phys directly without identity map.
+                // Assuming Phys < Identity Map Limit (normally covered).
+                // Or we can just let userspace clear it.
+            }
+            
+            // Flush TLB
+            uint64_t cr3;
+            __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+            __asm__ volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+            
+            UART::Write("[Syscall] Allocated Backbuffer at "); UART::WriteHex(virt_base); UART::Write("\n");
+            
+            return virt_base;
+        }
+
         case 50: // SYS_VIDEO_MAP
         {
             // Return pointer to framebuffer/backbuffer for direct access

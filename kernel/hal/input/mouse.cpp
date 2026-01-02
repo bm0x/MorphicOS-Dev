@@ -1,4 +1,5 @@
 #include "mouse.h"
+#include "input_device.h"
 #include "../arch/x86_64/io.h"
 #include "../video/graphics.h"
 #include "../video/early_term.h"
@@ -155,26 +156,56 @@ namespace Mouse {
         cycle = (cycle + 1) % 3;
         
         if (cycle == 0) {
-            if (!(packet[0] & 0x08)) return;
+            // [ENGINEER-FIX] 1. Sync Validation
+            // Bit 3 of Byte 0 must ALWAYS be 1. If not, we are desynchronized.
+            if (!(packet[0] & 0x08)) {
+                cycle = 0; // Reset state machine to prevent garbage interpretation
+                return;
+            }
             
-            buttons = packet[0] & 0x07;
+            // [ENGINEER-FIX] 2. Signed Packet Decoding (9-bit)
+            // PS/2 Bytes are uint8, but represent parts of a 9-bit signed integer.
+            // Byte 0 holds the 9th bit (Sign Bit) for X and Y.
             
-            int16_t dx = packet[1];
-            int16_t dy = packet[2];
+            bool x_negative = packet[0] & 0x10;
+            bool y_negative = packet[0] & 0x20;
             
-            if (packet[0] & 0x10) dx |= 0xFF00;
-            if (packet[0] & 0x20) dy |= 0xFF00;
+            // Start with base 8-bit value (unsigned)
+            int16_t rel_x = packet[1];
+            int16_t rel_y = packet[2]; // PS/2 Y is positive=Up
             
-            int16_t oldX = posX;
-            int16_t oldY = posY;
+            // Apply Sign Extension if negative bit is set
+            if (x_negative) rel_x |= 0xFF00; // e.g. 0xFF + 0xFF00 = 0xFFFF (-1)
+            if (y_negative) rel_y |= 0xFF00;
             
-            posX += dx;
-            posY -= dy;
+            // Extract Buttons
+            buttons = packet[0] & 0x07; // Left=1, Right=2, Middle=4
             
+            // Debug Trace (Critical for verifying hardware response)
+            // UART::Write("[MOUSE] dx:"); UART::WriteDec(rel_x); 
+            // UART::Write(" dy:"); UART::WriteDec(rel_y);
+            // UART::Write("\n");
+            
+            // [ENGINEER-FIX] 3. Update Kernel Cursor Coordinates
+            // Negate Y because PS/2 Up is Positive, but Screen Y=0 is Top.
+            posX += rel_x;
+            posY -= rel_y; 
+            
+            // [ENGINEER-FIX] 4. Kernel-Side Clamping (Safety Net)
             if (posX < 0) posX = 0;
             if (posY < 0) posY = 0;
             if (posX >= maxX) posX = maxX - 1;
             if (posY >= maxY) posY = maxY - 1;
+            
+            // Push to Userspace
+            OSEvent ev;
+            ev.type = OSEvent::MOUSE_MOVE;
+            ev.dx = (int32_t)rel_x;
+            ev.dy = -(int32_t)rel_y; // Invert here for userspace consistency (Up=Negative Delta)
+            ev.buttons = buttons;
+            ev.scancode = 0;
+            
+            InputManager::PushEvent(ev);
             
             // === ATOMIC UPDATE ===
             // Just update coordinates. Rendering is handled by Atomic Loop (post-flip).

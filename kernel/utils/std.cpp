@@ -1,6 +1,30 @@
 #include "std.h"
 
 extern "C" {
+    // --- C++ ABI Support ---
+    
+    // Pure virtual function call handler
+    void __cxa_pure_virtual() {
+        // We can't print easily here without dependency, so just hang
+        while(1);
+    }
+
+    // Static Object Initialization Guards (for local statics)
+    int __cxa_guard_acquire(uint64_t *guard) {
+        if (*((volatile uint8_t *)guard) == 0) {
+            return 1; // Need to initialize
+        }
+        return 0; // Already initialized
+    }
+
+    void __cxa_guard_release(uint64_t *guard) {
+        *((volatile uint8_t *)guard) = 1; // Mark initialized
+    }
+
+    void __cxa_guard_abort(uint64_t *guard) {
+        // Reset if initialization failed (shouldn't happen)
+        *((volatile uint8_t *)guard) = 0;
+    }
 
     size_t kstrlen(const char* str) {
         size_t len = 0;

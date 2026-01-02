@@ -151,7 +151,8 @@ int PackageLoader::Load(const char* path) {
     // ========================================================================
     TRACE_CHECKPOINT("Step 4: Allocating memory");
     
-    uint64_t total_size = header.code_size + header.assets_size + 8192;
+    // Add 64KB padding for safety (BSS/Heap growth)
+    uint64_t total_size = header.code_size + header.assets_size + 8192 + 0x10000;
     TRACE_DEC("Step 4: Total allocation size", total_size);
     
     // ========================================================================
