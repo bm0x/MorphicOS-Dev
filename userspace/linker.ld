@@ -1,7 +1,7 @@
 ENTRY(main)
 SECTIONS
 {
-    . = 0x40000000; /* Load address for userspace apps */
+    . = 0x600000000000; /* Load address for userspace apps (matches loader.cpp) */
     
     .text : {
         *(.text)

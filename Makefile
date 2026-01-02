@@ -119,9 +119,12 @@ build/morph_kernel.elf: $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_f
 userspace/syscalls.o: userspace/syscalls.asm
 	$(ASM) $(ASMFLAGS) $< -o $@
 
-userspace/desktop.bin: userspace/desktop.cpp userspace/syscalls.o
+userspace/entry.o: userspace/entry.asm
+	$(ASM) $(ASMFLAGS) $< -o $@
+
+userspace/desktop.bin: userspace/entry.o userspace/desktop.cpp userspace/syscalls.o
 	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -c userspace/desktop.cpp -o userspace/desktop.o
-	$(LD) -T userspace/linker.ld -o userspace/desktop.bin userspace/desktop.o userspace/syscalls.o --oformat binary
+	$(LD) -T userspace/linker.ld -o userspace/desktop.bin userspace/entry.o userspace/desktop.o userspace/syscalls.o --oformat binary
 
 
 userspace/desktop.mpk: userspace/desktop.bin

@@ -155,42 +155,41 @@ int PackageLoader::Load(const char* path) {
     TRACE_DEC("Step 4: Total allocation size", total_size);
     
     // ========================================================================
-    // SIMPLE APPROACH: Request a contiguous physical buffer from PMM
-    // If PMM doesn't support contiguous, we allocate page-by-page and hope
-    // they are in identity-mapped range (first 2GB).
+    // SIMPLE APPROACH: Allocate contiguous physical memory from PMM
+    // PMM::AllocContiguous guarantees contiguous pages starting at >= 256MB
     // ========================================================================
     uint64_t pages_needed = (total_size + 0xFFF) / 0x1000;
     TRACE_DEC("Step 4: Allocating pages", pages_needed);
     
-    // Allocate first page to get base physical address
-    void* first_phys = PMM::AllocPage();
-    if (!first_phys) {
-        KERNEL_PANIC_SAFE("Loader: OOM - Failed to allocate first physical page");
+    void* phys_buffer = PMM::AllocContiguous(pages_needed);
+    if (!phys_buffer) {
+        KERNEL_PANIC_SAFE("Loader: OOM - Failed to allocate contiguous pages");
         return -5;
     }
     
-    uint64_t phys_base = (uint64_t)first_phys;
+    uint64_t phys_base = (uint64_t)phys_buffer;
     TRACE_HEX("Step 4: Physical base", phys_base);
     
-    // Allocate remaining pages (they SHOULD be contiguous from PMM bitmap allocator)
-    // But we can't guarantee this, so we store linear offsets
-    for (uint64_t i = 1; i < pages_needed; i++) {
-        void* phys_page = PMM::AllocPage();
-        if (!phys_page) {
-            KERNEL_PANIC_SAFE("Loader: OOM during page allocation");
-            return -5;
-        }
-        // For now, assume these are roughly contiguous or at least in identity range
-        // We'll use them linearly based on phys_base assumption
+    // ========================================================================
+    // SAFETY CHECK: Ensure we're not in kernel reserved zone (0 - 256MB)
+    // ========================================================================
+    constexpr uint64_t KERNEL_RESERVED_SIZE = 0x10000000; // 256MB
+    if (phys_base < KERNEL_RESERVED_SIZE) {
+        TRACE_HEX("FATAL: Allocated in kernel zone!", phys_base);
+        KERNEL_PANIC_SAFE("Loader: PMM returned kernel-reserved memory!");
+        return -10;
     }
+    
+    TRACE_CHECKPOINT("Step 4b: Safety check passed");
     
     // Use physical base directly via identity map for writing
     uint8_t* code_dest_phys = (uint8_t*)phys_base;
     
     // Clear all pages via identity map
+    TRACE_CHECKPOINT("Step 4c: Clearing allocated memory");
     kmemset(code_dest_phys, 0, pages_needed * 0x1000);
     
-    TRACE_HEX("Step 4: Buffer cleared at phys", (uint64_t)code_dest_phys);
+    TRACE_HEX("Step 4d: Buffer cleared at phys", (uint64_t)code_dest_phys);
     
     // ========================================================================
     // STEP 5: Load code payload (write to PHYSICAL address via identity map)
@@ -239,7 +238,10 @@ int PackageLoader::Load(const char* path) {
     // ========================================================================
     // STEP 6b: Map physical pages to User Virtual Address (512GB)
     // ========================================================================
-    uint64_t user_base_addr = 0x8000000000ULL;
+    // Userspace virtual address base
+    // NOTE: 0x8000000000 collides with UEFI identity-mapping huge pages in PML4[1]
+    // Using 0x600000000000 (PML4 index 192) which is typically unused by UEFI
+    uint64_t user_base_addr = 0x600000000000ULL;
     TRACE_CHECKPOINT("Step 6b: Mapping to user VA");
     
     // Map each page from phys_base to user_base_addr
@@ -265,7 +267,11 @@ int PackageLoader::Load(const char* path) {
     // ========================================================================
     TRACE_CHECKPOINT("Step 7: Allocating user stack");
     
-    uint64_t stack_base_virt = 0x8000100000ULL; // 512GB + 1MB
+    // User stack virtual address
+    // NOTE: Using address close to code to be in same Page Directory entry
+    // Code is at 0x600000000000 (PD[0]), let's put stack at 0x600000400000 (PD[2])
+    // This tests if the issue is with creating new PD entries
+    uint64_t stack_base_virt = 0x600000400000ULL; // 4MB after code base
     uint64_t stack_size_pages = 4;
     
     for (uint64_t i = 0; i < stack_size_pages; i++) {
@@ -274,20 +280,38 @@ int PackageLoader::Load(const char* path) {
             KERNEL_PANIC_SAFE("Loader: OOM allocating user stack");
             return -5;
         }
-        // Clear via identity map
-        kmemset(phys_page, 0, 4096);
+        // NOTE: Do NOT clear phys_page directly - it may not be identity-mapped!
+        // PMM::AllocPage() returns addresses >= 256MB which UEFI may not have mapped.
+        // The stack will be cleared after mapping via the virtual address.
         
-        MMU::MapPage(stack_base_virt + i * 4096, (uint64_t)phys_page, 
+        uint64_t stack_page_virt = stack_base_virt + i * 4096;
+        bool mapped = MMU::MapPage(stack_page_virt, (uint64_t)phys_page, 
                      PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
+        if (!mapped) {
+            UART::Write("[Loader] ERROR: Failed to map stack page at: ");
+            UART::WriteHex(stack_page_virt);
+            UART::Write("\n");
+            return -6;
+        }
+        
+        // VERIFY MAPPING
+        uint64_t check_phys = MMU::GetPhysical(stack_page_virt);
+        if (check_phys != (uint64_t)phys_page) {
+            UART::Write("[Loader] CRITICAL: MapPage succeeded but GetPhysical failed!\n");
+            UART::Write("  Virt: "); UART::WriteHex(stack_page_virt); UART::Write("\n");
+            UART::Write("  Expected Phys: "); UART::WriteHex((uint64_t)phys_page); UART::Write("\n");
+            UART::Write("  Actual Phys:   "); UART::WriteHex(check_phys); UART::Write("\n");
+            return -7;
+        }
     }
     
     // Stack grows DOWN, so top is base + size
     uint8_t* stack = (uint8_t*)(stack_base_virt + stack_size_pages * 4096);
     
-    // Zero the stack memory (to be clean)
-    // Note: We need to write to the mapped addresses. Since we are in kernel and 
-    // the pages are User/Present/RW, we should be able to write to them directly.
-    kmemset((void*)stack_base_virt, 0, stack_size_pages * 4096);
+    // NOTE: We cannot clear the stack memory from kernel mode because:
+    // 1. The virtual addresses (0x600000800000+) are only mapped for userspace
+    // 2. The physical pages are not identity-mapped
+    // The userspace startup code should handle stack initialization.
     
     TRACE_HEX("Step 7: Stack base", stack_base_virt);
     TRACE_HEX("Step 7: Stack top", (uint64_t)stack);
@@ -296,11 +320,21 @@ int PackageLoader::Load(const char* path) {
     // STEP 8: Prepare for userspace transition
     // ========================================================================
     TRACE_CHECKPOINT("=== PRE-EXECUTION SUMMARY ===");
-    TRACE_HEX("  Entry Point", (uint64_t)code_dest);
-    TRACE_HEX("  Stack Pointer", (uint64_t)stack);
-    TRACE_HEX("  Assets Pointer (arg1)", (uint64_t)assets_dest);
+    TRACE_HEX("  Entry Point: ", (uint64_t)user_base_addr);
+    TRACE_HEX("  Stack Pointer: ", (uint64_t)stack);
+    TRACE_HEX("  Assets Pointer (arg1): ", (uint64_t)assets_dest);
     
-    EarlyTerm::Print("[Loader] Launching userspace...\n");
+    // CRITICAL: Reload CR3 to flush all TLB and Paging Structure Caches
+    // We modified page tables (potentially adding new directories) logic requires effective flush
+    uint64_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    UART::Write("[Loader] Reloading CR3: "); UART::WriteHex(cr3); UART::Write("\n");
+    __asm__ volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+    
+    TRACE_CHECKPOINT("Step 8: Calling JumpToUser (IRETQ to Ring 3)");
+    UART::Write(">>> If system reboots after this, check Page Fault in serial <<<\n\n");
+    
+    Syscall::JumpToUser((void*)user_base_addr, (void*)stack, (void*)assets_dest);
 
 #ifdef DEBUG_RING0_ONLY
     // ========================================================================

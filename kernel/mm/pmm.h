@@ -14,6 +14,9 @@ public:
     static void* ParamAllocPage(); // 'AllocPage' might conflict if not careful, sticking to Alloc
     static void* AllocPage();
     
+    // Allocate N contiguous physical pages (for DMA, large buffers)
+    static void* AllocContiguous(size_t pages);
+    
     static void FreePage(void* address);
     
     static size_t GetTotalMemory();

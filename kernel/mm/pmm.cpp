@@ -124,21 +124,18 @@ void PMM::Init(BootInfo* bootInfo) {
         }
     }
 
-    // B. Kernel (0 - 2MB)
-    // We protect the first 2MB to cover the Kernel and Trampoline code.
-    // Ideally we should parse the Linker Map or pass Kernel size from Bootloader.
-    for (uint64_t p = 0; p < (0x200000 / 4096); p++) {
+    // B. Kernel Reserved Zone (0 - 256MB)
+    // We protect the first 256MB to cover:
+    //   - Kernel code and data
+    //   - Early heap allocations
+    //   - Page tables
+    //   - Graphics buffers
+    //   - Any other kernel-reserved structures
+    // This ensures userspace allocations never collide with kernel memory.
+    constexpr uint64_t KERNEL_RESERVED_SIZE = 0x10000000; // 256MB
+    for (uint64_t p = 0; p < (KERNEL_RESERVED_SIZE / 4096); p++) {
         if (!bitmap.Get(p)) {
              bitmap.Set(p, true);
-             // Don't subtract freeRAM here because it probably wasn't counted as Conventionl if BIOS reserved it, 
-             // but if it WAS Conventional (LoaderCode), we reclaim it as Used.
-             // If we already counted it as free in Step 5 (because LoaderCode was technically available?), 
-             // wait, we only freed ConventionalMemory. Kernel is likely in LoaderData/Code or Conventional.
-             // If Kernel is in Conventional, we just marked it Free. So we must subtract.
-             // To be safe, we check if we are flipping it back.
-             // Our Step 5 ONLY checks ConventionalMemory. 
-             // If Kernel area was marked Conventional by BIOS (and then used by Bootloader), 
-             // we marked it Free. So yes, subtract.
              if (freeRAM >= 4096) freeRAM -= 4096;
         }
     }
@@ -154,6 +151,36 @@ void* PMM::AllocPage() {
         }
     }
     return nullptr;
+}
+
+void* PMM::AllocContiguous(size_t pages) {
+    // Find a contiguous block of 'pages' free pages
+    // Start searching after the kernel reserved zone (256MB)
+    uint64_t limit = highestAddr / 4096;
+    uint64_t start_search = 0x10000000 / 4096; // Start at 256MB
+    
+    for (uint64_t start = start_search; start <= limit - pages; start++) {
+        bool found = true;
+        
+        // Check if all pages in range are free
+        for (uint64_t i = 0; i < pages && found; i++) {
+            if (bitmap.Get(start + i)) {
+                found = false;
+                start = start + i; // Skip ahead to avoid rechecking
+            }
+        }
+        
+        if (found) {
+            // Mark all pages as used
+            for (uint64_t i = 0; i < pages; i++) {
+                bitmap.Set(start + i, true);
+                freeRAM -= 4096;
+            }
+            return (void*)((start) * 4096);
+        }
+    }
+    
+    return nullptr; // No contiguous block found
 }
 
 void PMM::FreePage(void* address) {

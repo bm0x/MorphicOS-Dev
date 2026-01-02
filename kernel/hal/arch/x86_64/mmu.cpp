@@ -28,6 +28,23 @@
 #define PD_INDEX(addr)   (((addr) >> 21) & 0x1FF)
 #define PT_INDEX(addr)   (((addr) >> 12) & 0x1FF)
 
+// CR0 bit 16 = WP (Write Protect)
+// When set, the CPU enforces read-only protection even in kernel mode.
+// UEFI page tables are often marked read-only, so we must disable WP to modify them.
+static inline void DisableWriteProtect() {
+    uint64_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1ULL << 16);  // Clear WP bit
+    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
+}
+
+static inline void EnableWriteProtect() {
+    uint64_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= (1ULL << 16);   // Set WP bit
+    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
+}
+
 namespace MMU {
     static uint64_t* kernel_pml4 = nullptr;
     
@@ -45,20 +62,34 @@ namespace MMU {
         return pte_flags;
     }
     
-    // Allocate a page-aligned page for tables
-    // CRITICAL: Page table entries require PHYSICAL addresses!
-    // Since we're running with identity mapping in low memory, PMM returns
-    // addresses that can be used directly as both physical and virtual pointers.
+    // Allocate a page-aligned page for page tables
+    // CRITICAL: Page tables MUST be 4KB-aligned!
+    // kmalloc only aligns to 16 bytes, so we over-allocate and round up.
     static uint64_t* AllocateTable() {
-        // Get a physical page from PMM
-        void* phys_page = PMM::AllocPage();
-        if (!phys_page) return nullptr;
+        // Allocate 8KB to guarantee we can find a 4KB-aligned region within
+        void* raw_ptr = kmalloc(4096 + 4096);
+        if (!raw_ptr) {
+            UART::Write("[MMU] ERROR: AllocateTable failed - kmalloc returned null\n");
+            return nullptr;
+        }
         
-        // In identity-mapped region, physical == virtual, so we can use directly
-        // Clear the page (required for page tables)
-        kmemset(phys_page, 0, 4096);
+        // Round up to next 4KB boundary
+        uint64_t aligned_addr = ((uint64_t)raw_ptr + 0xFFF) & ~0xFFFULL;
+        uint64_t* table = (uint64_t*)aligned_addr;
         
-        return (uint64_t*)phys_page;
+        // Clear the page using a direct loop (kmemset might fail with volatile memory)
+        for (int i = 0; i < 512; i++) {
+            table[i] = 0;
+        }
+        
+        // DEBUG: Verify table is zeroed
+        if (table[0] != 0 || table[1] != 0) {
+            UART::Write("[MMU] ERROR: Table NOT zeroed! table[0]=");
+            UART::WriteHex(table[0]);
+            UART::Write("\n");
+        }
+        
+        return table;
     }
     
     void Init() {
@@ -69,6 +100,17 @@ namespace MMU {
     }
     
     bool MapPage(uint64_t virt, uint64_t phys, uint32_t flags) {
+        // DEBUG: Trace MapPage calls for user-space addresses
+        if (virt == 0x8000000000ULL) {
+            UART::Write("\n[MMU] MapPage called for 0x8000000000\n");
+            UART::Write("  phys: "); UART::WriteHex(phys); UART::Write("\n");
+            UART::Write("  flags: "); UART::WriteHex(flags); UART::Write("\n");
+        }
+        
+        // CRITICAL: Disable Write Protect to allow modifying UEFI page tables
+        // UEFI marks its page tables as read-only, causing Page Fault if we try to write
+        DisableWriteProtect();
+        
         uint64_t pte_flags = ConvertFlags(flags);
         
         // Flags to verify/add to parent directories if they exist
@@ -76,19 +118,44 @@ namespace MMU {
         if (flags & PAGE_WRITABLE) dir_flags |= PTE_WRITABLE;
         if (flags & PAGE_USER) dir_flags |= PTE_USER;
         
+        // CRITICAL: For executable pages, we must CLEAR NX bit from directory entries
+        // In x86-64, NX is restrictive: if ANY level has NX=1, execution is blocked
+        bool needs_executable = (flags & PAGE_EXECUTABLE) != 0;
+        
         // Get or create page table entries at each level
         uint64_t* pml4 = kernel_pml4;
-        if (!pml4) return false;
+        if (!pml4) {
+            EnableWriteProtect();
+            return false;
+        }
         
         // PML4 -> PDPT
         uint64_t* pdpt;
+        
+        // Debug: Check what UEFI has in PML4
+        if (virt == 0x8000000000ULL) {
+            UART::Write("  PML4 addr: "); UART::WriteHex((uint64_t)pml4); UART::Write("\n");
+            UART::Write("  PML4_INDEX(virt): "); UART::WriteDec(PML4_INDEX(virt)); UART::Write("\n");
+            UART::Write("  PML4[index] = "); UART::WriteHex(pml4[PML4_INDEX(virt)]); UART::Write("\n");
+        }
+        
         if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) {
             pdpt = AllocateTable();
-            if (!pdpt) return false;
+            if (!pdpt) {
+                if (virt == 0x8000000000ULL) UART::Write("  FAIL: AllocTable for PDPT\n");
+                return false;
+            }
             pml4[PML4_INDEX(virt)] = ((uint64_t)pdpt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+            if (virt == 0x8000000000ULL) {
+                UART::Write("  Created new PDPT at: "); UART::WriteHex((uint64_t)pdpt); UART::Write("\n");
+            }
         } else {
             // FIX: Ensure existing directory entry propagates permissions
             pml4[PML4_INDEX(virt)] |= dir_flags;
+            // CRITICAL: Clear NX bit from directory if mapping executable page
+            if (needs_executable) {
+                pml4[PML4_INDEX(virt)] &= ~PTE_NX;
+            }
             pdpt = (uint64_t*)(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
         }
         
@@ -96,16 +163,26 @@ namespace MMU {
         uint64_t* pd;
         if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) {
             pd = AllocateTable();
-            if (!pd) return false;
+            if (!pd) {
+                if (virt == 0x8000000000ULL) UART::Write("  FAIL: AllocTable for PD\n");
+                return false;
+            }
             pdpt[PDPT_INDEX(virt)] = ((uint64_t)pd & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+            if (virt == 0x8000000000ULL) {
+                UART::Write("  Created new PD at: "); UART::WriteHex((uint64_t)pd); UART::Write("\n");
+            }
         } else {
             // Check for Huge Page collision
             if (pdpt[PDPT_INDEX(virt)] & PTE_HUGE) {
-                 // For now, fail to avoid corruption. Later: split page.
+                 if (virt == 0x8000000000ULL) UART::Write("  FAIL: PDPT huge page collision\n");
                  return false;
             }
             // FIX: Ensure existing directory entry propagates permissions
             pdpt[PDPT_INDEX(virt)] |= dir_flags;
+            // CRITICAL: Clear NX bit from directory if mapping executable page
+            if (needs_executable) {
+                pdpt[PDPT_INDEX(virt)] &= ~PTE_NX;
+            }
             pd = (uint64_t*)(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
         }
         
@@ -113,21 +190,51 @@ namespace MMU {
         uint64_t* pt;
         if (!(pd[PD_INDEX(virt)] & PTE_PRESENT)) {
             pt = AllocateTable();
-            if (!pt) return false;
+            if (!pt) {
+                if (virt == 0x8000000000ULL) UART::Write("  FAIL: AllocTable for PT\n");
+                return false;
+            }
             pd[PD_INDEX(virt)] = ((uint64_t)pt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+            if (virt == 0x8000000000ULL) {
+                UART::Write("  Created new PT at: "); UART::WriteHex((uint64_t)pt); UART::Write("\n");
+            }
         } else {
             // Check for Huge Page collision
             if (pd[PD_INDEX(virt)] & PTE_HUGE) {
+                 if (virt == 0x8000000000ULL) {
+                     UART::Write("  FAIL: PD huge page collision\n");
+                     UART::Write("  PD addr: "); UART::WriteHex((uint64_t)pd); UART::Write("\n");
+                     UART::Write("  PD_INDEX: "); UART::WriteDec(PD_INDEX(virt)); UART::Write("\n");
+                     UART::Write("  PD entry value: "); UART::WriteHex(pd[PD_INDEX(virt)]); UART::Write("\n");
+                 }
+                 EnableWriteProtect();
                  return false;
             }
             // FIX: Ensure existing directory entry propagates permissions
             pd[PD_INDEX(virt)] |= dir_flags;
+            // CRITICAL: Clear NX bit from directory if mapping executable page
+            if (needs_executable) {
+                pd[PD_INDEX(virt)] &= ~PTE_NX;
+            }
             pt = (uint64_t*)(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
         }
         
         // PT -> Page
         uint64_t pte_value = (phys & PTE_ADDR_MASK) | pte_flags;
         pt[PT_INDEX(virt)] = pte_value;
+        
+        // DEBUG: Detailed output for FIRST user page
+        if (virt >= 0x8000000000ULL && virt < 0x8000001000ULL) {
+            UART::Write("\n[MMU-DEBUG] Mapping first user page:\n");
+            UART::Write("  virt: "); UART::WriteHex(virt); UART::Write("\n");
+            UART::Write("  phys: "); UART::WriteHex(phys); UART::Write("\n");
+            UART::Write("  input flags: "); UART::WriteHex(flags); UART::Write("\n");
+            UART::Write("  pte_flags: "); UART::WriteHex(pte_flags); UART::Write("\n");
+            UART::Write("  pte_value: "); UART::WriteHex(pte_value); UART::Write("\n");
+            UART::Write("  NX bit in PTE: "); UART::WriteDec((pte_value >> 63) & 1); UART::Write("\n");
+            UART::Write("  USER bit in PTE: "); UART::WriteDec((pte_value >> 2) & 1); UART::Write("\n");
+            UART::Write("  needs_executable: "); UART::WriteDec(needs_executable ? 1 : 0); UART::Write("\n");
+        }
         
         // DEBUG: Hierarchy Dump for User Address
         if (virt == 0x8000000000ULL) {
@@ -161,6 +268,9 @@ namespace MMU {
         
         // Flush TLB for this address
         FlushTLB(virt);
+        
+        // Restore Write Protect
+        EnableWriteProtect();
         
         return true;
     }

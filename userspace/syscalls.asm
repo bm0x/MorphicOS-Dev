@@ -1,5 +1,11 @@
 [bits 64]
 
+global sys_get_screen_info
+sys_get_screen_info:
+    mov rax, 11
+    syscall
+    ret
+
 global sys_video_map
 global sys_video_flip
 global sys_input_poll

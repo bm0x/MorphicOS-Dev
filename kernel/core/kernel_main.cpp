@@ -17,6 +17,7 @@
 #include "../hal/arch/x86_64/pic.h"
 #include "../hal/arch/x86_64/tss.h"
 #include "../hal/arch/x86_64/syscall.h"
+#include "../arch/common/mmu.h"
 #include "../mm/heap.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
@@ -69,6 +70,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     IDT::Init();
     PIC::Remap();
     PMM::Init(bootInfo);
+    MMU::Init();  // Initialize MMU to capture UEFI page tables
 
     EarlyTerm::Print("[OK] Core Systems Validated.\n");
 

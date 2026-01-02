@@ -8,6 +8,7 @@ extern "C" {
     void  sys_video_flip();      // Swaps buffers (V-Sync)
     int   sys_input_poll(void* event); // Polls input events
     void  sys_sleep(uint32_t ms);
+    uint64_t sys_get_screen_info(); // Returns (width << 32) | height
 }
 
 // Simple color definitions
@@ -17,14 +18,16 @@ extern "C" {
 
 // Globals
 uint32_t* video_memory = nullptr;
-const int SCREEN_WIDTH = 1024; // Fixed for now, normally obtained via syscall
-const int SCREEN_HEIGHT = 768;
+int SCREEN_WIDTH = 0;
+int SCREEN_HEIGHT = 0;
 
 void DrawRect(int x, int y, int w, int h, uint32_t color) {
     if (!video_memory) return;
     for (int j = 0; j < h; j++) {
         for (int i = 0; i < w; i++) {
-            video_memory[(y + j) * SCREEN_WIDTH + (x + i)] = color;
+            if ((x+i) < SCREEN_WIDTH && (y+j) < SCREEN_HEIGHT) {
+                video_memory[(y + j) * SCREEN_WIDTH + (x + i)] = color;
+            }
         }
     }
 }
@@ -38,8 +41,6 @@ void DrawTaskbar() {
 
 void DrawWallpaper() {
     // Fill screen with dark grey
-    // Direct memory access memset simulation (loop)
-    // Faster than syscall 'DrawRect' in typical microkernel if mapped properly
     uint32_t size = SCREEN_WIDTH * SCREEN_HEIGHT;
     for (uint32_t i = 0; i < size; i++) {
         video_memory[i] = COLOR_BG;
@@ -48,7 +49,18 @@ void DrawWallpaper() {
 
 // Entry Point
 // The Loader passes the pointer to the Assets segment of the MPK
-int main(void* asset_ptr) {
+extern "C" int main(void* asset_ptr) {
+    // 0. Get Screen Info
+    uint64_t screen_info = sys_get_screen_info();
+    SCREEN_WIDTH = (screen_info >> 32) & 0xFFFFFFFF;
+    SCREEN_HEIGHT = screen_info & 0xFFFFFFFF;
+    
+    // Safety check
+    if (SCREEN_WIDTH == 0 || SCREEN_HEIGHT == 0) {
+        // Fallback or early exit
+        return -2;
+    }
+
     // 1. Get Direct Video Access
     video_memory = (uint32_t*)sys_video_map();
     
