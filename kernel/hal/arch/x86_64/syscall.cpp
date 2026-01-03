@@ -9,6 +9,8 @@
 #include "../../../mm/pmm.h"
 #include "../../input/input_device.h"
 #include "../x86_64/io.h"
+#include "../../../mm/pmm.h"
+#include "system_info.h"
 
 extern "C" uint64_t PIT_GetTicks();
 
@@ -39,6 +41,154 @@ static bool WaitVBlankTimeoutMs(uint32_t timeout_ms)
     }
 
     return true;
+}
+
+static inline void Cpuid(uint32_t leaf, uint32_t subleaf, uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx)
+{
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(leaf), "c"(subleaf));
+    if (eax) *eax = a;
+    if (ebx) *ebx = b;
+    if (ecx) *ecx = c;
+    if (edx) *edx = d;
+}
+
+static void GetCpuVendor(char out[13])
+{
+    uint32_t eax, ebx, ecx, edx;
+    Cpuid(0, 0, &eax, &ebx, &ecx, &edx);
+    ((uint32_t*)out)[0] = ebx;
+    ((uint32_t*)out)[1] = edx;
+    ((uint32_t*)out)[2] = ecx;
+    out[12] = '\0';
+}
+
+static void GetCpuBrand(char out[49])
+{
+    uint32_t maxEax, ebx, ecx, edx;
+    Cpuid(0x80000000, 0, &maxEax, &ebx, &ecx, &edx);
+    if (maxEax < 0x80000004)
+    {
+        out[0] = '\0';
+        return;
+    }
+
+    uint32_t* p = (uint32_t*)out;
+    Cpuid(0x80000002, 0, &p[0], &p[1], &p[2], &p[3]);
+    Cpuid(0x80000003, 0, &p[4], &p[5], &p[6], &p[7]);
+    Cpuid(0x80000004, 0, &p[8], &p[9], &p[10], &p[11]);
+    out[48] = '\0';
+}
+
+static inline uint8_t CmosRead(uint8_t reg)
+{
+    // Disable NMI while selecting register.
+    IO::outb(0x70, (uint8_t)(reg | 0x80));
+    return IO::inb(0x71);
+}
+
+static inline bool RtcUpdateInProgress()
+{
+    return (CmosRead(0x0A) & 0x80) != 0;
+}
+
+static inline uint8_t FromBcd(uint8_t v)
+{
+    return (uint8_t)((v & 0x0F) + ((v >> 4) * 10));
+}
+
+static bool ReadRtcStable(MorphicDateTime* out)
+{
+    if (!out) return false;
+
+    // Wait for UIP to clear (bounded).
+    for (int i = 0; i < 100000; i++)
+    {
+        if (!RtcUpdateInProgress()) break;
+        __asm__ volatile("pause");
+    }
+
+    uint8_t sec1, min1, hour1, day1, mon1, year1, cent1;
+    uint8_t sec2, min2, hour2, day2, mon2, year2, cent2;
+    uint8_t regB1, regB2;
+
+    // Read twice until consistent.
+    for (int attempt = 0; attempt < 8; attempt++)
+    {
+        while (RtcUpdateInProgress()) { __asm__ volatile("pause"); }
+        sec1 = CmosRead(0x00);
+        min1 = CmosRead(0x02);
+        hour1 = CmosRead(0x04);
+        day1 = CmosRead(0x07);
+        mon1 = CmosRead(0x08);
+        year1 = CmosRead(0x09);
+        cent1 = CmosRead(0x32);
+        regB1 = CmosRead(0x0B);
+
+        while (RtcUpdateInProgress()) { __asm__ volatile("pause"); }
+        sec2 = CmosRead(0x00);
+        min2 = CmosRead(0x02);
+        hour2 = CmosRead(0x04);
+        day2 = CmosRead(0x07);
+        mon2 = CmosRead(0x08);
+        year2 = CmosRead(0x09);
+        cent2 = CmosRead(0x32);
+        regB2 = CmosRead(0x0B);
+
+        if (sec1 == sec2 && min1 == min2 && hour1 == hour2 && day1 == day2 && mon1 == mon2 && year1 == year2 && cent1 == cent2 && regB1 == regB2)
+            break;
+    }
+
+    uint8_t regB = regB2;
+    bool isBinary = (regB & 0x04) != 0;
+    bool is24h = (regB & 0x02) != 0;
+
+    uint8_t sec = isBinary ? sec2 : FromBcd(sec2);
+    uint8_t min = isBinary ? min2 : FromBcd(min2);
+
+    uint8_t hourRaw = hour2;
+    uint8_t hour;
+    if (!is24h)
+    {
+        // 12h format: bit 7 is PM flag.
+        bool pm = (hourRaw & 0x80) != 0;
+        hourRaw &= 0x7F;
+        hour = isBinary ? hourRaw : FromBcd(hourRaw);
+        if (hour == 12) hour = 0;
+        if (pm) hour = (uint8_t)(hour + 12);
+    }
+    else
+    {
+        hour = isBinary ? hourRaw : FromBcd(hourRaw);
+    }
+
+    uint8_t day = isBinary ? day2 : FromBcd(day2);
+    uint8_t mon = isBinary ? mon2 : FromBcd(mon2);
+    uint8_t year = isBinary ? year2 : FromBcd(year2);
+    uint8_t cent = isBinary ? cent2 : FromBcd(cent2);
+
+    uint16_t fullYear = 0;
+    if (cent != 0)
+        fullYear = (uint16_t)(cent * 100 + year);
+    else
+        fullYear = (uint16_t)(2000 + year);
+
+    out->year = fullYear;
+    out->month = mon;
+    out->day = day;
+    out->hour = hour;
+    out->minute = min;
+    out->second = sec;
+    out->valid = 1;
+    out->reserved0 = 0;
+    return true;
+}
+
+static inline uint32_t ClampU32(uint32_t v, uint32_t lo, uint32_t hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
 }
 
 #ifdef MOUSE_DEBUG
@@ -293,6 +443,46 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         // Return system time in milliseconds (assuming PIT 1ms ticks or close enough)
         return PIT_GetTicks();
 
+    case 55: // SYS_GET_RTC_DATETIME
+    {
+        if (arg1 == 0)
+            return 0;
+        const uint64_t USER_SPACE_MIN = 0x600000000000ULL;
+        if (arg1 < USER_SPACE_MIN)
+            return 0;
+
+        MorphicDateTime dt = {};
+        bool ok = ReadRtcStable(&dt);
+        MorphicDateTime* u = (MorphicDateTime*)arg1;
+        *u = dt;
+        return ok ? 1 : 0;
+    }
+
+    case 56: // SYS_GET_SYSTEM_INFO
+    {
+        if (arg1 == 0)
+            return 0;
+        const uint64_t USER_SPACE_MIN = 0x600000000000ULL;
+        if (arg1 < USER_SPACE_MIN)
+            return 0;
+
+        MorphicSystemInfo si = {};
+        GetCpuVendor(si.cpu_vendor);
+        GetCpuBrand(si.cpu_brand);
+
+        si.total_mem_bytes = (uint64_t)PMM::GetTotalMemory();
+        si.free_mem_bytes = (uint64_t)PMM::GetFreeMemory();
+
+        si.fb_width = Graphics::GetWidth();
+        si.fb_height = Graphics::GetHeight();
+        si.fb_pitch = Graphics::GetPitch();
+        si.fb_bpp = 32;
+
+        MorphicSystemInfo* u = (MorphicSystemInfo*)arg1;
+        *u = si;
+        return 1;
+    }
+
     case SYS_ALLOC_BACKBUFFER:
     {
         // arg1: size in bytes
@@ -454,6 +644,57 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
             {
                 blit_fast_32(&dest[(uint64_t)y * pitch], &src[(uint64_t)y * width], width);
             }
+        }
+
+        return vsynced ? 1 : 0;
+    }
+
+    case 54: // SYS_VIDEO_FLIP_RECT
+    {
+        // Present a rectangle from userspace backbuffer to the framebuffer.
+        // arg1: backbuffer pointer (tightly packed width*height BGRA32)
+        // arg2: (x<<32) | y
+        // arg3: (w<<32) | h
+
+        if (arg1 == 0)
+            return 0;
+
+        const uint64_t USER_SPACE_MIN = 0x600000000000ULL;
+        if (arg1 < USER_SPACE_MIN)
+            return 0;
+
+        uint32_t* dest = Graphics::GetFramebuffer();
+        if (!dest)
+            return 0;
+
+        uint32_t fb_w = Graphics::GetWidth();
+        uint32_t fb_h = Graphics::GetHeight();
+        uint32_t pitch = Graphics::GetPitch();
+
+        uint32_t x = (uint32_t)(arg2 >> 32);
+        uint32_t y = (uint32_t)(arg2 & 0xFFFFFFFFULL);
+        uint32_t w = (uint32_t)(arg3 >> 32);
+        uint32_t h = (uint32_t)(arg3 & 0xFFFFFFFFULL);
+
+        if (fb_w == 0 || fb_h == 0) return 0;
+
+        // Clamp / reject empty
+        if (x >= fb_w || y >= fb_h) return 0;
+        if (w == 0 || h == 0) return 0;
+        if (x + w > fb_w) w = fb_w - x;
+        if (y + h > fb_h) h = fb_h - y;
+
+        uint32_t* src = (uint32_t*)arg1;
+
+        // Best-effort VSync wait (short timeout for partial updates).
+        bool vsynced = WaitVBlankTimeoutMs(5);
+
+        // Copy only the rectangle.
+        for (uint32_t row = 0; row < h; row++)
+        {
+            uint64_t dst_off = (uint64_t)(y + row) * pitch + x;
+            uint64_t src_off = (uint64_t)(y + row) * fb_w + x;
+            blit_fast_32(&dest[dst_off], &src[src_off], w);
         }
 
         return vsynced ? 1 : 0;
