@@ -34,7 +34,7 @@ qemu-system-x86_64 \
     -vga std \
     -vnc :0 \
     -audiodev pa,id=speaker \
-    -machine pcspk-audiodev=speaker \
+    -machine pc,usb=off,i8042=on,pcspk-audiodev=speaker \
     -daemonize 2>/dev/null || {
         # Fallback without PulseAudio
         echo "[*] Trying SDL audio backend..."
@@ -45,7 +45,7 @@ qemu-system-x86_64 \
             -vga std \
             -vnc :0 \
             -audiodev sdl,id=speaker \
-            -machine pcspk-audiodev=speaker \
+            -machine pc,usb=off,i8042=on,pcspk-audiodev=speaker \
             -daemonize 2>/dev/null || {
                 # Final fallback without audio
                 echo "[!] Audio not available, running without sound"

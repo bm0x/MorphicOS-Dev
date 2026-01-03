@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "../../hal/arch/x86_64/io.h"
+#include "../../hal/serial/uart.h"
 
 
 namespace PIT {
@@ -19,6 +20,15 @@ namespace PIT {
 
     void OnInterrupt() {
         ticks++;
+
+#ifdef MOUSE_DEBUG
+        // Heartbeat: ~1 line per second at 100Hz to prove IRQ0/ticks are alive.
+        if ((ticks % 100) == 0) {
+            UART::Write("[PIT] tick=");
+            UART::WriteDec((int64_t)ticks);
+            UART::Write("\n");
+        }
+#endif
     }
 
     uint64_t GetTicks() {

@@ -9,6 +9,12 @@ ASM = nasm
 CXXFLAGS = -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mno-red-zone -mcmodel=large \
            -mno-sse -mno-sse2 -mno-mmx -mno-80387 -I ./shared -c \
            -DEMBED_DESKTOP
+
+# Optional debug toggles
+MOUSE_DEBUG ?= 0
+ifeq ($(MOUSE_DEBUG),1)
+    CXXFLAGS += -DMOUSE_DEBUG
+endif
 ASMFLAGS = -f elf64
 EFI_CXXFLAGS = -target x86_64-pc-win32-coff -fno-stack-protector -fshort-wchar -mno-red-zone -nostdlibinc -I ./boot/src -I ./shared -c
 EFI_LDFLAGS = /subsystem:efi_application /entry:EfiMain
@@ -116,22 +122,23 @@ build/morph_kernel.elf: $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_f
 
 
 # --- Userspace ---
+DESKTOP_APP_DIR = userspace/apps/desktop
 userspace/syscalls.o: userspace/syscalls.asm
 	$(ASM) $(ASMFLAGS) $< -o $@
 
 userspace/entry.o: userspace/entry.asm
 	$(ASM) $(ASMFLAGS) $< -o $@
 
-userspace/compositor.o: userspace/compositor.cpp
-	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -c userspace/compositor.cpp -o userspace/compositor.o
+$(DESKTOP_APP_DIR)/compositor.o: $(DESKTOP_APP_DIR)/compositor.cpp
+	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -c $(DESKTOP_APP_DIR)/compositor.cpp -o $(DESKTOP_APP_DIR)/compositor.o
 
-userspace/desktop.bin: userspace/entry.o userspace/desktop.cpp userspace/syscalls.o userspace/compositor.o
-	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -I ./shared -c userspace/desktop.cpp -o userspace/desktop.o
-	$(LD) -T userspace/linker.ld -o userspace/desktop.bin userspace/entry.o userspace/desktop.o userspace/compositor.o userspace/syscalls.o --oformat binary
+userspace/desktop.bin: userspace/entry.o $(DESKTOP_APP_DIR)/desktop.cpp userspace/syscalls.o $(DESKTOP_APP_DIR)/compositor.o
+	$(CXX) -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mcmodel=large -mno-red-zone -nostdlib -I ./shared -c $(DESKTOP_APP_DIR)/desktop.cpp -o $(DESKTOP_APP_DIR)/desktop.o
+	$(LD) -T userspace/linker.ld -o userspace/desktop.bin userspace/entry.o $(DESKTOP_APP_DIR)/desktop.o $(DESKTOP_APP_DIR)/compositor.o userspace/syscalls.o --oformat binary
 
 
 userspace/desktop.mpk: userspace/desktop.bin
-	python3 tools/mpk_pack.py userspace/desktop.mpk userspace/desktop.bin userspace/wallpaper.raw userspace/icon.raw
+	python3 tools/mpk_pack.py userspace/desktop.mpk userspace/desktop.bin $(DESKTOP_APP_DIR)/wallpaper.raw $(DESKTOP_APP_DIR)/icon.raw
 
 kernel/fs/desktop_mpk.cpp: userspace/desktop.mpk
 	python3 tools/bin2h.py userspace/desktop.mpk kernel/fs/desktop_mpk.cpp desktop_mpk
@@ -157,7 +164,7 @@ image: bootloader kernel userspace/desktop.mpk
 
 
 clean:
-	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/desktop_mpk.cpp kernel/fs/desktop_mpk.o userspace/desktop.mpk
+	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/desktop_mpk.cpp kernel/fs/desktop_mpk.o userspace/desktop.mpk userspace/desktop.bin $(DESKTOP_APP_DIR)/desktop.o $(DESKTOP_APP_DIR)/compositor.o
 
 iso:
 	bash ./scripts/make_iso.sh

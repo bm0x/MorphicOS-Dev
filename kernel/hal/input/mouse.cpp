@@ -3,6 +3,7 @@
 #include "../arch/x86_64/io.h"
 #include "../video/graphics.h"
 #include "../video/early_term.h"
+#include "../serial/uart.h"
 #include "../../utils/std.h"
 
 // SIMD blit functions
@@ -15,6 +16,7 @@ namespace Mouse {
     static int16_t posX = 0;
     static int16_t posY = 0;
     static uint8_t buttons = 0;
+    static uint8_t lastButtons = 0;
     static uint16_t maxX = 1024;
     static uint16_t maxY = 768;
     static bool visible = true;
@@ -22,6 +24,57 @@ namespace Mouse {
     // PS/2 Mouse state machine
     static uint8_t cycle = 0;
     static uint8_t packet[3];
+
+    // Optional low-rate debug (prints to serial only)
+    // Enable by adding -DMOUSE_DEBUG to CXXFLAGS.
+    static uint64_t irq12Samples = 0;
+    static uint64_t irq12IrqCount = 0;
+
+    static inline bool PS2_WaitInputClear(uint32_t spins = 100000) {
+        while (spins--) {
+            if ((IO::inb(0x64) & 0x02) == 0) return true; // input buffer empty
+            __asm__ volatile("pause");
+        }
+        return false;
+    }
+
+    static inline bool PS2_WaitOutputFull(uint32_t spins = 100000) {
+        while (spins--) {
+            if (IO::inb(0x64) & 0x01) return true; // output buffer full
+            __asm__ volatile("pause");
+        }
+        return false;
+    }
+
+    static inline void PS2_FlushOutput() {
+        // Drain any pending bytes to avoid desync after init/UEFI leftovers
+        for (int i = 0; i < 64; i++) {
+            uint8_t st = IO::inb(0x64);
+            if (!(st & 0x01)) break;
+            (void)IO::inb(0x60);
+        }
+    }
+
+    static inline void PS2_WriteController(uint8_t cmd) {
+        if (!PS2_WaitInputClear()) return;
+        IO::outb(0x64, cmd);
+    }
+
+    static inline void PS2_WriteData(uint8_t data) {
+        if (!PS2_WaitInputClear()) return;
+        IO::outb(0x60, data);
+    }
+
+    static inline void PS2_MouseWrite(uint8_t data) {
+        // Prefix 0xD4 routes next byte to the aux device
+        PS2_WriteController(0xD4);
+        PS2_WriteData(data);
+    }
+
+    static inline uint8_t PS2_ReadData() {
+        if (!PS2_WaitOutputFull()) return 0;
+        return IO::inb(0x60);
+    }
     
     // === ZERO-LATENCY OVERLAY SYSTEM ===
     static bool fastPathEnabled = false;
@@ -62,38 +115,50 @@ namespace Mouse {
     };
     
     void Init() {
-        // Enable PS/2 mouse (auxiliary device)
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0xA8);
-        
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0x20);
-        while (!(IO::inb(0x64) & 1));
-        uint8_t status = IO::inb(0x60);
-        status |= 2;  // Enable IRQ12
-        
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0x60);
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x60, status);
-        
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0xD4);
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x60, 0xF6);
-        while (!(IO::inb(0x64) & 1));
-        IO::inb(0x60);
-        
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x64, 0xD4);
-        while (IO::inb(0x64) & 2);
-        IO::outb(0x60, 0xF4);
-        while (!(IO::inb(0x64) & 1));
-        IO::inb(0x60);
-        
+        // Robust PS/2 init: flush buffers, enable aux device, enable IRQ12 in controller,
+        // set defaults and enable streaming.
+        PS2_FlushOutput();
+
+        // Enable auxiliary device (mouse)
+        PS2_WriteController(0xA8);
+
+        // Read controller command byte
+        PS2_WriteController(0x20);
+        uint8_t cmdByte = PS2_ReadData();
+
+        // Enable IRQ12 (bit 1). Keep other bits as-is.
+        cmdByte |= 0x02;
+
+        // Write controller command byte back
+        PS2_WriteController(0x60);
+        PS2_WriteData(cmdByte);
+
+        PS2_FlushOutput();
+
+        // Set Defaults (0xF6) and expect ACK (0xFA)
+        PS2_MouseWrite(0xF6);
+        uint8_t ack1 = PS2_ReadData();
+
+        // Enable Streaming (0xF4) and expect ACK (0xFA)
+        PS2_MouseWrite(0xF4);
+        uint8_t ack2 = PS2_ReadData();
+
+        // Reset packet state machine
+        cycle = 0;
+
         posX = maxX / 2;
         posY = maxY / 2;
-        
+
+    #ifdef MOUSE_DEBUG
+        UART::Write("[Mouse] Init cmdByte="); UART::WriteHex(cmdByte);
+        UART::Write(" ack1="); UART::WriteHex(ack1);
+        UART::Write(" ack2="); UART::WriteHex(ack2);
+        UART::Write("\n");
+    #else
+        (void)ack1;
+        (void)ack2;
+    #endif
+
         EarlyTerm::Print("[Mouse] PS/2 initialized.\n");
     }
     
@@ -148,19 +213,46 @@ namespace Mouse {
     }
     
     void OnInterrupt() {
-        uint8_t status = IO::inb(0x64);
-        if (!(status & 0x20)) return;
+#ifdef MOUSE_DEBUG
+        irq12IrqCount++;
+        // Print the first few IRQs, then ~every 4096 IRQs to avoid spamming.
+        if (irq12IrqCount <= 3 || ((irq12IrqCount & 0xFFF) == 0)) {
+            uint8_t st = IO::inb(0x64);
+            UART::Write("[Mouse] IRQ12 enter count="); UART::WriteDec((int64_t)irq12IrqCount);
+            UART::Write(" status="); UART::WriteHex(st);
+            UART::Write("\n");
+        }
+#endif
+        // Drain up to a few bytes in case the controller queued more than one.
+        // This improves robustness on fast host mice / emulators.
+        for (int drain = 0; drain < 8; drain++) {
+            uint8_t status = IO::inb(0x64);
+            if (!(status & 0x01)) return;      // no data
+            if (!(status & 0x20)) return;      // not mouse data
+
+            uint8_t data = IO::inb(0x60);
+
+            // Resync: first byte must have bit 3 set.
+            if (cycle == 0 && !(data & 0x08)) {
+                continue;
+            }
+
+            packet[cycle] = data;
+            cycle = (cycle + 1) % 3;
         
-        uint8_t data = IO::inb(0x60);
-        packet[cycle] = data;
-        cycle = (cycle + 1) % 3;
-        
-        if (cycle == 0) {
+            if (cycle != 0) continue;
+
             // [ENGINEER-FIX] 1. Sync Validation
             // Bit 3 of Byte 0 must ALWAYS be 1. If not, we are desynchronized.
             if (!(packet[0] & 0x08)) {
                 cycle = 0; // Reset state machine to prevent garbage interpretation
-                return;
+                continue;
+            }
+
+            // Optional safety: discard packets with overflow bits set (common PS/2 spec)
+            if (packet[0] & 0xC0) {
+                cycle = 0;
+                continue;
             }
             
             // [ENGINEER-FIX] 2. Signed Packet Decoding (9-bit)
@@ -180,6 +272,19 @@ namespace Mouse {
             
             // Extract Buttons
             buttons = packet[0] & 0x07; // Left=1, Right=2, Middle=4
+
+            // Push click event on button state changes (press/release).
+            // This makes userspace dragging reliable even if the press happens without movement.
+            if (buttons != lastButtons) {
+                OSEvent click;
+                click.type = OSEvent::MOUSE_CLICK;
+                click.dx = 0;
+                click.dy = 0;
+                click.buttons = buttons;
+                click.scancode = 0;
+                InputManager::PushEvent(click);
+                lastButtons = buttons;
+            }
             
             // Debug Trace (Critical for verifying hardware response)
             // UART::Write("[MOUSE] dx:"); UART::WriteDec(rel_x); 
@@ -206,6 +311,18 @@ namespace Mouse {
             ev.scancode = 0;
             
             InputManager::PushEvent(ev);
+
+#ifdef MOUSE_DEBUG
+            irq12Samples++;
+            if ((irq12Samples & 0xFF) == 1) {
+                UART::Write("[Mouse] sample dx="); UART::WriteDec(rel_x);
+                UART::Write(" dy="); UART::WriteDec(-(int32_t)rel_y);
+                UART::Write(" btn="); UART::WriteHex(buttons);
+                UART::Write(" x="); UART::WriteDec(posX);
+                UART::Write(" y="); UART::WriteDec(posY);
+                UART::Write("\n");
+            }
+#endif
             
             // === ATOMIC UPDATE ===
             // Just update coordinates. Rendering is handled by Atomic Loop (post-flip).
@@ -213,7 +330,6 @@ namespace Mouse {
             
             // Legacy Fast Path block removed to ensure "Golden Path" architecture.
             // (Cursor drawing is now strictly synchronized with V-Sync in widgets.cpp)
-
         }
     }
     

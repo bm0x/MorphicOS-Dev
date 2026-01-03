@@ -34,7 +34,6 @@ bool Compositor::Initialize() {
 void Compositor::Clear(uint32_t color) {
     if (!backBuffer) return;
     
-    // Optimized fill (naive loop for now, good enough for 800x600 in O2)
     uint64_t total_pixels = (uint64_t)width * height;
     for (uint64_t i = 0; i < total_pixels; i++) {
         backBuffer[i] = color;
@@ -96,7 +95,7 @@ void Compositor::DrawCursor(int x, int y) {
             
             if (code == 1) color = 0xFFFFFFFF; // White
             else if (code == 2) color = 0xFF000000; // Black
-            else continue; // Transparent behavior
+            else continue; // Transparent
             
             backBuffer[py * width + px] = color;
         }
@@ -106,39 +105,27 @@ void Compositor::DrawCursor(int x, int y) {
 void Compositor::SwapBuffers() {
     if (!backBuffer || !frontBuffer) return;
     
-    // Copy Back -> Front
-    // 4MB copy per frame @ 60Hz = 240MB/s bandwidth. Trivial for modern RAM.
     uint64_t total_pixels = (uint64_t)width * height;
-    
-    // Unrolled copy or simple copy?
-    // Let's rely on compiler loop optimization for now.
-    // If flickering persists due to copy speed ("tearing"), we need SSE.
-    // But tearing is usually due to lack of VSYNC, not copy speed.
-    // Copy speed affects FPS cap.
-    
     for (uint64_t i = 0; i < total_pixels; i++) {
         frontBuffer[i] = backBuffer[i];
     }
 }
 
 void Compositor::RenderScene(Window* windows, int windowCount, int mouseX, int mouseY) {
-    // 1. Clear Background (Wallpaper or Scale solid color)
+    // 1. Clear Background
     Clear(0xFF202020); // Dark Grey
     
-    // 2. Draw Taskbar (Bottom layer UI)
+    // 2. Draw Taskbar
     DrawRect(0, height - 40, width, 40, 0xFF101010);
-    // Taskbar Start Button
     DrawRect(10, height - 35, 60, 30, 0xFF404040); 
     
-    // 3. Draw Windows (Middle layer)
+    // 3. Draw Windows
     for (int i = 0; i < windowCount; i++) {
         Window& w = windows[i];
-        // Body
         DrawRect(w.x, w.y, w.width, w.height, w.color);
-        // Title Bar (simple contrast)
         DrawRect(w.x, w.y, w.width, 25, 0xFFCCCCCC);
     }
     
-    // 4. Draw Cursor (Top Layer)
+    // 4. Draw Cursor
     DrawCursor(mouseX, mouseY);
 }

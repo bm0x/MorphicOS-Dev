@@ -12,6 +12,7 @@ echo "========================================"
 echo "Serial output: ENABLED (COM1 -> stdio)"
 echo "Type 'desktop' to trigger package loader"
 echo "Trace messages will appear in THIS terminal"
+echo "Mouse grab: click on the QEMU window (Ctrl+Alt to release)"
 echo ""
 echo "To save log: ./run_direct.sh 2>&1 | tee boot.log"
 echo "========================================"
@@ -23,7 +24,8 @@ qemu-system-x86_64 \
     -drive format=raw,file="$ISO" \
     -m 2048M \
     -vga std \
+    -display gtk,grab-on-hover=on \
+    -machine pc,usb=off,i8042=on,pcspk-audiodev=snd0 \
     -serial stdio \
     -audiodev pa,id=snd0 \
-    -machine pcspk-audiodev=snd0 \
     "$@"
