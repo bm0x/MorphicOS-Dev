@@ -201,7 +201,9 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     UART::Write("[BOOT-TRACE] After AudioMixer::Init\n");
 
     // 9. Initialize Drivers (register with HAL)
-    PIT::Init(100); 
+    // 1000Hz so PIT_GetTicks() ~= milliseconds.
+    // Many parts of the system (SYS_SLEEP/SYS_GET_TIME_MS, GUI pacing) assume ms granularity.
+    PIT::Init(1000);
     UART::Write("[BOOT-TRACE] After PIT::Init\n");
     
     // --- MOUSE DRIVER REGISTRATION ---

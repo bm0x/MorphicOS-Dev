@@ -7,14 +7,18 @@ extern "C" {
     void* sys_video_map();
     uint64_t sys_get_screen_info();
     uint64_t sys_alloc_backbuffer(uint64_t size);
-    void sys_video_flip(); // NOTE: If we do manual flip to VRAM, we might not need this old one
+    // arg1: backbuffer pointer (tightly packed width*height BGRA32)
+    // returns: 1 if VSync wait succeeded (best-effort), 0 otherwise
+    uint64_t sys_video_flip(void* backbuffer);
 }
 
 class Compositor {
 public:
     static bool Initialize();
     static void Clear(uint32_t color);
-    static void SwapBuffers();
+    // Presents the backbuffer to the framebuffer.
+    // Returns true if the kernel reports a VSync-aligned present (best-effort).
+    static bool SwapBuffers();
     
     // Drawing Primitives
     static void DrawRect(int x, int y, int w, int h, uint32_t color);

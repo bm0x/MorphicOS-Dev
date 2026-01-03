@@ -8,8 +8,38 @@
 #include "../../../arch/common/mmu.h"
 #include "../../../mm/pmm.h"
 #include "../../input/input_device.h"
+#include "../x86_64/io.h"
 
 extern "C" uint64_t PIT_GetTicks();
+
+// SIMD optimized memory operations (from blit_fast.S)
+extern "C" {
+    void blit_fast_32(void* dest, void* src, size_t count);
+}
+
+static bool WaitVBlankTimeoutMs(uint32_t timeout_ms)
+{
+    const uint16_t VGA_STATUS_PORT = 0x3DA;
+    const uint8_t VSYNC_BIT = 0x08;
+
+    uint64_t deadline = PIT_GetTicks() + (uint64_t)timeout_ms;
+
+    // Wait for end of current retrace.
+    while ((IO::inb(VGA_STATUS_PORT) & VSYNC_BIT) != 0)
+    {
+        if (PIT_GetTicks() >= deadline) return false;
+        __asm__ volatile("pause");
+    }
+
+    // Wait for start of next retrace.
+    while ((IO::inb(VGA_STATUS_PORT) & VSYNC_BIT) == 0)
+    {
+        if (PIT_GetTicks() >= deadline) return false;
+        __asm__ volatile("pause");
+    }
+
+    return true;
+}
 
 #ifdef MOUSE_DEBUG
 static uint64_t g_sysGetEventDelivered = 0;
@@ -293,7 +323,9 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
             // Map to Virtual
             MMU::MapPage(virt_base + (i * 4096), (uint64_t)phys_ptr,
-                         PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT | PAGE_NOCACHE);
+                         // IMPORTANT: This is regular RAM used for software rendering.
+                         // It must be cacheable or performance will be terrible (stutter/lag).
+                         PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
 
             // Clear memory (efficiency check: MapPage doesn't clear)
             // We must clear it to avoid leaking data or garbage
@@ -385,9 +417,47 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
     }
 
     case 51: // SYS_VIDEO_FLIP
-        // Trigger V-Sync / Flip
-        Graphics::Flip();
-        return 0;
+    {
+        // Present a userspace backbuffer into the real framebuffer.
+        // arg1: pointer to userspace backbuffer (width*height BGRA32)
+
+        if (arg1 == 0)
+            return 0;
+
+        const uint64_t USER_SPACE_MIN = 0x600000000000ULL;
+        if (arg1 < USER_SPACE_MIN)
+            return 0;
+
+        uint32_t* dest = Graphics::GetFramebuffer();
+        if (!dest)
+            return 0;
+
+        uint32_t width = Graphics::GetWidth();
+        uint32_t height = Graphics::GetHeight();
+        uint32_t pitch = Graphics::GetPitch();
+
+        uint32_t* src = (uint32_t*)arg1;
+
+        // Best-effort VSync wait. This only works on VGA-compatible adapters (e.g. QEMU -vga std).
+        // Never hang if the status bit doesn't toggle.
+        bool vsynced = WaitVBlankTimeoutMs(20);
+
+        // Fast path: same pitch -> one big blit.
+        if (pitch == width)
+        {
+            blit_fast_32(dest, src, (size_t)((uint64_t)width * height));
+        }
+        else
+        {
+            // Copy row-by-row: userspace buffer is tightly packed (width*height).
+            for (uint32_t y = 0; y < height; y++)
+            {
+                blit_fast_32(&dest[(uint64_t)y * pitch], &src[(uint64_t)y * width], width);
+            }
+        }
+
+        return vsynced ? 1 : 0;
+    }
 
     case 52: // SYS_INPUT_POLL
         // Arg1 = Pointer to InputEvent struct

@@ -98,20 +98,34 @@ void HandleEvent(const OSEvent& ev) {
 }
 
 static void UpdateMousePerFrame() {
-    // Smooth toward target when not dragging; snap when dragging for responsiveness.
-    // alpha = 3/8 (~0.375) gives visible smoothing without too much lag.
-    const int alpha_num = left_down ? 1 : 3;
-    const int alpha_den = left_down ? 1 : 8;
-
+    // Goal: minimal lag. We only smooth tiny jitter; real movement snaps to target.
     const int32_t dx16 = mouse_target_x16 - mouse_x16;
     const int32_t dy16 = mouse_target_y16 - mouse_y16;
 
-    mouse_x16 += (int32_t)(((int64_t)dx16 * alpha_num) / alpha_den);
-    mouse_y16 += (int32_t)(((int64_t)dy16 * alpha_num) / alpha_den);
+    // If we're dragging, always snap.
+    if (left_down) {
+        mouse_x16 = mouse_target_x16;
+        mouse_y16 = mouse_target_y16;
+    } else {
+        // If we're more than ~1px away, snap to avoid trailing lag.
+        const int32_t snap_threshold16 = (1 << 16);
+        if (dx16 > snap_threshold16 || dx16 < -snap_threshold16 ||
+            dy16 > snap_threshold16 || dy16 < -snap_threshold16) {
+            mouse_x16 = mouse_target_x16;
+            mouse_y16 = mouse_target_y16;
+        } else {
+            // Smooth small sub-pixel noise: alpha = 1/2.
+            mouse_x16 += (dx16 >> 1);
+            mouse_y16 += (dy16 >> 1);
+            // Snap the last fraction to eliminate tail drift.
+            const int32_t tail16 = (1 << 14); // 1/4 px
+            if (dx16 > -tail16 && dx16 < tail16) mouse_x16 = mouse_target_x16;
+            if (dy16 > -tail16 && dy16 < tail16) mouse_y16 = mouse_target_y16;
+        }
+    }
 
-    // Use instantaneous position while dragging, otherwise smoothed.
-    const int32_t render_x16 = left_down ? mouse_target_x16 : mouse_x16;
-    const int32_t render_y16 = left_down ? mouse_target_y16 : mouse_y16;
+    const int32_t render_x16 = mouse_x16;
+    const int32_t render_y16 = mouse_y16;
 
     mouse_x = (int)(render_x16 >> 16);
     mouse_y = (int)(render_y16 >> 16);
@@ -128,7 +142,7 @@ void PollInput() {
     OSEvent ev;
     // Drain more events per frame to avoid backlog/jumps when mouse moves fast.
     int count = 0;
-    while (sys_get_event(&ev) && count < 128) {
+    while (sys_get_event(&ev) && count < 512) {
         HandleEvent(ev);
         count++;
     }
@@ -160,13 +174,16 @@ extern "C" int main(void* asset_ptr) {
         Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
         
         // D. Swap
-        Compositor::SwapBuffers();
+        const bool vsynced = Compositor::SwapBuffers();
         
         // E. Sync
-        uint64_t end_time = sys_get_time_ms();
-        uint64_t elapsed = end_time - start_time;
-        if (elapsed < (uint64_t)FRAME_TIME_MS) {
-            sys_sleep((uint32_t)(FRAME_TIME_MS - elapsed));
+        // If present already waited for VSync, don't add extra sleep (avoids 1-frame lag).
+        if (!vsynced) {
+            uint64_t end_time = sys_get_time_ms();
+            uint64_t elapsed = end_time - start_time;
+            if (elapsed < (uint64_t)FRAME_TIME_MS) {
+                sys_sleep((uint32_t)(FRAME_TIME_MS - elapsed));
+            }
         }
     }
     return 0;

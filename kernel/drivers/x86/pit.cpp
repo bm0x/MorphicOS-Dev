@@ -5,8 +5,10 @@
 
 namespace PIT {
     uint64_t ticks = 0;
+    static uint32_t g_frequency_hz = 0;
 
     void Init(uint32_t frequency) {
+        g_frequency_hz = frequency;
         uint32_t divisor = 1193180 / frequency;
 
         // Command: Channel 0, Access lo/hi, Mode 2 (Rate Generator), Binary
@@ -22,8 +24,9 @@ namespace PIT {
         ticks++;
 
 #ifdef MOUSE_DEBUG
-        // Heartbeat: ~1 line per second at 100Hz to prove IRQ0/ticks are alive.
-        if ((ticks % 100) == 0) {
+        // Heartbeat: ~1 line per second to prove IRQ0/ticks are alive.
+        uint32_t hz = g_frequency_hz ? g_frequency_hz : 100;
+        if ((ticks % hz) == 0) {
             UART::Write("[PIT] tick=");
             UART::WriteDec((int64_t)ticks);
             UART::Write("\n");

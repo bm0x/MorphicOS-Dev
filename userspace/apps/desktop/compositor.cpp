@@ -102,13 +102,12 @@ void Compositor::DrawCursor(int x, int y) {
     }
 }
 
-void Compositor::SwapBuffers() {
-    if (!backBuffer || !frontBuffer) return;
-    
-    uint64_t total_pixels = (uint64_t)width * height;
-    for (uint64_t i = 0; i < total_pixels; i++) {
-        frontBuffer[i] = backBuffer[i];
-    }
+bool Compositor::SwapBuffers() {
+    if (!backBuffer || !frontBuffer) return false;
+
+    // Present via kernel: optimized blit + best-effort VSync wait.
+    // This is substantially faster than copying pixel-by-pixel in userspace.
+    return sys_video_flip(backBuffer) != 0;
 }
 
 void Compositor::RenderScene(Window* windows, int windowCount, int mouseX, int mouseY) {
