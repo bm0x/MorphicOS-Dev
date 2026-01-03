@@ -65,16 +65,28 @@ int PackageLoader::Load(const char* path) {
     // STEP 2: Read and validate MPK header
     // ========================================================================
     TRACE_CHECKPOINT("Step 2: Reading MPK header");
-    
-    MPKHeader header;
-    uint32_t bytesRead = VFS::Read(node, 0, sizeof(MPKHeader), (uint8_t*)&header);
-    
+
+    constexpr uint32_t MPK_HEADER_SIZE = 64; // MPK1 convention: 24-byte header + reserved padding
+    uint8_t headerBuf[MPK_HEADER_SIZE];
+    uint32_t toRead = (node->size < MPK_HEADER_SIZE) ? (uint32_t)node->size : MPK_HEADER_SIZE;
+    uint32_t bytesRead = VFS::Read(node, 0, toRead, headerBuf);
+
     TRACE_DEC("Step 2: Bytes read", bytesRead);
-    
-    if (bytesRead != sizeof(MPKHeader)) {
-        TRACE_DEC("ERROR: Expected bytes", sizeof(MPKHeader));
+
+    if (bytesRead < sizeof(MPKHeader)) {
+        TRACE_DEC("ERROR: Expected at least bytes", sizeof(MPKHeader));
         KERNEL_PANIC_SAFE("Loader: Failed to read MPK header");
         return -2;
+    }
+
+    MPKHeader header;
+    kmemcpy(&header, headerBuf, sizeof(MPKHeader));
+
+    // Optional forward-compat fields stored in header padding.
+    // Convention: uint32_t total_size at byte offset 24.
+    uint32_t total_size = 0;
+    if (bytesRead >= 28) {
+        total_size = *(uint32_t*)(headerBuf + 24);
     }
     
     // ========================================================================
@@ -100,16 +112,47 @@ int PackageLoader::Load(const char* path) {
     // STEP 3: Log header values
     // ========================================================================
     TRACE_CHECKPOINT("Step 3: Header validated OK");
+    TRACE_HEX("  manifest_off", header.manifest_off);
     TRACE_HEX("  code_off", header.code_off);
     TRACE_DEC("  code_size", header.code_size);
     TRACE_HEX("  assets_off", header.assets_off);
     TRACE_DEC("  assets_size", header.assets_size);
+    if (total_size) {
+        TRACE_DEC("  total_size", total_size);
+    }
     
     EarlyTerm::Print("[Loader] Code: ");
     EarlyTerm::PrintDec(header.code_size);
     EarlyTerm::Print(" bytes, Assets: ");
     EarlyTerm::PrintDec(header.assets_size);
     EarlyTerm::Print(" bytes\n");
+
+    // ========================================================================
+    // GUARD: Validate total size if present
+    // ========================================================================
+    if (total_size && total_size != node->size) {
+        TRACE_DEC("ERROR: total_size", total_size);
+        TRACE_DEC("ERROR: file size", node->size);
+        KERNEL_PANIC_SAFE("Loader: MPK total_size mismatch");
+        return -4;
+    }
+
+    // ========================================================================
+    // GUARD: Validate manifest offset if present (manifest is optional)
+    // ========================================================================
+    if (header.manifest_off != 0) {
+        if (header.manifest_off < MPK_HEADER_SIZE) {
+            TRACE_HEX("ERROR: manifest_off < header", header.manifest_off);
+            KERNEL_PANIC_SAFE("Loader: manifest_off invalid");
+            return -4;
+        }
+        if (header.manifest_off >= header.code_off) {
+            TRACE_HEX("ERROR: manifest_off", header.manifest_off);
+            TRACE_HEX("ERROR: code_off", header.code_off);
+            KERNEL_PANIC_SAFE("Loader: manifest overlaps code");
+            return -4;
+        }
+    }
     
     // ========================================================================
     // GUARD: Validate code offset and size within file bounds
@@ -152,14 +195,14 @@ int PackageLoader::Load(const char* path) {
     TRACE_CHECKPOINT("Step 4: Allocating memory");
     
     // Add 64KB padding for safety (BSS/Heap growth)
-    uint64_t total_size = header.code_size + header.assets_size + 8192 + 0x10000;
-    TRACE_DEC("Step 4: Total allocation size", total_size);
+    uint64_t alloc_size = header.code_size + header.assets_size + 8192 + 0x10000;
+    TRACE_DEC("Step 4: Total allocation size", alloc_size);
     
     // ========================================================================
     // SIMPLE APPROACH: Allocate contiguous physical memory from PMM
     // PMM::AllocContiguous guarantees contiguous pages starting at >= 256MB
     // ========================================================================
-    uint64_t pages_needed = (total_size + 0xFFF) / 0x1000;
+    uint64_t pages_needed = (alloc_size + 0xFFF) / 0x1000;
     TRACE_DEC("Step 4: Allocating pages", pages_needed);
     
     void* phys_buffer = PMM::AllocContiguous(pages_needed);
@@ -214,11 +257,19 @@ int PackageLoader::Load(const char* path) {
         UART::Write(" ");
     }
     UART::Write("\n");
-    
-    // VALIDATION: Check for empty/null code segment
-    uint32_t first_word = *((uint32_t*)code_dest_phys);
-    if (first_word == 0x00000000) {
-        KERNEL_PANIC_SAFE("Invalid MPK: Code segment is empty/null");
+
+    // VALIDATION: reject obviously-empty code segment (all zeros at start)
+    // (Do not require the first dword to be nonzero; that's too strict.)
+    bool all_zero = true;
+    uint32_t check_len = (header.code_size < 64) ? header.code_size : 64;
+    for (uint32_t i = 0; i < check_len; i++) {
+        if (code_dest_phys[i] != 0x00) {
+            all_zero = false;
+            break;
+        }
+    }
+    if (all_zero) {
+        KERNEL_PANIC_SAFE("Invalid MPK: Code segment begins with all zeros");
         return -8;
     }
     

@@ -1,0 +1,3 @@
+name=Morphic Desktop
+version=1.7.9
+permissions=VIDEO_ACCESS,INPUT_ACCESS

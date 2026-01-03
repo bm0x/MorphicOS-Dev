@@ -1,4 +1,9 @@
-# .mapp - Morphic Application Package Format
+# .mapp - Morphic Application Package Format (DEPRECADO)
+
+> Este documento está **deprecado**.
+>
+> El sistema actual usa `.mpk` (MPK1) para empaquetar aplicaciones de userspace.
+> Ver: [docs/mpk_format.md](mpk_format.md) y [docs/mpk_sdk.md](mpk_sdk.md).
 
 ## Overview
 
