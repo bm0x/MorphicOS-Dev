@@ -1,6 +1,8 @@
 #include "os_event.h"
 #include "compositor.h"
 #include "system_info.h"
+#include "terminal.h"
+#include "calculator.h"
 
 // Syscall stubs not covered by compositor.h
 extern "C" {
@@ -9,6 +11,10 @@ extern "C" {
     int   sys_get_event(OSEvent* ev); // Returns 1 if event, 0 if none
     int   sys_get_rtc_datetime(MorphicDateTime* out);
     int   sys_get_system_info(MorphicSystemInfo* out);
+    int   sys_spawn(const char* path);
+
+    // C++ ABI Support
+    void __cxa_pure_virtual() { while(1); }
 }
 
 // ... colors ...
@@ -29,7 +35,7 @@ static int32_t mouse_target_y16 = 0;
 static constexpr int MOUSE_SENSITIVITY = 3;
 
 // Globals for Windows
-#define MAX_WINDOWS 5
+#define MAX_WINDOWS 10
 Compositor::Window windows[MAX_WINDOWS];
 int window_count = 0;
 
@@ -40,6 +46,9 @@ static MorphicDateTime g_rtc = {};
 static MorphicSystemInfo g_sys = {};
 static uint64_t g_last_rtc_ms = 0;
 static uint32_t g_last_clock_sec = 0;
+
+static Terminal* g_terminal = nullptr;
+static Calculator g_calculator;
 
 // Interaction State
 int drag_target_idx = -1;
@@ -61,6 +70,29 @@ static void BringToFront(int idx) {
         windows[i] = windows[i + 1];
     }
     windows[window_count - 1] = temp;
+    ui_dirty = true;
+}
+
+void OpenWindow(const char* title, int w, int h, uint32_t color) {
+    if (window_count >= MAX_WINDOWS) return;
+    
+    // Check if already open
+    for (int i = 0; i < window_count; i++) {
+        if (windows[i].title && windows[i].title[0] == title[0]) { // Simple check
+             // Bring to front
+             windows[i].minimized = false;
+             BringToFront(i);
+             return;
+        }
+    }
+
+    windows[window_count] = {
+        100 + (window_count * 20), 
+        100 + (window_count * 20), 
+        w, h, color, title, 
+        false, false, false, 0,0,0,0
+    };
+    window_count++;
     ui_dirty = true;
 }
 
@@ -111,6 +143,24 @@ static void UppercaseInplace(char* s) {
 }
 
 void HandleEvent(const OSEvent& ev) {
+    // Pass keyboard events to the focused window (topmost)
+    if (ev.type == OSEvent::KEY_PRESS) {
+        if (window_count > 0) {
+            Compositor::Window& top = windows[window_count - 1];
+            if (!top.minimized && top.title) {
+                if (top.title[0] == 'T') { // "Terminal"
+                    if (ev.ascii > 0 && g_terminal) {
+                        g_terminal->OnChar((char)ev.ascii);
+                        ui_dirty = true; // Redraw terminal
+                    }
+                }
+                else if (top.title[0] == 'C') { // "Calculator"
+                    // Optional: Keyboard support for calculator
+                }
+            }
+        }
+    }
+
     if (ev.type == OSEvent::MOUSE_CLICK) {
         // Kernel sends current button state on transitions.
         left_down = (ev.buttons & 1);
@@ -120,6 +170,17 @@ void HandleEvent(const OSEvent& ev) {
             // Start drag immediately on click-down (no movement required).
             const int click_x = (int)(mouse_target_x16 >> 16);
             const int click_y = (int)(mouse_target_y16 >> 16);
+
+            // Check Calculator Buttons if top window is Calculator
+            if (window_count > 0) {
+                Compositor::Window& top = windows[window_count - 1];
+                if (!top.minimized && top.title && top.title[0] == 'C') {
+                    if (HitRect(click_x, click_y, top.x, top.y, top.width, top.height)) {
+                        g_calculator.OnClick(click_x, click_y, top.x, top.y, top.width, top.height);
+                        ui_dirty = true;
+                    }
+                }
+            }
 
             // Taskbar interactions
             const int taskH = 40;
@@ -147,6 +208,75 @@ void HandleEvent(const OSEvent& ev) {
                     iconX += 30;
                 }
                 return;
+            }
+
+            // Menu Interaction
+            if (menu_open) {
+                int menuH = 220;
+                int menuY = Compositor::GetHeight() - taskH - menuH;
+                if (HitRect(click_x, click_y, 0, menuY, 260, menuH)) {
+                    // Check items
+                    int itemY = menuY + 10;
+                    int itemH = 24;
+                    
+                    // 1. Terminal
+                    if (HitRect(click_x, click_y, 10, itemY, 240, itemH)) {
+                        OpenWindow("Terminal", 320, 220, 0xFF40A040);
+                        menu_open = false;
+                        ui_dirty = true;
+                        return;
+                    }
+                    itemY += 30;
+
+                    // 2. Calculator
+                    if (HitRect(click_x, click_y, 10, itemY, 240, itemH)) {
+                        // Launch independent process
+                        sys_spawn("/initrd/calculator.mpk");
+                        menu_open = false;
+                        ui_dirty = true;
+                        return;
+                    }
+                    itemY += 30;
+
+                    // 3. MPK Installer
+                    if (HitRect(click_x, click_y, 10, itemY, 240, itemH)) {
+                        OpenWindow("MPK Installer", 300, 150, 0xFF606060);
+                        menu_open = false;
+                        ui_dirty = true;
+                        return;
+                    }
+                    itemY += 30;
+
+                    // 4. System Info
+                    if (HitRect(click_x, click_y, 10, itemY, 240, itemH)) {
+                        OpenWindow("System", 520, 260, 0xFF4080A0);
+                        menu_open = false;
+                        ui_dirty = true;
+                        return;
+                    }
+                    itemY += 30;
+
+                    // Bottom: Restart / Shutdown
+                    itemY = menuY + menuH - 30;
+                    if (HitRect(click_x, click_y, 10, itemY, 110, itemH)) {
+                        // Restart (Simulated)
+                        // TODO: sys_reboot()
+                        menu_open = false;
+                        return;
+                    }
+                    if (HitRect(click_x, click_y, 130, itemY, 110, itemH)) {
+                        // Shutdown (Simulated)
+                        // TODO: sys_shutdown()
+                        menu_open = false;
+                        return;
+                    }
+                    
+                    return;
+                } else {
+                    // Click outside menu closes it
+                    menu_open = false;
+                    ui_dirty = true;
+                }
             }
 
             // Window interactions (topmost first)
@@ -323,6 +453,10 @@ extern "C" int main(void* asset_ptr) {
     mouse_target_y16 = mouse_y16;
     
     InitWindows();
+
+    // Initialize Terminal on stack (avoids global ctor issues)
+    Terminal term;
+    g_terminal = &term;
     
     const int TARGET_FPS = 60;
     const int FRAME_TIME_MS = 1000 / TARGET_FPS;
@@ -427,7 +561,7 @@ extern "C" int main(void* asset_ptr) {
         // Full render within clip
         // Background is drawn inside RenderScene
         Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
-        Compositor::RenderTaskbar(windows, window_count, menu_open, now_sec);
+        Compositor::RenderTaskbar(windows, window_count, menu_open, g_rtc);
         Compositor::RenderMenu(menu_open);
 
         // System window content (text-based, lightweight)
@@ -436,104 +570,163 @@ extern "C" int main(void* asset_ptr) {
             if (w.minimized) continue;
             if (!w.title) continue;
             // Match "System"
-            if (w.title[0] != 'S') continue;
+            if (w.title[0] == 'S') {
+                int pad = 16;
+                int titleH = 26;
+                int x = w.x + pad;
+                int y = w.y + titleH + pad;
 
-            int pad = 16;
-            int titleH = 26;
-            int x = w.x + pad;
-            int y = w.y + titleH + pad;
+                char vendor[13];
+                for (int k = 0; k < 13; k++) vendor[k] = g_sys.cpu_vendor[k];
+                vendor[12] = '\0';
+                UppercaseInplace(vendor);
 
-            char vendor[13];
-            for (int k = 0; k < 13; k++) vendor[k] = g_sys.cpu_vendor[k];
-            vendor[12] = '\0';
-            UppercaseInplace(vendor);
+                char line1[64];
+                // "MORPHIC OS"
+                const char* hdr = "MORPHIC OS";
+                // Draw header
+                Compositor::DrawText(x, y, hdr, 0xFFEAEAEA, 1);
+                y += 14;
 
-            char line1[64];
-            // "MORPHIC OS"
-            const char* hdr = "MORPHIC OS";
-            // Draw header
-            Compositor::DrawText(x, y, hdr, 0xFFEAEAEA, 1);
-            y += 14;
+                // CPU vendor
+                // Build "CPU VENDOR: <vendor>"
+                int idx = 0;
+                const char* p = "CPU VENDOR: ";
+                while (*p && idx < 63) line1[idx++] = *p++;
+                for (int k = 0; vendor[k] && idx < 63; k++) line1[idx++] = vendor[k];
+                line1[idx] = '\0';
+                Compositor::DrawText(x, y, line1, 0xFFCCCCCC, 1);
+                y += 12;
 
-            // CPU vendor
-            // Build "CPU VENDOR: <vendor>"
-            int idx = 0;
-            const char* p = "CPU VENDOR: ";
-            while (*p && idx < 63) line1[idx++] = *p++;
-            for (int k = 0; vendor[k] && idx < 63; k++) line1[idx++] = vendor[k];
-            line1[idx] = '\0';
-            Compositor::DrawText(x, y, line1, 0xFFCCCCCC, 1);
-            y += 12;
+                // RAM
+                uint64_t totalMiB = g_sys.total_mem_bytes / (1024ULL * 1024ULL);
+                uint64_t freeMiB  = g_sys.free_mem_bytes / (1024ULL * 1024ULL);
+                char line2[64];
+                // "RAM: TTTTMB FREE: FFFMB"
+                // Minimal integer formatting
+                auto write_u64 = [](char* out, int& pos, uint64_t v) {
+                    char tmp[24];
+                    int n = 0;
+                    if (v == 0) tmp[n++] = '0';
+                    while (v && n < 23) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
+                    for (int i = n - 1; i >= 0; i--) out[pos++] = tmp[i];
+                };
 
-            // RAM
-            uint64_t totalMiB = g_sys.total_mem_bytes / (1024ULL * 1024ULL);
-            uint64_t freeMiB  = g_sys.free_mem_bytes / (1024ULL * 1024ULL);
-            char line2[64];
-            // "RAM: TTTTMB FREE: FFFMB"
-            // Minimal integer formatting
-            auto write_u64 = [](char* out, int& pos, uint64_t v) {
-                char tmp[24];
-                int n = 0;
-                if (v == 0) tmp[n++] = '0';
-                while (v && n < 23) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
-                for (int i = n - 1; i >= 0; i--) out[pos++] = tmp[i];
-            };
+                int pos = 0;
+                const char* a = "RAM: ";
+                while (*a && pos < 63) line2[pos++] = *a++;
+                write_u64(line2, pos, totalMiB);
+                const char* b = "MB FREE: ";
+                while (*b && pos < 63) line2[pos++] = *b++;
+                write_u64(line2, pos, freeMiB);
+                const char* c = "MB";
+                while (*c && pos < 63) line2[pos++] = *c++;
+                line2[pos] = '\0';
+                UppercaseInplace(line2);
+                Compositor::DrawText(x, y, line2, 0xFFCCCCCC, 1);
+                y += 12;
 
-            int pos = 0;
-            const char* a = "RAM: ";
-            while (*a && pos < 63) line2[pos++] = *a++;
-            write_u64(line2, pos, totalMiB);
-            const char* b = "MB FREE: ";
-            while (*b && pos < 63) line2[pos++] = *b++;
-            write_u64(line2, pos, freeMiB);
-            const char* c = "MB";
-            while (*c && pos < 63) line2[pos++] = *c++;
-            line2[pos] = '\0';
-            UppercaseInplace(line2);
-            Compositor::DrawText(x, y, line2, 0xFFCCCCCC, 1);
-            y += 12;
-
-            // Video
-            char line3[64];
-            pos = 0;
-            const char* v0 = "VIDEO: ";
-            while (*v0 && pos < 63) line3[pos++] = *v0++;
-            write_u64(line3, pos, g_sys.fb_width);
-            line3[pos++] = 'X';
-            write_u64(line3, pos, g_sys.fb_height);
-            const char* v1 = " PITCH: ";
-            while (*v1 && pos < 63) line3[pos++] = *v1++;
-            write_u64(line3, pos, g_sys.fb_pitch);
-            line3[pos] = '\0';
-            UppercaseInplace(line3);
-            Compositor::DrawText(x, y, line3, 0xFFCCCCCC, 1);
-            y += 12;
-
-            // RTC time/date
-            if (g_rtc.valid) {
-                char line4[64];
+                // Video
+                char line3[64];
                 pos = 0;
-                const char* r0 = "RTC: ";
-                while (*r0 && pos < 63) line4[pos++] = *r0++;
-                write_u64(line4, pos, g_rtc.year);
-                line4[pos++] = '-';
-                line4[pos++] = (char)('0' + (g_rtc.month / 10) % 10);
-                line4[pos++] = (char)('0' + (g_rtc.month % 10));
-                line4[pos++] = '-';
-                line4[pos++] = (char)('0' + (g_rtc.day / 10) % 10);
-                line4[pos++] = (char)('0' + (g_rtc.day % 10));
-                line4[pos++] = ' ';
-                line4[pos++] = (char)('0' + (g_rtc.hour / 10) % 10);
-                line4[pos++] = (char)('0' + (g_rtc.hour % 10));
-                line4[pos++] = ':';
-                line4[pos++] = (char)('0' + (g_rtc.minute / 10) % 10);
-                line4[pos++] = (char)('0' + (g_rtc.minute % 10));
-                line4[pos++] = ':';
-                line4[pos++] = (char)('0' + (g_rtc.second / 10) % 10);
-                line4[pos++] = (char)('0' + (g_rtc.second % 10));
-                line4[pos] = '\0';
-                UppercaseInplace(line4);
-                Compositor::DrawText(x, y, line4, 0xFFCCCCCC, 1);
+                const char* v0 = "VIDEO: ";
+                while (*v0 && pos < 63) line3[pos++] = *v0++;
+                write_u64(line3, pos, g_sys.fb_width);
+                line3[pos++] = 'X';
+                write_u64(line3, pos, g_sys.fb_height);
+                const char* v1 = " PITCH: ";
+                while (*v1 && pos < 63) line3[pos++] = *v1++;
+                write_u64(line3, pos, g_sys.fb_pitch);
+                line3[pos] = '\0';
+                UppercaseInplace(line3);
+                Compositor::DrawText(x, y, line3, 0xFFCCCCCC, 1);
+                y += 12;
+
+                // Disk Info
+                char lineDisk[64];
+                pos = 0;
+                const char* d0 = "DISK: ";
+                while (*d0 && pos < 63) lineDisk[pos++] = *d0++;
+                
+                // Convert to GB if > 1GB, else MB
+                if (g_sys.disk_total_bytes >= 1024*1024*1024) {
+                    uint64_t gb = g_sys.disk_total_bytes / (1024*1024*1024);
+                    uint64_t rem = (g_sys.disk_total_bytes % (1024*1024*1024)) * 10 / (1024*1024*1024);
+                    write_u64(lineDisk, pos, gb);
+                    lineDisk[pos++] = '.';
+                    write_u64(lineDisk, pos, rem);
+                    const char* unit = " GB";
+                    while (*unit && pos < 63) lineDisk[pos++] = *unit++;
+                } else {
+                    uint64_t mb = g_sys.disk_total_bytes / (1024*1024);
+                    write_u64(lineDisk, pos, mb);
+                    const char* unit = " MB";
+                    while (*unit && pos < 63) lineDisk[pos++] = *unit++;
+                }
+                
+                // Free space (Placeholder)
+                const char* d1 = " (RAW)";
+                while (*d1 && pos < 63) lineDisk[pos++] = *d1++;
+                
+                lineDisk[pos] = '\0';
+                UppercaseInplace(lineDisk);
+                Compositor::DrawText(x, y, lineDisk, 0xFFCCCCCC, 1);
+                y += 12;
+
+                // RTC time/date
+                if (g_rtc.valid) {
+                    char line4[64];
+                    pos = 0;
+                    const char* r0 = "RTC: ";
+                    while (*r0 && pos < 63) line4[pos++] = *r0++;
+                    write_u64(line4, pos, g_rtc.year);
+                    line4[pos++] = '-';
+                    line4[pos++] = (char)('0' + (g_rtc.month / 10) % 10);
+                    line4[pos++] = (char)('0' + (g_rtc.month % 10));
+                    line4[pos++] = '-';
+                    line4[pos++] = (char)('0' + (g_rtc.day / 10) % 10);
+                    line4[pos++] = (char)('0' + (g_rtc.day % 10));
+                    line4[pos++] = ' ';
+                    line4[pos++] = (char)('0' + (g_rtc.hour / 10) % 10);
+                    line4[pos++] = (char)('0' + (g_rtc.hour % 10));
+                    line4[pos++] = ':';
+                    line4[pos++] = (char)('0' + (g_rtc.minute / 10) % 10);
+                    line4[pos++] = (char)('0' + (g_rtc.minute % 10));
+                    line4[pos++] = ':';
+                    line4[pos++] = (char)('0' + (g_rtc.second / 10) % 10);
+                    line4[pos++] = (char)('0' + (g_rtc.second % 10));
+                    line4[pos] = '\0';
+                    UppercaseInplace(line4);
+                    Compositor::DrawText(x, y, line4, 0xFFCCCCCC, 1);
+                }
+            }
+            // Match "Terminal"
+            else if (w.title[0] == 'T') {
+                int pad = 4;
+                int titleH = 26;
+                int x = w.x + pad;
+                int y = w.y + titleH + pad;
+                int w_content = w.width - 2*pad;
+                int h_content = w.height - titleH - 2*pad;
+                
+                if (g_terminal) {
+                    g_terminal->Draw(x, y, w_content, h_content);
+                }
+            }
+            // Match "Calculator"
+            else if (w.title[0] == 'C') {
+                g_calculator.Draw(w.x, w.y, w.width, w.height);
+            }
+            // Match "MPK Installer"
+            else if (w.title[0] == 'M') {
+                int x = w.x + 10;
+                int y = w.y + 40;
+                Compositor::DrawText(x, y, "MPK Installer", 0xFFFFFFFF, 2);
+                y += 30;
+                Compositor::DrawText(x, y, "Select .mpk file to install...", 0xFFCCCCCC, 1);
+                // Placeholder UI
+                Compositor::DrawRect(x, y + 20, 200, 30, 0xFF202020);
+                Compositor::DrawText(x + 10, y + 28, "Browse...", 0xFFAAAAAA, 1);
             }
             break;
         }

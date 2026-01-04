@@ -11,11 +11,17 @@ struct MPKHeader {
     uint32_t assets_size;
 };
 
+struct LoadedProcess {
+    uint64_t entry_point;
+    uint64_t stack_top;
+    int error_code;
+};
+
 class PackageLoader {
 public:
-    // Load and execute an MPK package from filesystem
-    // Returns 0 on success, error code otherwise
-    static int Load(const char* path);
+    // Load an MPK package from filesystem into memory
+    // Returns LoadedProcess info. Does NOT execute it.
+    static LoadedProcess Load(const char* path, uint64_t base_addr = 0x600000000000);
     
 private:
     static bool VerifyMagic(const MPKHeader* header);

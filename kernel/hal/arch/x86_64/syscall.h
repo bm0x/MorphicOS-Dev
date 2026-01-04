@@ -20,6 +20,8 @@
 #define SYS_GET_TIME_MS    20   // Get system time in milliseconds
 #define SYS_GET_EVENT      21   // Get next input event (OSEvent)
 #define SYS_ALLOC_BACKBUFFER 53 // Allocate and map userspace backbuffer
+#define SYS_SPAWN 60
+#define SYS_DEBUG_PRINT 61
 
 
 

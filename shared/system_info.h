@@ -26,4 +26,7 @@ struct MorphicSystemInfo {
     uint32_t fb_height;
     uint32_t fb_pitch;
     uint32_t fb_bpp;
+
+    uint64_t disk_total_bytes;
+    uint64_t disk_free_bytes;
 } __attribute__((packed));

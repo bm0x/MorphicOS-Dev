@@ -16,6 +16,7 @@
 #include "../mcl/mcl_parser.h"
 #include "../gui/desktop.h"
 #include "loader.h"
+#include "../process/scheduler.h"
 
 namespace Shell {
     const int CMD_BUFFER_SIZE = 128;
@@ -459,8 +460,10 @@ namespace Shell {
     void CmdDesktop() {
         EarlyTerm::Print("Starting Morphic Desktop Environment (.mpk)...\n");
         // Use PackageLoader to load the structured application container
-        int result = PackageLoader::Load("/initrd/desktop.mpk");
-        if (result != 0) {
+        LoadedProcess proc = PackageLoader::Load("/initrd/desktop.mpk");
+        if (proc.error_code == 0) {
+            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top);
+        } else {
             EarlyTerm::Print("Error: Failed to load desktop.mpk\n");
         }
     }

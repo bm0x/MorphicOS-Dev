@@ -15,4 +15,5 @@ struct OSEvent {
     int32_t dy;
     uint32_t buttons;  // Mouse buttons or Key modifiers
     uint32_t scancode; // Keyboard scancode
+    uint32_t ascii;    // ASCII character
 };

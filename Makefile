@@ -55,6 +55,7 @@ KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/drivers/x86/pit.cpp \
                  kernel/drivers/x86/keyboard.cpp \
                  kernel/drivers/x86/uart_8250.cpp \
+                 kernel/drivers/x86/ide.cpp \
                  kernel/drivers/ramdisk.cpp \
                  kernel/utils/std.cpp \
                  kernel/mm/heap.cpp \
@@ -149,6 +150,14 @@ userspace/desktop.mpk:
 	$(MAKE) -C $(DESKTOP_APP_DIR)
 	cp $(DESKTOP_APP_DIR)/desktop.mpk userspace/desktop.mpk
 
+CALCULATOR_APP_DIR = userspace/apps/calculator
+userspace/calculator.mpk:
+	@echo "========================================"
+	@echo "  [USER] Building Calculator App..."
+	@echo "========================================"
+	$(MAKE) -C $(CALCULATOR_APP_DIR)
+	cp $(CALCULATOR_APP_DIR)/calculator.mpk userspace/calculator.mpk
+
 kernel/fs/desktop_mpk.cpp: userspace/desktop.mpk
 	@echo "  [KERNEL] Embedding Desktop MPK..."
 	python3 tools/bin2h.py userspace/desktop.mpk kernel/fs/desktop_mpk.cpp desktop_mpk
@@ -158,7 +167,7 @@ kernel/fs/desktop_mpk.o: kernel/fs/desktop_mpk.cpp
 
 
 # --- Image ---
-image: bootloader kernel userspace/desktop.mpk
+image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk
 	@echo "========================================"
 	@echo "  [IMAGE] Creating Disk Image..."
 	@echo "========================================"
@@ -172,6 +181,7 @@ image: bootloader kernel userspace/desktop.mpk
 	mcopy -i morphic.img build/morph_kernel.elf ::/
 	# Copy Desktop Package to Root
 	mcopy -i morphic.img userspace/desktop.mpk ::/
+	mcopy -i morphic.img userspace/calculator.mpk ::/
 
 
 clean:

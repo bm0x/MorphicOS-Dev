@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include "system_info.h"
 
 // Forward declarations of syscalls we need
 extern "C" {
@@ -51,7 +52,7 @@ public:
     static void RenderScene(Window* windows, int windowCount, int mouseX, int mouseY);
 
     // Minimal UI helpers
-    static void RenderTaskbar(Window* windows, int windowCount, bool menuOpen, uint32_t timeSeconds);
+    static void RenderTaskbar(Window* windows, int windowCount, bool menuOpen, const MorphicDateTime& dt);
     static void RenderMenu(bool menuOpen);
 
     // Minimal text rendering (tiny pixel font)

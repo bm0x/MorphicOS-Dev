@@ -10,7 +10,10 @@
 #include "../../input/input_device.h"
 #include "../x86_64/io.h"
 #include "../../../mm/pmm.h"
+#include "../../storage/block_device.h"
 #include "system_info.h"
+#include "../../../core/loader.h"
+#include "../../../process/scheduler.h"
 
 extern "C" uint64_t PIT_GetTicks();
 
@@ -478,6 +481,18 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         si.fb_pitch = Graphics::GetPitch();
         si.fb_bpp = 32;
 
+        // Get Disk Info (Find largest device)
+        uint64_t max_size = 0;
+        uint32_t dev_count = StorageManager::GetDeviceCount();
+        for (uint32_t i = 0; i < dev_count; i++) {
+            IBlockDevice* dev = StorageManager::GetDeviceByIndex(i);
+            if (dev && dev->geometry.total_bytes > max_size) {
+                max_size = dev->geometry.total_bytes;
+            }
+        }
+        si.disk_total_bytes = max_size;
+        si.disk_free_bytes = 0; // TODO: Implement FS free space check
+
         MorphicSystemInfo* u = (MorphicSystemInfo*)arg1;
         *u = si;
         return 1;
@@ -704,6 +719,25 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         // Arg1 = Pointer to InputEvent struct
         // Logic: Pop from input queue and copy to user buffer
         // For now, return 0 (no event)
+        return 0;
+
+    case SYS_SPAWN: {
+        const char* path = (const char*)arg1;
+        // Find a free slot. For now, just increment base address.
+        // Start at 0x600100000000 (Desktop is at 0x600000000000)
+        static uint64_t next_base = 0x600100000000ULL;
+        
+        LoadedProcess proc = PackageLoader::Load(path, next_base);
+        if (proc.error_code == 0) {
+            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top);
+            next_base += 0x100000000ULL; // +4GB
+            return 0; // Success
+        }
+        return (uint64_t)proc.error_code;
+    }
+
+    case SYS_DEBUG_PRINT:
+        UART::Write((const char*)arg1);
         return 0;
 
     default:

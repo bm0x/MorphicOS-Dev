@@ -424,7 +424,7 @@ void Compositor::RenderMenu(bool menuOpen) {
     }
 }
 
-void Compositor::RenderTaskbar(Window* windows, int windowCount, bool menuOpen, uint32_t timeSeconds) {
+void Compositor::RenderTaskbar(Window* windows, int windowCount, bool menuOpen, const MorphicDateTime& dt) {
     (void)menuOpen;
     const int taskH = 40;
     const int y = height - taskH;
@@ -456,13 +456,15 @@ void Compositor::RenderTaskbar(Window* windows, int windowCount, bool menuOpen, 
         iconX += 30;
     }
 
-    // Clock at right (Desktop passes either real-time packed or fallback seconds)
-    // timeSeconds is treated as seconds since boot if real time not available.
-    uint32_t total = timeSeconds % (24 * 3600);
-    uint32_t hh = total / 3600;
-    uint32_t mm = (total / 60) % 60;
-    uint32_t ss = total % 60;
-    DrawClockText(width - 10, y + 12, hh, mm, ss, 1, 1);
+    // Clock at right
+    // If RTC is valid, use it. Otherwise use 00:00:00 01/01
+    uint32_t hh = dt.hour;
+    uint32_t mm = dt.minute;
+    uint32_t ss = dt.second;
+    uint32_t dd = dt.day > 0 ? dt.day : 1;
+    uint32_t mo = dt.month > 0 ? dt.month : 1;
+    
+    DrawClockText(width - 10, y + 12, hh, mm, ss, dd, mo);
 }
 
 void Compositor::RenderScene(Window* windows, int windowCount, int mouseX, int mouseY) {

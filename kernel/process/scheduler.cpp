@@ -93,6 +93,41 @@ namespace Scheduler {
         EarlyTerm::Print("\n");
     }
 
+    void CreateUserTask(void (*entry_point)(), void* user_stack) {
+        Task* newTask = (Task*)kmalloc(sizeof(Task));
+        if (!newTask) return;
+        
+        newTask->id = nextTaskId++;
+        
+        // Allocate Kernel Stack for this task (used when interrupt occurs in Ring 3)
+        uint64_t* kstackBase = (uint64_t*)kmalloc(4096);
+        if (!kstackBase) { kfree(newTask); return; }
+        
+        uint64_t* kstackTop = (uint64_t*)((uint64_t)kstackBase + 4096);
+        
+        // Setup Stack Frame for "iretq"
+        kstackTop = (uint64_t*)((uint64_t)kstackTop - sizeof(StackFrame));
+        
+        StackFrame* frame = (StackFrame*)kstackTop;
+        kmemset(frame, 0, sizeof(StackFrame));
+        
+        frame->rip = (uint64_t)entry_point;
+        frame->cs = 0x23; // User Code (RPL 3)
+        frame->rflags = 0x202; // IF=1
+        frame->rsp = (uint64_t)user_stack;
+        frame->ss = 0x1B; // User Data (RPL 3)
+        
+        newTask->stack_pointer = (uint64_t*)kstackTop;
+        newTask->state = TaskState::READY;
+        
+        newTask->next = tasksHead->next;
+        tasksHead->next = newTask;
+        
+        EarlyTerm::Print("[Scheduler] Created User Task ID: ");
+        EarlyTerm::PrintDec(newTask->id);
+        EarlyTerm::Print("\n");
+    }
+
     uint64_t* Schedule(uint64_t* current_rsp) {
         if (!currentTask) return current_rsp;
         

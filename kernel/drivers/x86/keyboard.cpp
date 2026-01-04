@@ -5,7 +5,6 @@
 #include "../../hal/device_registry.h"
 #include "../../hal/video/compositor.h"
 
-
 // PS/2 Keyboard Driver
 // Implements IInputDevice for HAL integration
 
@@ -89,6 +88,16 @@ namespace PS2Keyboard {
             event.ascii = (translated < 256) ? (char)translated : 0;
         }
         
+        // Push OSEvent for Userspace
+        OSEvent osEv;
+        osEv.type = keyRelease ? OSEvent::KEY_RELEASE : OSEvent::KEY_PRESS;
+        osEv.dx = 0;
+        osEv.dy = 0;
+        osEv.buttons = (shiftPressed ? 1 : 0) | (ctrlPressed ? 2 : 0) | (altPressed ? 4 : 0);
+        osEv.scancode = keyCode;
+        osEv.ascii = event.ascii;
+        InputManager::PushEvent(osEv);
+
         // Add to buffer if there's space
         uint32_t next = (write_ptr + 1) % EVENT_BUFFER_SIZE;
         if (next != read_ptr) {

@@ -82,3 +82,15 @@ sys_input_poll:
     ; arg1 is already in rdi (System V ABI matches syscall ABI for arg1)
     syscall
     ret
+
+global sys_spawn
+sys_spawn:
+    mov rax, 60
+    syscall
+    ret
+
+global sys_debug_print
+sys_debug_print:
+    mov rax, 61
+    syscall
+    ret

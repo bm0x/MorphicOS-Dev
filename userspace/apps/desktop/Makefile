@@ -1,5 +1,5 @@
 APP_NAME = desktop
-APP_SRCS = desktop.cpp
+APP_SRCS = desktop.cpp terminal.cpp mcl.cpp
 APP_ASSETS = assets/wallpaper.raw assets/icon.raw
 
 MORPHIC_ROOT = ../../..

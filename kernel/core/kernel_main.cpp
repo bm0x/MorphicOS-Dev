@@ -33,6 +33,7 @@
 namespace PIT { void Init(uint32_t); }
 namespace Keyboard { void Init(); char GetChar(); }
 namespace RAMDisk { void Init(); }
+namespace IDE { void Init(); }
 
 // Kernel stack for TSS (4KB aligned)
 static uint8_t kernel_tss_stack[4096] __attribute__((aligned(16)));
@@ -222,6 +223,8 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     RAMDisk::Init();
     UART::Write("[BOOT-TRACE] After RAMDisk::Init\n");
 
+    IDE::Init();
+    UART::Write("[BOOT-TRACE] After IDE::Init\n");
     
     // 10. Enable Interrupts
     EarlyTerm::Print("[Kernel] Enabling Interrupts... ");
@@ -264,16 +267,25 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     EarlyTerm::Print("\n[AUTO-TEST] Loading desktop.mpk...\n");
     
     // Call loader directly (loader.h included at top)
-    int loadResult = PackageLoader::Load("/initrd/desktop.mpk");
+    LoadedProcess proc = PackageLoader::Load("/initrd/desktop.mpk");
     
-    // If we get here, something went wrong (should not return)
-    UART::Write("!!! PackageLoader::Load returned: ");
-    UART::WriteDec(loadResult);
-    UART::Write(" !!!\n");
-    UART::Write("This means the loader failed before JumpToUser.\n");
+    if (proc.error_code == 0) {
+        UART::Write("[AUTO-TEST] Load success. Entry: ");
+        UART::WriteHex(proc.entry_point);
+        UART::Write(" Stack: ");
+        UART::WriteHex(proc.stack_top);
+        UART::Write("\n");
+        
+        // Create User Task
+        Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top);
+    } else {
+        UART::Write("!!! PackageLoader::Load failed: ");
+        UART::WriteDec(proc.error_code);
+        UART::Write(" !!!\n");
+    }
     
     EarlyTerm::Print("[AUTO-TEST] Load returned: ");
-    EarlyTerm::PrintDec(loadResult);
+    EarlyTerm::PrintDec(proc.error_code);
     EarlyTerm::Print("\n");
     // =======================================================================
     // END AUTO-TEST

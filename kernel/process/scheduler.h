@@ -22,6 +22,9 @@ namespace Scheduler {
     // Create a new kernel thread
     void CreateTask(void (*entry_point)());
     
+    // Create a new user thread
+    void CreateUserTask(void (*entry_point)(), void* user_stack);
+    
     // Called by Timer Interrupt (IRQ0)
     // Returns the new RSP to switch to (or the current one if no switch)
     uint64_t* Schedule(uint64_t* current_rsp);
