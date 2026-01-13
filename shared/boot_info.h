@@ -85,6 +85,10 @@ struct BootInfo {
     physical_addr_t   kernelBasePhys;
     uint64_t          kernelSize;
 
+    // Dynamic InitRD
+    physical_addr_t   initrdAddr;
+    uint64_t          initrdSize;
+
 } __attribute__((packed));
 
 #endif // MORPHIC_BOOT_INFO_H

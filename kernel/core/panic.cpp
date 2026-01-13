@@ -1,12 +1,13 @@
 #include "panic.h"
 #include "../hal/video/early_term.h"
-#include "../arch/common/platform.h"
+#include "../hal/platform.h"
 #include "../hal/arch/x86_64/io.h"
 
 // Serial port (COM1)
 #define COM1_PORT 0x3F8
 
 namespace KernelPanic {
+
     static bool serialInitialized = false;
     static PanicInfo lastPanic;
     
@@ -65,7 +66,7 @@ namespace KernelPanic {
     
     void Panic(const char* message, const char* file, int line) {
         // Disable interrupts immediately
-        Platform::DisableInterrupts();
+        HAL::Platform::DisableInterrupts();
         
         // Store panic info
         lastPanic.message = message;
@@ -88,16 +89,16 @@ namespace KernelPanic {
         
         // Halt forever
         while (true) {
-            Platform::Halt();
+            HAL::Platform::Halt();
         }
     }
     
     void PanicWithContext(const char* message, void* cpu_context) {
-        Platform::DisableInterrupts();
+        HAL::Platform::DisableInterrupts();
         WriteToScreen(message);
         DumpRegisters(cpu_context);
         WriteToSerial(message);
-        while (true) Platform::Halt();
+        while (true) HAL::Platform::Halt();
     }
     
     void DumpRegisters(void* context) {

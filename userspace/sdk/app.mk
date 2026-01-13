@@ -13,7 +13,7 @@
 #   - Define APP_SRCS
 
 ifndef MORPHIC_ROOT
-    MORPHIC_ROOT := $(abspath ../../../)
+    MORPHIC_ROOT := ../../..
 endif
 
 CXX = clang++
@@ -32,6 +32,7 @@ ASMFLAGS += -f elf64
 APP_BIN = $(APP_NAME).bin
 APP_MPK = $(APP_NAME).mpk
 APP_OBJS = $(APP_SRCS:.cpp=.o)
+RUNTIME_OBJ = $(MORPHIC_ROOT)/userspace/sdk/runtime.o
 ENTRY_OBJ = $(MORPHIC_ROOT)/userspace/entry.o
 SYSCALLS_OBJ = $(MORPHIC_ROOT)/userspace/syscalls.o
 GUI_LIB = $(MORPHIC_ROOT)/userspace/sdk/gui/libmorphic_gui.a
@@ -40,20 +41,31 @@ GUI_LIB = $(MORPHIC_ROOT)/userspace/sdk/gui/libmorphic_gui.a
 
 all: $(APP_MPK)
 
+$(RUNTIME_OBJ): $(MORPHIC_ROOT)/userspace/sdk/runtime.cpp
+	@echo "  [SDK] Compiling Runtime..."
+	$(CXX) $(CXXFLAGS) $< -o $@
+
 # Compile C++ sources
 %.o: %.cpp
 	@echo "  [APP] Compiling $<..."
 	$(CXX) $(CXXFLAGS) $< -o $@
 
 # Link to binary
-$(APP_BIN): $(APP_OBJS) $(ENTRY_OBJ) $(SYSCALLS_OBJ)
+$(APP_BIN): $(APP_OBJS) $(ENTRY_OBJ) $(SYSCALLS_OBJ) $(RUNTIME_OBJ)
 	@echo "  [APP] Linking $(APP_BIN)..."
-	$(LD) -T "$(MORPHIC_ROOT)/userspace/linker.ld" -o $@ $(ENTRY_OBJ) $(APP_OBJS) $(SYSCALLS_OBJ) "$(GUI_LIB)" --oformat binary
+	$(LD) -T "$(MORPHIC_ROOT)/userspace/linker.ld" -o $@ $(ENTRY_OBJ) $(RUNTIME_OBJ) $(APP_OBJS) $(SYSCALLS_OBJ) "$(GUI_LIB)" --oformat binary
+
+# Pack to MPK
+# Check for manifest
+MANIFEST_FLAG =
+ifneq ("$(wildcard manifest.txt)","")
+    MANIFEST_FLAG = --manifest manifest.txt
+endif
 
 # Pack to MPK
 $(APP_MPK): $(APP_BIN) $(APP_ASSETS)
 	@echo "  [APP] Packing $(APP_MPK)..."
-	python3 $(MORPHIC_ROOT)/tools/mpk_pack.py $@ $(APP_BIN) $(APP_ASSETS) --gen-header mpk_assets.h --prefix $(APP_NAME)
+	python3 $(MORPHIC_ROOT)/tools/mpk_pack.py $@ $(APP_BIN) $(APP_ASSETS) $(MANIFEST_FLAG) --gen-header mpk_assets.h --prefix $(APP_NAME)
 
 clean:
 	rm -f $(APP_OBJS) $(APP_BIN) $(APP_MPK) mpk_assets.h

@@ -1,8 +1,8 @@
 #include "../../sdk/morphic_api.h"
-#include "calculator.h"
+#include "terminal.h"
 
 extern "C" int main(void* args) {
-    MorphicAPI::Window* app = new CalculatorApp();
+    MorphicAPI::Window* app = new TerminalApp();
     app->Run();
     delete app;
     return 0;

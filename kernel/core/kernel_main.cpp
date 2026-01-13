@@ -13,11 +13,7 @@
 #include "../hal/serial/uart.h"
 #include "../mm/pmm.h"
 #include "../mm/write_combining.h"
-#include "../hal/arch/x86_64/gdt.h"
-#include "../hal/arch/x86_64/idt.h"
-#include "../hal/arch/x86_64/pic.h"
-#include "../hal/arch/x86_64/tss.h"
-#include "../hal/arch/x86_64/syscall.h"
+#include "../hal/platform.h"
 #include "../arch/common/mmu.h"
 #include "../mm/heap.h"
 #include "../fs/vfs.h"
@@ -35,8 +31,7 @@ namespace Keyboard { void Init(); char GetChar(); }
 namespace RAMDisk { void Init(); }
 namespace IDE { void Init(); }
 
-// Kernel stack for TSS (4KB aligned)
-static uint8_t kernel_tss_stack[4096] __attribute__((aligned(16)));
+// Kernel stack for TSS moved to HAL implementation
 
 // Store framebuffer for later use
 static FramebufferInfo* gFramebuffer = nullptr;
@@ -86,9 +81,9 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     gFramebuffer = &bootInfo->framebuffer;
     
     // 2. Core Hardware Init
-    GDT::Init();
-    IDT::Init();
-    PIC::Remap();
+    HAL::Platform::Init();
+    
+    // PMM needs BootInfo, so it stays here for now (generic interface, specific implementation)
     PMM::Init(bootInfo);
     MMU::Init();  // Initialize MMU to capture UEFI page tables
 
@@ -103,42 +98,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     
     KHeap::Init((void*)0x400000, heapSize);
 
-    // 4b. Initialize Serial for debugging - MOVED BEFORE TSS
-    UART::Init();
-    SerialDebug::SetOutput(OUTPUT_BOTH);
-    UART::WriteLine("[Serial] COM1 @ 115200 baud initialized.");
-    
-    // Debug heap info
-    UART::Write("[DEBUG] Free RAM: ");
-    UART::WriteDec(freeRAM);
-    UART::Write(" bytes\n");
-    UART::Write("[DEBUG] Heap size: ");
-    UART::WriteDec(heapSize);
-    UART::Write(" bytes at 0x400000\n");
-    
-    // Test small allocation first
-    UART::Write("[DEBUG] Testing small heap allocation...\n");
-    void* testPtr = kmalloc(64);
-    UART::Write("[DEBUG] Small alloc returned: ");
-    UART::WriteHex((uint64_t)testPtr);
-    UART::Write("\n");
-    
-    if (testPtr) {
-        UART::Write("[DEBUG] Writing to test memory...\n");
-        // Try to write to it
-        volatile uint8_t* p = (volatile uint8_t*)testPtr;
-        for (int i = 0; i < 64; i++) {
-            p[i] = (uint8_t)i;
-        }
-        UART::Write("[DEBUG] Small write successful!\n");
-        kfree(testPtr);
-        UART::Write("[DEBUG] Small free successful!\n");
-    }
 
-    // 4. Initialize TSS and Syscalls (Ring 3 support)
-    TSS::Init((uint64_t)&kernel_tss_stack[4096]);
-    GDT::LoadTSS(TSS::GetTSS());
-    Syscall::Init();
     
     // ===== TRACE CHECKPOINTS =====
     UART::Write("[BOOT-TRACE] After UART init\n");
@@ -173,7 +133,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     VFS::Init();
     UART::Write("[BOOT-TRACE] After VFS::Init\n");
     
-    InitRD::Init();
+    InitRD::Init(bootInfo->initrdAddr, bootInfo->initrdSize);
     UART::Write("[BOOT-TRACE] After InitRD::Init\n");
     
     // 8. Load BootConfig from VFS
@@ -229,7 +189,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     // 10. Enable Interrupts
     EarlyTerm::Print("[Kernel] Enabling Interrupts... ");
     UART::Write("[BOOT-TRACE] About to enable interrupts...\n");
-    IDT::EnableInterrupts();
+    HAL::Platform::EnableInterrupts();
     UART::Write("[BOOT-TRACE] After IDT::EnableInterrupts\n");
     
     // Unmask: IRQ0 (timer), IRQ1 (keyboard), IRQ2 (cascade to slave)

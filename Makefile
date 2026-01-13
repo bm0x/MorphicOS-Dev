@@ -122,12 +122,12 @@ kernel/hal/video/blit_fast.o: kernel/hal/video/blit_fast.S
 	@echo "  [KERNEL] Assembling $<..."
 	$(CXX) -target x86_64-elf -c $< -o $@
 
-build/morph_kernel.elf: $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o kernel/fs/desktop_mpk.o
+build/morph_kernel.elf: $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o
 	@echo "========================================"
 	@echo "  [KERNEL] Linking Kernel..."
 	@echo "========================================"
 	mkdir -p build
-	$(LD) -T kernel/linker.ld -o build/morph_kernel.elf $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o kernel/fs/desktop_mpk.o
+	$(LD) -T kernel/linker.ld -o build/morph_kernel.elf $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o
 
 
 
@@ -143,7 +143,7 @@ userspace/entry.o: userspace/entry.asm
 	$(ASM) $(ASMFLAGS) $< -o $@
 
 # Delegate desktop build to its own Makefile (SDK Standard)
-userspace/desktop.mpk:
+userspace/desktop.mpk: userspace/syscalls.o userspace/entry.o
 	@echo "========================================"
 	@echo "  [USER] Building Desktop App..."
 	@echo "========================================"
@@ -158,6 +158,15 @@ userspace/calculator.mpk:
 	$(MAKE) -C $(CALCULATOR_APP_DIR)
 	cp $(CALCULATOR_APP_DIR)/calculator.mpk userspace/calculator.mpk
 
+TERMINAL_APP_DIR = userspace/apps/terminal
+userspace/terminal.mpk:
+	@echo "========================================"
+	@echo "  [USER] Building Terminal App..."
+	@echo "========================================"
+	$(MAKE) -C $(TERMINAL_APP_DIR)
+	cp $(TERMINAL_APP_DIR)/terminal.mpk userspace/terminal.mpk
+
+
 kernel/fs/desktop_mpk.cpp: userspace/desktop.mpk
 	@echo "  [KERNEL] Embedding Desktop MPK..."
 	python3 tools/bin2h.py userspace/desktop.mpk kernel/fs/desktop_mpk.cpp desktop_mpk
@@ -165,9 +174,23 @@ kernel/fs/desktop_mpk.cpp: userspace/desktop.mpk
 kernel/fs/desktop_mpk.o: kernel/fs/desktop_mpk.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+kernel/fs/calculator_mpk.cpp: userspace/calculator.mpk
+	@echo "  [KERNEL] Embedding Calculator MPK..."
+	python3 tools/bin2h.py userspace/calculator.mpk kernel/fs/calculator_mpk.cpp calculator_mpk
+
+kernel/fs/calculator_mpk.o: kernel/fs/calculator_mpk.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+kernel/fs/terminal_mpk.cpp: userspace/terminal.mpk
+	@echo "  [KERNEL] Embedding Terminal MPK..."
+	python3 tools/bin2h.py userspace/terminal.mpk kernel/fs/terminal_mpk.cpp terminal_mpk
+
+kernel/fs/terminal_mpk.o: kernel/fs/terminal_mpk.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 
 # --- Image ---
-image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk
+image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk
 	@echo "========================================"
 	@echo "  [IMAGE] Creating Disk Image..."
 	@echo "========================================"
@@ -182,11 +205,78 @@ image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk
 	# Copy Desktop Package to Root
 	mcopy -i morphic.img userspace/desktop.mpk ::/
 	mcopy -i morphic.img userspace/calculator.mpk ::/
+	mcopy -i morphic.img userspace/terminal.mpk ::/
 
 
 clean:
-	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/desktop_mpk.cpp kernel/fs/desktop_mpk.o userspace/desktop.mpk userspace/desktop.bin
+	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/desktop_mpk.cpp kernel/fs/desktop_mpk.o userspace/*.mpk
+	# Dynamic Cleanup of Apps
+	rm -f userspace/apps/*/*.mpk userspace/apps/*/*.bin userspace/apps/*/*.o
 	$(MAKE) -C $(DESKTOP_APP_DIR) clean
 
-iso:
-	bash ./scripts/make_iso.sh
+# --- InitRD ---
+# Create a standard TAR image containing all userspace applications
+initrd: userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk
+	@echo "========================================"
+	@echo "  [INITRD] Packing initrd.img..."
+	@echo "========================================"
+	cd userspace && tar -cvf initrd.img desktop.mpk calculator.mpk terminal.mpk
+
+# --- ISO ---
+ISO_ROOT = iso_root
+ISO_NAME = morphic_os.iso
+ESP_IMG = $(ISO_ROOT)/boot/efi.img
+
+iso: kernel bootloader initrd
+	@echo "========================================"
+	@echo "  [ISO] Creating UEFI Bootable ISO..."
+	@echo "========================================"
+	rm -rf $(ISO_ROOT) $(ISO_NAME)
+	
+	# Create Structure
+	mkdir -p $(ISO_ROOT)/boot
+	mkdir -p $(ISO_ROOT)/EFI/BOOT
+	mkdir -p $(ISO_ROOT)/sys
+	
+	# Copy Core Files
+	cp build/morph_kernel.elf $(ISO_ROOT)/
+	cp build/morph_kernel.elf $(ISO_ROOT)/boot/
+	cp build/EFI/BOOT/BOOTX64.EFI $(ISO_ROOT)/EFI/BOOT/
+	
+	# Copy InitRD
+	cp userspace/initrd.img $(ISO_ROOT)/
+	
+	# Version Info
+	echo "Morphic OS v0.6" > $(ISO_ROOT)/sys/version.txt
+	date >> $(ISO_ROOT)/sys/version.txt
+	
+	# Create EFI System Partition (ESP) - 64MB to fit all apps + kernel
+	@echo "  [ISO] Creating ESP Image..."
+	dd if=/dev/zero of=$(ESP_IMG) bs=1M count=64 2>/dev/null
+	mkfs.fat -F 16 $(ESP_IMG) >/dev/null 2>&1
+	mmd -i $(ESP_IMG) ::/EFI
+	mmd -i $(ESP_IMG) ::/EFI/BOOT
+	mcopy -i $(ESP_IMG) build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
+	mcopy -i $(ESP_IMG) build/morph_kernel.elf ::/
+	# Copy InitRD to ESP
+	mcopy -i $(ESP_IMG) userspace/initrd.img ::/
+	
+	# Build ISO
+	@echo "  [ISO] Running Xorriso..."
+	xorriso -as mkisofs \
+		-o $(ISO_NAME) \
+		-iso-level 3 \
+		-full-iso9660-filenames \
+		-volid "MORPHIC_OS" \
+		-appid "Morphic OS v0.6" \
+		-publisher "Morphic Project" \
+		-preparer "Makefile" \
+		-eltorito-alt-boot \
+		-e boot/efi.img \
+		-no-emul-boot \
+		-isohybrid-gpt-basdat \
+		$(ISO_ROOT) 2>/dev/null
+	
+	@echo "========================================"
+	@echo "  [ISO] Build Complete: $(ISO_NAME)"
+	@echo "========================================"

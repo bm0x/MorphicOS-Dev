@@ -1,78 +1,69 @@
-// Platform implementation for x86_64
-
-#include "../../../../kernel/arch/common/platform.h"
-#include "io.h"
-#include "pic.h"
+#include "../../platform.h"
 #include "../../video/early_term.h"
+#include "../../serial/uart.h"
+#include "gdt.h"
+#include "idt.h"
+#include "pic.h"
+#include "syscall.h"
+#include "tss.h"
+#include "io.h"
 
+namespace HAL {
 
-namespace Platform {
-    void Init() {
-        // PIC is already initialized in kernel_main via pic.h
-        EarlyTerm::Print("[Platform] x86_64 initialized.\n");
+    // Kernel stack for TSS (4KB aligned) - Moved from kernel_main
+    static uint8_t kernel_tss_stack[4096] __attribute__((aligned(16)));
+
+    void Platform::Init() {
+        // Disable interrupts during initialization
+        DisableInterrupts();
+
+        // 1. Initialize Serial Port for Debugging
+        UART::Init();
+        EarlyTerm::Print("[HAL] Serial Initialized.\n");
+
+        // 2. Initialize GDT (Global Descriptor Table)
+        GDT::Init();
+        EarlyTerm::Print("[HAL] GDT Initialized.\n");
+        
+        // 2b. Initialize TSS (Task State Segment) for Ring 3 support
+        TSS::Init((uint64_t)&kernel_tss_stack[4096]);
+        GDT::LoadTSS(TSS::GetTSS());
+        EarlyTerm::Print("[HAL] TSS Initialized.\n");
+
+        // 3. Initialize IDT (Interrupt Descriptor Table)
+        IDT::Init();
+        EarlyTerm::Print("[HAL] IDT Initialized.\n");
+
+        // 4. Initialize PIC (Programmable Interrupt Controller)
+        PIC::Remap();
+        EarlyTerm::Print("[HAL] PIC Initialized.\n");
+
+        // 5. Initialize Syscall MSRs
+        Syscall::Init();
+        EarlyTerm::Print("[HAL] Syscall Interface Initialized.\n");
+
+        // Enable Interrupts
+        EnableInterrupts();
+        EarlyTerm::Print("[HAL] Platform Initialization Complete.\n");
     }
 
-    
-    void Halt() {
-        __asm__ volatile("hlt");
-    }
-    
-    void DisableInterrupts() {
-        __asm__ volatile("cli");
-    }
-    
-    void EnableInterrupts() {
+    void Platform::EnableInterrupts() {
         __asm__ volatile("sti");
     }
-    
-    void MemoryBarrier() {
-        __asm__ volatile("mfence" ::: "memory");
+
+    void Platform::DisableInterrupts() {
+        __asm__ volatile("cli");
     }
-    
-    void ReadBarrier() {
-        __asm__ volatile("lfence" ::: "memory");
+
+    void Platform::Halt() {
+        __asm__ volatile("hlt");
     }
-    
-    void WriteBarrier() {
-        __asm__ volatile("sfence" ::: "memory");
-    }
-    
-    void MaskIRQ(uint8_t irq) {
-        uint16_t port;
-        if (irq < 8) {
-            port = 0x21;
-        } else {
-            port = 0xA1;
-            irq -= 8;
-        }
-        uint8_t mask = IO::inb(port) | (1 << irq);
-        IO::outb(port, mask);
-    }
-    
-    void UnmaskIRQ(uint8_t irq) {
-        uint16_t port;
-        if (irq < 8) {
-            port = 0x21;
-        } else {
-            port = 0xA1;
-            irq -= 8;
-        }
-        uint8_t mask = IO::inb(port) & ~(1 << irq);
-        IO::outb(port, mask);
-    }
-    
-    void SendEOI(uint8_t irq) {
-        if (irq >= 8) {
-            IO::outb(0xA0, 0x20);  // Slave EOI
-        }
-        IO::outb(0x20, 0x20);      // Master EOI
-    }
-    
-    const char* GetArchName() {
-        return "x86_64";
-    }
-    
-    uint32_t GetCPUFrequencyMHz() {
-        return 0;  // TODO: detect via CPUID
+
+    void Platform::Reboot() {
+        uint8_t good = 0x02;
+        while (good & 0x02)
+            good = IO::inb(0x64);
+        IO::outb(0x64, 0xFE);
+        Halt();
     }
 }

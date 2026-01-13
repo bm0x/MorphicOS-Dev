@@ -1,0 +1,3 @@
+name=Morphic Calculator
+version=1.0.0
+permissions=VIDEO_ACCESS,INPUT_ACCESS

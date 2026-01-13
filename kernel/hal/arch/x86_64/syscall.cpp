@@ -381,14 +381,8 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case SYS_SLEEP:
     {
-        // Simple busy-wait sleep (blocking) since we are single threaded mostly
-        uint64_t ms = arg1;
-        uint64_t start = PIT_GetTicks();
-        while (PIT_GetTicks() < start + ms)
-        {
-            // spin
-            __asm__ volatile("pause");
-        }
+        // Non-blocking sleep using scheduler
+        Scheduler::Sleep(arg1);
         return 0;
     }
 

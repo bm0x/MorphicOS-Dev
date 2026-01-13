@@ -1,8 +1,7 @@
 #include "os_event.h"
 #include "compositor.h"
 #include "system_info.h"
-#include "terminal.h"
-#include "calculator.h"
+#include "launcher.h"
 
 // Syscall stubs not covered by compositor.h
 extern "C" {
@@ -13,8 +12,6 @@ extern "C" {
     int   sys_get_system_info(MorphicSystemInfo* out);
     int   sys_spawn(const char* path);
 
-    // C++ ABI Support
-    void __cxa_pure_virtual() { while(1); }
 }
 
 // ... colors ...
@@ -47,8 +44,7 @@ static MorphicSystemInfo g_sys = {};
 static uint64_t g_last_rtc_ms = 0;
 static uint32_t g_last_clock_sec = 0;
 
-static Terminal* g_terminal = nullptr;
-static Calculator g_calculator;
+static Launcher g_launcher;
 
 // Interaction State
 int drag_target_idx = -1;
@@ -56,10 +52,8 @@ int drag_offset_x = 0;
 int drag_offset_y = 0;
 
 void InitWindows() {
-    windows[0] = {100, 100, 420, 300, 0xFF4040A0, "File Manager", false, false, false, 0,0,0,0};
-    windows[1] = {560, 150, 320, 220, 0xFF40A040, "Terminal", false, false, false, 0,0,0,0};
-    windows[2] = {160, 160, 520, 260, 0xFF4080A0, "System", false, false, false, 0,0,0,0};
-    window_count = 3;
+    windows[0] = {160, 160, 520, 260, 0xFF4080A0, "System", false, false, false, 0,0,0,0};
+    window_count = 1;
 }
 
 static void BringToFront(int idx) {
@@ -148,15 +142,8 @@ void HandleEvent(const OSEvent& ev) {
         if (window_count > 0) {
             Compositor::Window& top = windows[window_count - 1];
             if (!top.minimized && top.title) {
-                if (top.title[0] == 'T') { // "Terminal"
-                    if (ev.ascii > 0 && g_terminal) {
-                        g_terminal->OnChar((char)ev.ascii);
-                        ui_dirty = true; // Redraw terminal
-                    }
-                }
-                else if (top.title[0] == 'C') { // "Calculator"
-                    // Optional: Keyboard support for calculator
-                }
+                // Legacy internal apps removed
+
             }
         }
     }
@@ -172,15 +159,7 @@ void HandleEvent(const OSEvent& ev) {
             const int click_y = (int)(mouse_target_y16 >> 16);
 
             // Check Calculator Buttons if top window is Calculator
-            if (window_count > 0) {
-                Compositor::Window& top = windows[window_count - 1];
-                if (!top.minimized && top.title && top.title[0] == 'C') {
-                    if (HitRect(click_x, click_y, top.x, top.y, top.width, top.height)) {
-                        g_calculator.OnClick(click_x, click_y, top.x, top.y, top.width, top.height);
-                        ui_dirty = true;
-                    }
-                }
-            }
+
 
             // Taskbar interactions
             const int taskH = 40;
@@ -210,73 +189,16 @@ void HandleEvent(const OSEvent& ev) {
                 return;
             }
 
-            // Menu Interaction
+            // Link to Launcher
             if (menu_open) {
-                int menuH = 220;
-                int menuY = Compositor::GetHeight() - taskH - menuH;
-                if (HitRect(click_x, click_y, 0, menuY, 260, menuH)) {
-                    // Check items
-                    int itemY = menuY + 10;
-                    int itemH = 24;
-                    
-                    // 1. Terminal
-                    if (HitRect(click_x, click_y, 10, itemY, 240, itemH)) {
-                        OpenWindow("Terminal", 320, 220, 0xFF40A040);
-                        menu_open = false;
-                        ui_dirty = true;
-                        return;
-                    }
-                    itemY += 30;
-
-                    // 2. Calculator
-                    if (HitRect(click_x, click_y, 10, itemY, 240, itemH)) {
-                        // Launch independent process
-                        sys_spawn("/initrd/calculator.mpk");
-                        menu_open = false;
-                        ui_dirty = true;
-                        return;
-                    }
-                    itemY += 30;
-
-                    // 3. MPK Installer
-                    if (HitRect(click_x, click_y, 10, itemY, 240, itemH)) {
-                        OpenWindow("MPK Installer", 300, 150, 0xFF606060);
-                        menu_open = false;
-                        ui_dirty = true;
-                        return;
-                    }
-                    itemY += 30;
-
-                    // 4. System Info
-                    if (HitRect(click_x, click_y, 10, itemY, 240, itemH)) {
-                        OpenWindow("System", 520, 260, 0xFF4080A0);
-                        menu_open = false;
-                        ui_dirty = true;
-                        return;
-                    }
-                    itemY += 30;
-
-                    // Bottom: Restart / Shutdown
-                    itemY = menuY + menuH - 30;
-                    if (HitRect(click_x, click_y, 10, itemY, 110, itemH)) {
-                        // Restart (Simulated)
-                        // TODO: sys_reboot()
-                        menu_open = false;
-                        return;
-                    }
-                    if (HitRect(click_x, click_y, 130, itemY, 110, itemH)) {
-                        // Shutdown (Simulated)
-                        // TODO: sys_shutdown()
-                        menu_open = false;
-                        return;
-                    }
-                    
-                    return;
+                if (g_launcher.HandleClick(click_x, click_y)) {
+                    menu_open = false; 
+                    ui_dirty = true;
                 } else {
-                    // Click outside menu closes it
                     menu_open = false;
                     ui_dirty = true;
                 }
+                return;
             }
 
             // Window interactions (topmost first)
@@ -453,10 +375,7 @@ extern "C" int main(void* asset_ptr) {
     mouse_target_y16 = mouse_y16;
     
     InitWindows();
-
-    // Initialize Terminal on stack (avoids global ctor issues)
-    Terminal term;
-    g_terminal = &term;
+    g_launcher.Init();
     
     const int TARGET_FPS = 60;
     const int FRAME_TIME_MS = 1000 / TARGET_FPS;
@@ -525,9 +444,9 @@ extern "C" int main(void* asset_ptr) {
         if (now_sec != prev_clock_sec || menu_open != prev_menu_open) {
             int taskH = 40;
             DirtyAdd(dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
-            // menu area
+            // menu area (Launcher is full screen now)
             if (menu_open || prev_menu_open) {
-                DirtyAdd(dirty, 0, Compositor::GetHeight() - taskH - 200, 260, 220);
+                DirtyAdd(dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
             }
         }
 
@@ -543,7 +462,7 @@ extern "C" int main(void* asset_ptr) {
             int taskH = 40;
             DirtyAdd(dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
             if (menu_open || prev_menu_open) {
-                DirtyAdd(dirty, 0, Compositor::GetHeight() - taskH - 200, 260, 220);
+                DirtyAdd(dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
             }
         }
         
@@ -562,7 +481,9 @@ extern "C" int main(void* asset_ptr) {
         // Background is drawn inside RenderScene
         Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
         Compositor::RenderTaskbar(windows, window_count, menu_open, g_rtc);
-        Compositor::RenderMenu(menu_open);
+        if (menu_open) {
+            g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
+        }
 
         // System window content (text-based, lightweight)
         for (int i = 0; i < window_count; i++) {
@@ -701,21 +622,13 @@ extern "C" int main(void* asset_ptr) {
                 }
             }
             // Match "Terminal"
+            // Match "Terminal"
             else if (w.title[0] == 'T') {
-                int pad = 4;
-                int titleH = 26;
-                int x = w.x + pad;
-                int y = w.y + titleH + pad;
-                int w_content = w.width - 2*pad;
-                int h_content = w.height - titleH - 2*pad;
-                
-                if (g_terminal) {
-                    g_terminal->Draw(x, y, w_content, h_content);
-                }
+                // External App
             }
             // Match "Calculator"
             else if (w.title[0] == 'C') {
-                g_calculator.Draw(w.x, w.y, w.width, w.height);
+                // External App
             }
             // Match "MPK Installer"
             else if (w.title[0] == 'M') {

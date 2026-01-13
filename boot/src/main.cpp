@@ -326,6 +326,51 @@ EFI_STATUS LoadKernel(BootInfo* bootInfo, void** kernelEntry) {
     return EFI_SUCCESS;
 }
 
+EFI_STATUS LoadInitRD(BootInfo* bootInfo) {
+    void* fileBuffer = nullptr;
+    UINTN fileSize = 0;
+    
+    Print(u"Loading initrd.img...\r\n");
+    EFI_STATUS status = LoadFile((CHAR16*)u"initrd.img", &fileBuffer, &fileSize);
+    if (status != EFI_SUCCESS) {
+        Print(u"InitRD not found. System will boot without userspace apps.\r\n");
+        // Not a critical error for kernel boot, but critical for apps
+        bootInfo->initrdAddr = 0;
+        bootInfo->initrdSize = 0;
+        return EFI_SUCCESS;
+    }
+
+    // Allocate Pages for InitRD
+    UINTN pages = (fileSize + 0xFFF) / 0x1000;
+    EFI_PHYSICAL_ADDRESS physAddr = 0xFFFFFFFF; // Max 4GB for now
+    
+    // Attempt allocate anywhere
+    status = gBS->AllocatePages(AllocateAnyPages, EfiLoaderData, pages, &physAddr);
+    if (status != EFI_SUCCESS) {
+         Print(u"Failed to allocate memory for InitRD.\r\n");
+         gBS->FreePool(fileBuffer);
+         return status;
+    }
+    
+    // Copy
+    UINT8* dest = (UINT8*)physAddr;
+    UINT8* src = (UINT8*)fileBuffer;
+    for (UINTN i=0; i < fileSize; i++) dest[i] = src[i];
+    
+    gBS->FreePool(fileBuffer);
+    
+    bootInfo->initrdAddr = physAddr;
+    bootInfo->initrdSize = fileSize;
+    
+    Print(u"InitRD Loaded at: ");
+    PrintHex(physAddr);
+    Print(u" Size: ");
+    PrintDec(fileSize);
+    Print(u"\r\n");
+    
+    return EFI_SUCCESS;
+}
+
 // --- Entry Point ---
 
 extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
@@ -353,6 +398,9 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
     void (*kernelEntry)(BootInfo*) = nullptr;
     EFI_STATUS kernelStatus = LoadKernel(bootInfo, (void**)&kernelEntry);
     BOOT_CHECK(kernelStatus, u"Failed to load kernel ELF file.");
+
+    // 3.5 Load InitRD
+    LoadInitRD(bootInfo);
 
 
     Print(u"Kernel Loaded. Preparing Handover...\r\n");

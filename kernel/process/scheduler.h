@@ -12,6 +12,7 @@ struct Task {
     uint64_t* stack_pointer; // Saved RSP
     uint64_t id;
     TaskState state;
+    uint64_t wake_up_time; // For SLEEPING state (ticks)
     Task* next;
     // Paging structures, priority, etc. can be added later
 };
@@ -25,10 +26,16 @@ namespace Scheduler {
     // Create a new user thread
     void CreateUserTask(void (*entry_point)(), void* user_stack);
     
+    // Put current task to sleep for ms milliseconds
+    void Sleep(uint64_t ms);
+    
     // Called by Timer Interrupt (IRQ0)
     // Returns the new RSP to switch to (or the current one if no switch)
     uint64_t* Schedule(uint64_t* current_rsp);
     
     // Get current task ID (for debugging)
     uint64_t GetCurrentTaskId();
+    
+    // Yield current timeslice (voluntary switch)
+    void Yield();
 }

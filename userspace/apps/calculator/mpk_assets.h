@@ -6,15 +6,7 @@
 // Offsets are relative to the assets block base pointer passed to main(void* assets_ptr).
 // This matches the current MPK1 convention: header + code + assets (raw bytes).
 
-#define desktop_MPK_ASSET_COUNT 2
-
-#define desktop_MPK_ASSET_WALLPAPER_OFFSET 152
-#define desktop_MPK_ASSET_WALLPAPER_SIZE   3145728
-#define desktop_MPK_ASSET_WALLPAPER_PATH   "assets/wallpaper.raw"
-
-#define desktop_MPK_ASSET_ICON_OFFSET 3145880
-#define desktop_MPK_ASSET_ICON_SIZE   16384
-#define desktop_MPK_ASSET_ICON_PATH   "assets/icon.raw"
+#define calculator_MPK_ASSET_COUNT 0
 
 static inline const uint8_t* mpk_asset_ptr(const void* assets_base, uint32_t offset)
 {
