@@ -118,3 +118,10 @@ sys_post_message:
     mov rax, 65
     syscall
     ret
+
+global sys_compose_layers
+sys_compose_layers:
+    mov rax, 66
+    syscall
+    ret
+

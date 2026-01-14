@@ -15,6 +15,10 @@ public:
     static void SetColor(uint32_t fg, uint32_t bg);
     static void PrintAt(uint32_t x, uint32_t y, const char* str);
     
+    // Disable terminal output (used when Desktop takes over)
+    static void Disable();
+    static bool IsEnabled();
+    
     // Public for Verbose Engine color access
     static uint32_t colorFG;
     static uint32_t colorBG;
@@ -28,6 +32,8 @@ private:
     static uint32_t cursorY;
     static uint32_t widthChars;
     static uint32_t heightChars;
+    static bool enabled;
 };
 
 #endif // EARLY_TERM_H
+

@@ -27,6 +27,7 @@ namespace Compositor {
     
     // Composition
     void Compose();           // Render all layers to backbuffer
+    void ComposeAppWindowsOnly(); // Overlay APP_WINDOW layers only (for Desktop)
     void ComposeRegion(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
     void Flip();              // Swap backbuffer to screen
     

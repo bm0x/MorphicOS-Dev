@@ -240,7 +240,10 @@ namespace Compositor {
         uint32_t* backbuf = Graphics::GetBackbuffer();
         uint32_t pitch = Graphics::GetWidth();
         
-        if (userspaceMode) { ReleaseLock(); return; }
+        // NOTE: In userspaceMode, Desktop handles its own rendering.
+        // However, we still need to composite APP_WINDOW layers created via syscalls
+        // so that spawned apps (Calculator, Terminal) are visible.
+        // We skip WALLPAPER/OVERLAY layers which Desktop manages.
 
         SortLayers();
         
@@ -248,6 +251,9 @@ namespace Compositor {
         for (uint32_t i = 0; i < layerCount; i++) {
             Layer* layer = layers[i];
             if (!layer || !layer->visible || !layer->buffer) continue;
+            
+            // In userspace mode, only render APP_WINDOW layers (syscall-created)
+            if (userspaceMode && layer->type != LayerType::APP_WINDOW) continue;
             
             if (layer->has_alpha) {
                 BlitTransparent(backbuf, pitch, layer->buffer, 
@@ -270,6 +276,42 @@ namespace Compositor {
         
         frameCount++;
         ClearDirtyRects();
+        ReleaseLock();
+    }
+    
+    // Overlay only APP_WINDOW layers onto backbuffer (does NOT clear)
+    // Called by Desktop after it draws its scene, to integrate spawned app windows
+    void ComposeAppWindowsOnly() {
+        AcquireLock();
+        uint32_t* backbuf = Graphics::GetBackbuffer();
+        uint32_t pitch = Graphics::GetWidth();
+        
+        // Sort layers by z_order
+        SortLayers();
+        
+        // Only render APP_WINDOW layers (created by spawned apps via syscalls)
+        for (uint32_t i = 0; i < layerCount; i++) {
+            Layer* layer = layers[i];
+            if (!layer || !layer->visible || !layer->buffer) continue;
+            if (layer->type != LayerType::APP_WINDOW) continue; // ONLY app windows
+            
+            if (layer->has_alpha) {
+                BlitTransparent(backbuf, pitch, layer->buffer, 
+                               layer->width, layer->height, layer->x, layer->y);
+            } else {
+                // Opaque blit
+                for (uint32_t y = 0; y < layer->height && (layer->y + y) < Graphics::GetHeight(); y++) {
+                    for (uint32_t x = 0; x < layer->width && (layer->x + x) < Graphics::GetWidth(); x++) {
+                        backbuf[(layer->y + y) * pitch + (layer->x + x)] = 
+                            layer->buffer[y * layer->width + x];
+                    }
+                }
+            }
+            
+            // Draw window decorations
+            DrawWindowDecoration(layer);
+        }
+        
         ReleaseLock();
     }
     
@@ -330,7 +372,8 @@ namespace Compositor {
     
     void Flip() {
         // Use VSync to eliminate tearing
-        Graphics::FlipWithVSync();
+        // Graphics::FlipWithVSync();
+        Graphics::Flip(); // Fast flip for VNC
     }
     
     void ToggleDebugOverlay() {

@@ -25,7 +25,10 @@ void     sys_debug_print(const char* msg);
 void     sys_register_compositor();
 void*    sys_map_window(uint64_t windowId);
 void     sys_post_message(uint64_t targetPid, void* event);
+// Compositor: Overlay APP_WINDOW layers on backbuffer (for Desktop use)
+void     sys_compose_layers();
 
 #ifdef __cplusplus
 }
 #endif
+

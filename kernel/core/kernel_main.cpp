@@ -241,14 +241,15 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     // END AUTO-TEST
     // =======================================================================
     
-    Shell::Init();
-
-    // Interactive Loop (Task 0)
+    // NOTE: Shell is disabled when Desktop runs.
+    // The Desktop handles all user interaction via sys_get_event().
+    // Kernel Task 0 becomes an idle task.
+    // Shell::Init();  // DISABLED - conflicts with Desktop graphics
+    
+    // Idle Loop (Task 0) - Just wait for interrupts
+    // The Scheduler will preempt us to run Desktop and other tasks
     while(1) {
-        char c = Keyboard::GetChar();
-        if (c) {
-            Shell::OnChar(c);
-        }
+        __asm__ volatile("hlt");  // Wait for interrupt (low power)
     }
 }
 

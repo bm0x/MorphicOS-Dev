@@ -570,7 +570,8 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         UART::WriteDec(win->id);
         UART::Write("\n");
         
-        uint64_t user_video_virt = 0x600100000000ULL;
+        // Unique per-window: Base + (WindowID * 16MB)
+        uint64_t user_video_virt = 0x600100000000ULL + (win->id * 0x1000000ULL);
         uint64_t pages = ((uint64_t)width * height * 4 + 4095) / 4096;
         
         // Map Window Buffer (Physical) to User Virtual
@@ -590,18 +591,22 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case 51: // SYS_VIDEO_FLIP
     {
-        // OLD: Manual Blit.
-        // NEW: Trigger Compositor Composition.
-        // We assume the user has written to their Window Buffer (Allocated in VIDEO_MAP).
-        // Since we don't know WHICH window (no ID passed), we mark whole screen dirty.
-        // Ideally we use SYS_UPDATE_WINDOW(id) but this provides backward compat.
+        // Apps draw to their window buffer. Desktop is the compositor.
+        // Apps should NOT trigger full Compose+Flip as that overwrites Desktop's scene.
+        // Instead, we just mark the screen dirty so Desktop's next frame picks up changes.
+        //
+        // NOTE: Desktop's main loop calls its own SwapBuffersRect which handles
+        // reading all window layers and presenting them.
         
         uint32_t w = Graphics::GetWidth();
         uint32_t h = Graphics::GetHeight();
         
+        // Mark entire screen dirty (Desktop will see this)
         Compositor::MarkDirty(0, 0, w, h);
-        Compositor::Compose();
-        Compositor::Flip();
+        
+        // DO NOT call Compose+Flip here - Desktop handles that
+        // Compositor::Compose();
+        // Compositor::Flip();
         
         return 0;
     }
@@ -643,8 +648,9 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
         uint32_t* src = (uint32_t*)arg1;
 
-        // Best-effort VSync wait (short timeout for partial updates).
-        bool vsynced = WaitVBlankTimeoutMs(5);
+        // Best-effort VSync wait (disabled for VNC/QEMU stability)
+        // bool vsynced = WaitVBlankTimeoutMs(5); 
+        bool vsynced = true; // Pretend we synced
 
         // Copy only the rectangle.
         for (uint32_t row = 0; row < h; row++)
@@ -680,8 +686,8 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         UART::WriteDec(win->id);
         UART::Write("\n");
         
-        // Map to User Space (Fixed Video Base)
-        uint64_t user_video_virt = 0x600100000000ULL;
+        // Map to User Space (Unique per-window: Base + WindowID * 16MB)
+        uint64_t user_video_virt = 0x600100000000ULL + (win->id * 0x1000000ULL);
         uint64_t pages = ((uint64_t)w * h * 4 + 4095) / 4096;
         
         for (uint64_t i = 0; i < pages; i++) {
@@ -761,6 +767,8 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         // arg1: Unused (Registers Current Process)
         InputManager::SetCompositorPID(Scheduler::GetCurrentTaskId());
         Compositor::EnableUserspaceMode();
+        // Disable kernel terminal output - Desktop now owns the display
+        EarlyTerm::Disable();
         return 0;
 
     case SYS_MAP_WINDOW:
@@ -792,6 +800,15 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         __asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
 
         return compos_base;
+    }
+
+    case 66: // SYS_COMPOSE_LAYERS
+    {
+        // Desktop calls this after drawing its own scene to the backbuffer.
+        // This overlays APP_WINDOW layers (Calculator, Terminal, etc.) on top.
+        // Does NOT clear the backbuffer - just draws window layers.
+        Compositor::ComposeAppWindowsOnly();
+        return 0;
     }
 
     default:

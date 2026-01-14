@@ -13,6 +13,7 @@ extern "C" {
     int   sys_spawn(const char* path);
     void  sys_register_compositor();  
     void  sys_debug_print(const char* msg);
+    void  sys_compose_layers(); // Overlay spawned app windows
 
 }
 
@@ -487,6 +488,10 @@ extern "C" int main(void* asset_ptr) {
         // Background is drawn inside RenderScene
         Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
         Compositor::RenderTaskbar(windows, window_count, menu_open, g_rtc);
+        
+        // Overlay spawned app windows (Calculator, Terminal, etc.) from kernel compositor
+        // These are APP_WINDOW layers created via SYS_CREATE_WINDOW
+        sys_compose_layers();
 
         // System window content (text-based, lightweight) - HIDE if launcher open
         if (!menu_open) {

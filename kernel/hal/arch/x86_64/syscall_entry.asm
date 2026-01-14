@@ -56,5 +56,5 @@ syscall_entry:
 section .bss
 align 16
 kernel_syscall_stack:
-    resb 4096
+    resb 16384
 kernel_syscall_stack_top:

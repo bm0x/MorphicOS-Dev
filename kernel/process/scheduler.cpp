@@ -74,15 +74,15 @@ namespace Scheduler {
         newTask->id = nextTaskId++;
         newTask->wake_up_time = 0;
         
-        // Allocate Stack (4KB)
-        uint64_t* stackBase = (uint64_t*)kmalloc(4096);
+        // Allocate Stack (16KB)
+        uint64_t* stackBase = (uint64_t*)kmalloc(16384);
         if (!stackBase) {
             EarlyTerm::Print("[Scheduler] ERROR: Cannot allocate stack!\n");
             kfree(newTask);
             return;
         }
         
-        uint64_t* stackTop = (uint64_t*)((uint64_t)stackBase + 4096);
+        uint64_t* stackTop = (uint64_t*)((uint64_t)stackBase + 16384);
         
         // Setup Stack Frame for "iretq"
         stackTop = (uint64_t*)((uint64_t)stackTop - sizeof(StackFrame));
@@ -96,7 +96,7 @@ namespace Scheduler {
         
         // CRITICAL for x64: Set RSP and SS for iretq
         // After iretq, CPU will load RSP from here (task's own stack top)
-        frame->rsp = (uint64_t)stackBase + 4096; // Top of allocated stack
+        frame->rsp = (uint64_t)stackBase + 16384; // Top of allocated stack
         frame->ss = 0x10; // Kernel Data Segment
         
         frame->ss = 0x10; // Kernel Data Segment
@@ -125,10 +125,10 @@ namespace Scheduler {
         newTask->cr3 = cr3;
         
         // Allocate Kernel Stack for this task (used when interrupt occurs in Ring 3)
-        uint64_t* kstackBase = (uint64_t*)kmalloc(4096);
+        uint64_t* kstackBase = (uint64_t*)kmalloc(16384);
         if (!kstackBase) { kfree(newTask); return; }
         
-        uint64_t* kstackTop = (uint64_t*)((uint64_t)kstackBase + 4096);
+        uint64_t* kstackTop = (uint64_t*)((uint64_t)kstackBase + 16384);
         
         // Setup Stack Frame for "iretq"
         kstackTop = (uint64_t*)((uint64_t)kstackTop - sizeof(StackFrame));
@@ -143,7 +143,7 @@ namespace Scheduler {
         frame->ss = 0x1B; // User Data (RPL 3)
         
         newTask->stack_pointer = (uint64_t*)kstackTop;
-        newTask->kernel_stack_top = (uint64_t)kstackBase + 4096; // Store original top for TSS
+        newTask->kernel_stack_top = (uint64_t)kstackBase + 16384; // Store original top for TSS
         newTask->state = TaskState::READY;
         
         newTask->next = tasksHead->next;

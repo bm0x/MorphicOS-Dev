@@ -8,6 +8,7 @@ uint32_t EarlyTerm::widthChars = 0;
 uint32_t EarlyTerm::heightChars = 0;
 uint32_t EarlyTerm::colorFG = 0xFFFFFFFF; // White
 uint32_t EarlyTerm::colorBG = 0xFF000000; // Black
+bool EarlyTerm::enabled = true;
 
 void EarlyTerm::Init(FramebufferInfo* fbInfo) {
     fb = fbInfo;
@@ -34,7 +35,7 @@ void EarlyTerm::PutPixel(uint32_t x, uint32_t y, uint32_t color) {
 }
 
 void EarlyTerm::PutChar(char c) {
-    if (!fb) return;
+    if (!fb || !enabled) return;
 
     if (c == '\n') {
         cursorX = 0;
@@ -125,9 +126,18 @@ void EarlyTerm::Scroll() {
 }
 
 void EarlyTerm::Print(const char* str) {
+    if (!enabled) return;
     while (*str) {
         PutChar(*str++);
     }
+}
+
+void EarlyTerm::Disable() {
+    enabled = false;
+}
+
+bool EarlyTerm::IsEnabled() {
+    return enabled;
 }
 
 void EarlyTerm::PrintDec(uint64_t value) {
