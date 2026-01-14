@@ -1,0 +1,50 @@
+## Makefile.win - Windows helper Makefile
+#
+# This Makefile delegates build actions to WSL (recommended) or attempts native
+# MSYS2/MinGW toolchain. It calls the project's `Makefile` inside WSL when
+# available; otherwise it runs `make -f Makefile` (assumes MSYS2/MinGW).
+#
+# Usage:
+#   make -f Makefile.win          # build
+#   make -f Makefile.win run      # launch run_direct.bat
+#   make -f Makefile.win clean    # clean
+
+.PHONY: all build clean iso run help
+
+all: build
+
+# Try to use WSL if available, otherwise call native make (MSYS2/MinGW)
+build:
+	@echo [Makefile.win] Building (tries WSL then native make)...
+	@where wsl >nul 2>nul && (
+		echo [Makefile.win] WSL detected, invoking Linux Makefile in WSL... && \
+		wsl -e bash -lc "make"
+	) || (
+		echo [Makefile.win] WSL not found, attempting native make (MSYS2/MinGW)... && \
+		make -f Makefile
+	)
+
+clean:
+	@echo [Makefile.win] Cleaning (WSL or native)...
+	@where wsl >nul 2>nul && (
+		wsl -e bash -lc "make clean"
+	) || (
+		make -f Makefile clean
+	)
+
+iso:
+	@echo [Makefile.win] Building ISO (uses WSL preferred)...
+	@where wsl >nul 2>nul && (
+		wsl -e bash -lc "./setup.sh && make"
+	) || (
+		echo [Makefile.win] WSL not available: run setup.sh and make inside MSYS2/WSL manually.
+	)
+
+run:
+	@echo [Makefile.win] Launching QEMU via run_direct.bat
+	@call run_direct.bat
+
+help:
+	@echo "Makefile.win - helper for Windows environments"
+	@echo "Usage: make -f Makefile.win [build|clean|iso|run]"
+	@echo "If WSL is installed it will be used; otherwise native make is attempted."

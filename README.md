@@ -7,7 +7,164 @@ Morphic es un **sistema operativo experimental** (hobby OS) escrito desde cero.
 - Boot nativo **UEFI** (aplicación EFI `BOOTX64.EFI`).
 - Arquitectura objetivo: **x86_64**.
 - Userspace mínimo con **syscalls**; el “Desktop” actual corre como app en userspace y se empaqueta en un `.mpk` embebido en el kernel.
+## Arquitectura del Sistema - Pila de Software
 
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              USERSPACE (Ring 3)                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐                   │
+│  │    Desktop      │  │   Calculator    │  │    Terminal     │   Aplicaciones   │
+│  │   (desktop/)    │  │  (calculator/)  │  │   (terminal/)   │      .mpk        │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘                   │
+│           │                    │                    │                            │
+│  ┌────────┴────────────────────┴────────────────────┴────────┐                   │
+│  │                    SDK Userspace                          │                   │
+│  │  ┌─────────────┐ ┌──────────────┐ ┌────────────────────┐  │                   │
+│  │  │ runtime.cpp │ │ syscalls.asm │ │ morphic_syscalls.h │  │                   │
+│  │  │  (C++ RT)   │ │  (SYSCALL)   │ │   (API Headers)    │  │                   │
+│  │  └─────────────┘ └──────────────┘ └────────────────────┘  │                   │
+│  └───────────────────────────┬───────────────────────────────┘                   │
+│                              │                                                   │
+│                        SYSCALL ABI                                               │
+│               (RAX=num, RDI/RSI/RDX=args)                                        │
+╠══════════════════════════════╪══════════════════════════════════════════════════╣
+│                              │                                                   │
+│                              ▼            KERNEL (Ring 0)                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │                         MORPHIC API LAYER                                 │  │
+│  │                       (kernel/api/morphic_api.h)                          │  │
+│  │   Syscall Dispatcher │ Graphics API │ Audio API │ Input API │ Memory API │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                           │
+│  ┌───────────────────────────────────┴───────────────────────────────────────┐  │
+│  │                           KERNEL CORE                                     │  │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────────────┐    │  │
+│  │  │ kernel_main │ │   Shell     │ │   Loader    │ │    Boot Config    │    │  │
+│  │  │   (entry)   │ │  (mcl/)     │ │ (MPK Apps)  │ │   (bootconfig)    │    │  │
+│  │  └─────────────┘ └─────────────┘ └─────────────┘ └───────────────────┘    │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                           │
+│  ┌───────────────────────────────────┴───────────────────────────────────────┐  │
+│  │                       PROCESS MANAGEMENT                                  │  │
+│  │  ┌─────────────────────────────────────────────────────────────────────┐  │  │
+│  │  │                      Scheduler (scheduler.cpp)                      │  │  │
+│  │  │      Task State │ Context Switch │ Sleep │ Event Queue (IPC)        │  │  │
+│  │  └─────────────────────────────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                           │
+│  ┌───────────────────────────────────┴───────────────────────────────────────┐  │
+│  │                       MEMORY MANAGEMENT (mm/)                             │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │  │
+│  │  │     PMM      │  │     Heap     │  │  User Heap   │  │Write Combine │   │  │
+│  │  │ (Physical)   │  │   (kmalloc)  │  │  (userspace) │  │   (MMIO)     │   │  │
+│  │  │ Bitmap Alloc │  │  Free-List   │  │   mapping    │  │  Framebuf    │   │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                           │
+│  ┌───────────────────────────────────┴───────────────────────────────────────┐  │
+│  │                      VIRTUAL FILE SYSTEM (fs/)                            │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                     │  │
+│  │  │     VFS      │  │   InitRD     │  │    Mount     │                     │  │
+│  │  │ (vfs.cpp)    │  │ (initrd.cpp) │  │ (mount.cpp)  │                     │  │
+│  │  │  Open/Read   │  │ Embedded FS  │  │  Mountpoints │                     │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘                     │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                           │
+├──────────────────────────────────────┼──────────────────────────────────────────┤
+│                     HARDWARE ABSTRACTION LAYER (HAL)                             │
+├──────────────────────────────────────┼──────────────────────────────────────────┤
+│  ┌───────────────────────────────────┴───────────────────────────────────────┐  │
+│  │                      Device Registry (hal/device_registry.cpp)            │  │
+│  │         Register() │ GetPrimaryInput() │ GetPrimaryVideo() │ Enumerate    │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│          │                    │                    │                    │        │
+│  ┌───────┴───────┐    ┌───────┴───────┐    ┌───────┴───────┐    ┌───────┴─────┐ │
+│  │  VIDEO (hal/) │    │  INPUT (hal/) │    │  AUDIO (hal/) │    │STORAGE(hal/)│ │
+│  ├───────────────┤    ├───────────────┤    ├───────────────┤    ├─────────────┤ │
+│  │ video_manager │    │ input_manager │    │  audio.cpp    │    │storage_mgr  │ │
+│  │ compositor    │    │   mouse.cpp   │    │  mixer.cpp    │    │buffer_cache │ │
+│  │ graphics.cpp  │    │  keymap.cpp   │    │   wav.cpp     │    │ partition   │ │
+│  │ font_renderer │    │ input_device  │    │ ring_buffer   │    │block_device │ │
+│  │  vsync.cpp    │    └───────────────┘    └───────────────┘    └─────────────┘ │
+│  │  blit_fast.S  │                                                              │
+│  │  (SIMD copy)  │                                                              │
+│  └───────────────┘                                                              │
+│                                      │                                           │
+├──────────────────────────────────────┼──────────────────────────────────────────┤
+│                           DRIVERS (kernel/drivers/)                              │
+├──────────────────────────────────────┼──────────────────────────────────────────┤
+│  ┌────────────────────────────────── x86_64 ────────────────────────────────┐   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │   │
+│  │  │   PIT    │  │ Keyboard │  │   IDE    │  │ UART8250 │  │  Mouse   │   │   │
+│  │  │ (Timer)  │  │  PS/2    │  │  (ATA)   │  │ (Serial) │  │  PS/2    │   │   │
+│  │  │ 1000 Hz  │  │  IRQ1    │  │ Storage  │  │  Debug   │  │  IRQ12   │   │   │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                      │                                           │
+├──────────────────────────────────────┼──────────────────────────────────────────┤
+│                          ARCH LAYER (kernel/arch/)                               │
+├──────────────────────────────────────┼──────────────────────────────────────────┤
+│  ┌───────────────────────────────────┴───────────────────────────────────────┐  │
+│  │                          Platform (HAL/Platform)                          │  │
+│  │     GDT │ IDT │ TSS │ Interrupts │ MMU │ Exceptions │ Spinlock            │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                           │
+╠══════════════════════════════════════╪══════════════════════════════════════════╣
+│                               BOOTLOADER                                         │
+├──────────────────────────────────────┼──────────────────────────────────────────┤
+│  ┌───────────────────────────────────┴───────────────────────────────────────┐  │
+│  │                    UEFI Application (boot/src/main.cpp)                   │  │
+│  │   Load ELF Kernel │ Setup Framebuffer │ Build BootInfo │ Exit Boot Svcs   │  │
+│  │                        ↓ Outputs: BOOTX64.EFI                             │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                           │
+╠══════════════════════════════════════╪══════════════════════════════════════════╣
+│                               FIRMWARE                                           │
+├──────────────────────────────────────┼──────────────────────────────────────────┤
+│  ┌───────────────────────────────────┴───────────────────────────────────────┐  │
+│  │                              UEFI Firmware                                │  │
+│  │     Boot Services │ Runtime Services │ GOP (Graphics) │ Memory Map        │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                           │
+╠══════════════════════════════════════╪══════════════════════════════════════════╣
+│                                HARDWARE                                          │
+├──────────────────────────────────────┴──────────────────────────────────────────┤
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐  │
+│  │    CPU      │ │    RAM      │ │ Framebuffer │ │   i8042     │ │    RTC    │  │
+│  │   x86_64    │ │   Memory    │ │   (VGA)     │ │  PS/2 Ctrl  │ │   CMOS    │  │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Descripción de las Capas
+
+| Capa | Descripción |
+|------|-------------|
+| **Userspace** | Aplicaciones en Ring 3 empaquetadas como `.mpk`. Usan syscalls para comunicarse con el kernel. |
+| **SDK** | Runtime C++, stubs de syscalls en ASM, y headers compartidos para desarrollo de apps. |
+| **Morphic API** | Capa de dispatch de syscalls. Provee APIs de alto nivel para gráficos, audio, input y memoria. |
+| **Kernel Core** | Punto de entrada, shell integrada (MCL), cargador de MPK y configuración de boot. |
+| **Process Mgmt** | Scheduler cooperativo/preemptivo con colas de eventos para IPC entre tareas. |
+| **Memory Mgmt** | PMM (Physical Memory Manager) con bitmap, heap kernel, heap userspace y write-combining para MMIO. |
+| **VFS** | Sistema de archivos virtual con InitRD embebido y soporte de mountpoints. |
+| **HAL** | Hardware Abstraction Layer con subsistemas de video, input, audio y storage. |
+| **Drivers** | Drivers específicos x86_64: PIT (timer), teclado/mouse PS/2, IDE, UART serial. |
+| **Arch Layer** | Código específico de arquitectura: GDT, IDT, TSS, MMU, manejo de excepciones. |
+| **Bootloader** | Aplicación UEFI que carga el kernel ELF, configura framebuffer y pasa BootInfo. |
+| **Firmware** | UEFI provee servicios de boot, GOP para gráficos y mapa de memoria. |
+| **Hardware** | CPU x86_64, RAM, framebuffer VGA, controlador PS/2, RTC/CMOS. |
+
+### Flujo de Datos Principal
+
+```
+┌──────────────┐     syscall      ┌──────────────┐     HAL API      ┌──────────────┐
+│   Userspace  │ ───────────────► │    Kernel    │ ───────────────► │   Drivers    │
+│     App      │                  │   Core/API   │                  │   Hardware   │
+└──────────────┘ ◄─────────────── └──────────────┘ ◄─────────────── └──────────────┘
+                    return/IRQ                        IRQ/data
+```
 ## Características (estado actual)
 
 - **UEFI Boot**: arranque por UEFI (sin BIOS legacy).
