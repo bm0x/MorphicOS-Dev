@@ -4,6 +4,13 @@
 #include "../../../shared/boot_info.h"
 
 // Graphics HAL - Double Buffering and Primitives
+
+// V-Sync wait using robust HAL
+namespace VSync {
+    void Init();
+    void WaitForRetrace();
+}
+
 namespace Graphics {
     // Initialize graphics with framebuffer info
     void Init(FramebufferInfo* fb);

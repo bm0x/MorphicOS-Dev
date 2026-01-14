@@ -71,7 +71,8 @@ KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/mcl/mcl_module.cpp \
                  kernel/api/morphic_api.cpp \
                  kernel/gui/widgets.cpp \
-                 kernel/gui/desktop.cpp
+                 kernel/gui/desktop.cpp \
+                 kernel/ui/bootscreen.cpp
 
 KERNEL_OBJECTS = $(KERNEL_SOURCES:.cpp=.o)
 

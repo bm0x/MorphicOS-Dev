@@ -19,6 +19,8 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
+
+
 namespace Graphics {
 
     static FramebufferInfo* framebuffer = nullptr;
@@ -29,6 +31,9 @@ namespace Graphics {
     
     void Init(FramebufferInfo* fb) {
         UART::Write("[Graphics::Init] START\n");
+        
+        // Initialize VSync HAL (detects if hardware VSync is available)
+        VSync::Init();
         
         framebuffer = fb;
         width = fb->width;
@@ -211,23 +216,14 @@ namespace Graphics {
         __atomic_clear(&flipLock, __ATOMIC_RELEASE);
     }
     
-    // V-Sync wait using VGA status port
-    static void WaitVBlank() {
-        const uint16_t VGA_STATUS = 0x3DA;
-        const uint8_t VSYNC_BIT = 0x08;
-        
-        // Wait for end of current retrace
-        while (inb(VGA_STATUS) & VSYNC_BIT);
-        // Wait for start of next retrace
-        while (!(inb(VGA_STATUS) & VSYNC_BIT));
-    }
+
     
     void FlipWithVSync() {
         if (!framebuffer || !backbuffer) return;
         if (backbuffer == (uint32_t*)framebuffer->baseAddress) return;
         
-        // Wait for vertical blank
-        WaitVBlank();
+        // Wait for vertical blank (Safe mechanism)
+        VSync::WaitForRetrace();
         
         // Acquire lock for atomic flip
         AcquireFlipLock();

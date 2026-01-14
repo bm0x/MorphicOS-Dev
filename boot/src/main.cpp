@@ -156,6 +156,59 @@ EFI_STATUS InitializeGOP(FramebufferInfo* fbInfo) {
         return status;
     }
 
+    // --- Dynamic Mode Selection ---
+    UINT32 maxMode = gop->Mode->MaxMode;
+    UINT32 currentMode = gop->Mode->Mode;
+    UINT32 bestMode = currentMode;
+    UINT32 bestWidth = 0;
+    UINT32 bestHeight = 0;
+
+    // Use current as baseline
+    if (gop->Mode->Info) {
+        bestWidth = gop->Mode->Info->HorizontalResolution;
+        bestHeight = gop->Mode->Info->VerticalResolution;
+    }
+
+    Print(u"GOP: Searching best mode (Total: ");
+    PrintDec(maxMode);
+    Print(u")...\r\n");
+    
+    for (UINT32 i = 0; i < maxMode; i++) {
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* info;
+        UINTN sizeOfInfo;
+        status = gop->QueryMode(gop, i, &sizeOfInfo, &info);
+        
+        if (EFI_ERROR(status)) continue;
+
+        // Filter: We want 32-bit pixel format (BGRA or RGBA)
+        if (info->PixelFormat == PixelRedGreenBlueReserved8BitPerColor ||
+            info->PixelFormat == PixelBlueGreenRedReserved8BitPerColor) {
+            
+            // Heuristic: Prefer higher resolution, then larger area
+            if (info->HorizontalResolution > bestWidth || 
+               (info->HorizontalResolution == bestWidth && info->VerticalResolution > bestHeight)) {
+                
+                bestWidth = info->HorizontalResolution;
+                bestHeight = info->VerticalResolution;
+                bestMode = i;
+            }
+        }
+    }
+    
+    // Set Mode if different
+    if (bestMode != currentMode) {
+        Print(u"Setting Mode: "); PrintDec(bestMode); 
+        Print(u" ("); PrintDec(bestWidth); Print(u"x"); PrintDec(bestHeight); Print(u")\r\n");
+        status = gop->SetMode(gop, bestMode);
+        if (EFI_ERROR(status)) {
+            Print(u"Failed to set mode. Reverting to default.\r\n");
+        }
+    } else {
+         Print(u"Using Default Mode: ");
+         PrintDec(bestWidth); Print(u"x"); PrintDec(bestHeight);
+         Print(u"\r\n");
+    }
+
     fbInfo->baseAddress = gop->Mode->FrameBufferBase;
     fbInfo->width = gop->Mode->Info->HorizontalResolution;
     fbInfo->height = gop->Mode->Info->VerticalResolution;
@@ -391,6 +444,39 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
     // 2. Setup Graphics
     EFI_STATUS gopStatus = InitializeGOP(&bootInfo->framebuffer);
     BOOT_CHECK(gopStatus, u"Graphics (GOP) initialization failed.");
+
+    // 2.5 Find ACPI RSDP
+    // We need to iterate over SystemTable->ConfigurationTable
+    EFI_GUID acpi2Guid = EFI_ACPI_20_TABLE_GUID;
+    EFI_GUID acpi1Guid = EFI_ACPI_TABLE_GUID; // Fallback
+    void* rsdp = nullptr;
+
+    Print(u"ACPI: Searching for RSDP...\r\n");
+    for (UINTN i = 0; i < gST->NumberOfTableEntries; i++) {
+        EFI_GUID* guid = (EFI_GUID*)&gST->ConfigurationTable[i].VendorGuid;
+        
+        // Manual GUID comparison (memcmp style)
+        if (MemCmp(guid, &acpi2Guid, sizeof(EFI_GUID)) == 0) {
+            rsdp = gST->ConfigurationTable[i].VendorTable;
+            Print(u"ACPI 2.0 Found at: ");
+            PrintHex((UINT64)rsdp);
+            Print(u"\r\n");
+            break;
+        }
+        
+        if (MemCmp(guid, &acpi1Guid, sizeof(EFI_GUID)) == 0 && rsdp == nullptr) {
+            rsdp = gST->ConfigurationTable[i].VendorTable;
+            Print(u"ACPI 1.0 Found (Fallback) at: ");
+            PrintHex((UINT64)rsdp);
+            Print(u"\r\n");
+        }
+    }
+    
+    if (!rsdp) {
+        Print(u"ACPI: RSDP NOT FOUND. SMP will be unavailable.\r\n");
+    }
+    
+    bootInfo->rsdp = rsdp;
 
 
     // 3. Load Kernel

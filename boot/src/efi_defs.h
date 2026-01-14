@@ -31,6 +31,8 @@ typedef uint64_t    EFI_VIRTUAL_ADDRESS;
 #define EFI_BUFFER_TOO_SMALL      (0x8000000000000005)
 #define EFI_NOT_FOUND             (0x800000000000000E)
 
+#define EFI_ERROR(status)         (((INTN)(status)) < 0)
+
 // Global IDs (GUIDs)
 typedef struct {
     UINT32 Data1;
@@ -38,6 +40,13 @@ typedef struct {
     UINT16 Data3;
     UINT8  Data4[8];
 } EFI_GUID;
+
+// ACPI GUIDs
+#define EFI_ACPI_20_TABLE_GUID \
+    { 0x8868e871, 0xe4f1, 0x11d3, {0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81} }
+    
+#define EFI_ACPI_TABLE_GUID \
+    { 0xeb9d2d30, 0x2d88, 0x11d3, {0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d} }
 
 // Handles
 typedef VOID* EFI_HANDLE;
@@ -67,10 +76,6 @@ struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL {
     EFI_TEXT_SET_MODE       SetMode;
     EFI_TEXT_SET_ATTRIBUTE  SetAttribute;
     EFI_TEXT_CLEAR_SCREEN   ClearScreen;
-    // ... complete struct usually larger, but we only need these for now.
-    // WARNING: In strict C++, incomplete structs can be dangerous if not carefully handled.
-    // For full compliance we should define the rest or stick to what we use.
-    // Adding dummy pointers for safety if needed.
 };
 
 // Graphics Output Protocol (GOP)
@@ -110,11 +115,23 @@ typedef struct {
     UINTN                                  FrameBufferSize;
 } EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
 
+typedef EFI_STATUS (EFIAPI *EFI_GRAPHICS_OUTPUT_PROTOCOL_QUERY_MODE)(
+    struct EFI_GRAPHICS_OUTPUT_PROTOCOL          *This,
+    UINT32                                       ModeNumber,
+    UINTN                                        *SizeOfInfo,
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION         **Info
+);
+
+typedef EFI_STATUS (EFIAPI *EFI_GRAPHICS_OUTPUT_PROTOCOL_SET_MODE)(
+    struct EFI_GRAPHICS_OUTPUT_PROTOCOL          *This,
+    UINT32                                       ModeNumber
+);
+
 typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL {
-    void* QueryMode; // Placeholder
-    void* SetMode;   // Placeholder
-    void* Blt;       // Placeholder
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE *Mode;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_QUERY_MODE QueryMode;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_SET_MODE   SetMode;
+    void*                                   Blt; 
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE       *Mode;
 } EFI_GRAPHICS_OUTPUT_PROTOCOL;
 
 
@@ -171,10 +188,7 @@ typedef struct EFI_BOOT_SERVICES {
     void*               RestoreTPL;
 
     // Memory Services
-    EFI_ALLOCATE_PAGES  AllocatePages; // 0x18 offset? No, header is 24 bytes (Signature 8, Revision 4, HeaderSize 4, CRC32 4, Reserved 4) 
-                                       // Actually Header is table generic header.
-                                       // Let's rely on standard offset calculation or just padding.
-                                       // Table Header: UINT64 Signature, UINT32 Revision, UINT32 HeaderSize, UINT32 CRC32, UINT32 Reserved. Total 24 bytes.
+    EFI_ALLOCATE_PAGES  AllocatePages;
     EFI_FREE_PAGES      FreePages;
     EFI_GET_MEMORY_MAP  GetMemoryMap;
     EFI_ALLOCATE_POOL   AllocatePool;
@@ -259,6 +273,11 @@ typedef struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL {
 #define EFI_FILE_READ_ONLY   0x0000000000000001
 
 
+// Configuration Table
+typedef struct {
+    EFI_GUID VendorGuid;
+    VOID*    VendorTable;
+} EFI_CONFIGURATION_TABLE;
 
 // System Table
 typedef struct EFI_SYSTEM_TABLE {
@@ -274,7 +293,7 @@ typedef struct EFI_SYSTEM_TABLE {
     void*                            RuntimeServices;
     EFI_BOOT_SERVICES                *BootServices;
     UINTN                            NumberOfTableEntries;
-    void*                            ConfigurationTable;
+    EFI_CONFIGURATION_TABLE          *ConfigurationTable;
 } EFI_SYSTEM_TABLE;
 
 #endif // EFI_DEFS_H

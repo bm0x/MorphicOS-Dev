@@ -191,11 +191,13 @@ Morphic es un **sistema operativo experimental** (hobby OS) escrito desde cero.
 ### Build
 
 ```bash
-make
+make      # Genera morphic.img (imagen USB/QEMU)
+make iso  # Genera morphic_os.iso (CD/DVD/VirtualBox)
 ```
 
 Esto genera:
-- `morphic.img` (imagen FAT con `EFI/BOOT/BOOTX64.EFI`, `morph_kernel.elf` y `desktop.mpk`).
+- `morphic.img`: Imagen de disco para QEMU o para grabar en USB (DD mode).
+- `morphic_os.iso`: Imagen ISO arrancable (UEFI El Torito) para VirtualBox, VMware o grabar en DVD.
 
 ### Run (recomendado para input/depurar)
 
@@ -214,6 +216,28 @@ Notas:
 ```
 
 Luego abre: `http://localhost:8080/vnc.html`
+
+### Ejecutar en VirtualBox
+
+Para probar Morphic OS en VirtualBox, asegúrate de haber generado la ISO (`make iso`) y sigue estos pasos:
+
+1.  **Crear Nueva Máquina Virtual**:
+    -   **Tipo**: *Other*
+    -   **Versión**: *Other/Unknown (64-bit)*
+2.  **Configuración de Sistema (CRÍTICO)**:
+    -   Ve a **Configuración** > **Sistema** > pestaña **Placa Base**.
+    -   **Habilitar EFI (Sistemas operativos especiales)**: [X] MARCADO.
+    -   *Nota: Morphic OS es puramente UEFI, no arrancará en BIOS legacy.*
+3.  **Memoria y Procesador**:
+    -   RAM: 1024 MB mínimo (recomendado para resoluciones altas).
+    -   Procesadores: 2 núcleos (Morphic OS es *safe* con múltiples núcleos, aunque actualmente usa solo uno).
+4.  **Pantalla**:
+    -   Memoria de Video: 128 MB (CRÍTICO para resoluciones altas/4K y doble buffer).
+    -   Controlador Gráfico: *VMSVGA* (suele ser el más compatible).
+5.  **Almacenamiento**:
+    -   Monta el archivo `morphic_os.iso` como unidad óptica (CD/DVD).
+6.  **Iniciar**:
+    -   Al iniciar, deberías ver la pantalla de carga de UEFI (TianoCore) y luego el Kernel de Morphic OS.
 
 ## Flags útiles
 

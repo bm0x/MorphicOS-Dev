@@ -70,66 +70,67 @@ IInputDevice* GetMouseAdapter() {
     return &instance;
 }
 
+#include "../ui/bootscreen.h"
+
 extern "C" void kernel_main(BootInfo* bootInfo) {
     // 0. Validate BootInfo
     if (!bootInfo || bootInfo->magic != 0xDEADBEEFCAFEBABE) {
         while(1) __asm__("hlt");
     }
 
-    // 1. Initialize Display
+    // 1. Initialize Display (Early Terminal for emergency logs)
     EarlyTerm::Init(&bootInfo->framebuffer);
-    gFramebuffer = &bootInfo->framebuffer;
     
-    // 2. Core Hardware Init
+    // ... Platform Init ...
     HAL::Platform::Init();
     
-    // PMM needs BootInfo, so it stays here for now (generic interface, specific implementation)
     PMM::Init(bootInfo);
-    MMU::Init();  // Initialize MMU to capture UEFI page tables
+    MMU::Init(); 
 
     EarlyTerm::Print("[OK] Core Systems Validated.\n");
-
-    // 3. Initialize Heap dynamically based on available RAM
-    // 3. Initialize Heap dynamically based on available RAM
-    size_t freeRAM = PMM::GetFreeMemory();
-    size_t heapSize = (freeRAM * 3) / 4;  // Use 75% of free RAM
     
-    // Minimum 32MB, no maximum limit
+    // Check ACPI/SMP Status
+    if (bootInfo->rsdp) {
+        EarlyTerm::Print("[ACPI] RSDP Pointer: ");
+        EarlyTerm::PrintHex((uint64_t)bootInfo->rsdp);
+        EarlyTerm::Print("\n");
+        EarlyTerm::Print("[SMP] Hardware discovery enabled.\n");
+    } else {
+        EarlyTerm::Print("[ACPI] WARNING: RSDP not found. SMP disabled.\n");
+    }
+    
+    // CRITICAL: Initialize Graphics HAL *BEFORE* Heap
+    Graphics::Init(&bootInfo->framebuffer);
+    
+    // Initialize FontRenderer EARLY for BootScreen
+    FontRenderer::Init();
+    
+    // === START BOOT ANIMATION ===
+    BootScreen::Init();
+    BootScreen::Update(10, "Initializing Memory Manager...");
+    
+    // 3. Initialize Heap
+    size_t freeRAM = PMM::GetFreeMemory();
+    size_t heapSize = (freeRAM * 3) / 4;  
     if (heapSize < 32 * 1024 * 1024) heapSize = 32 * 1024 * 1024;
     
-    // CRITICAL FIX: Allocate Heap from PMM to identify RESERVED vs FREE RAM
-    // Previous hardcoded 0x400000 overlapped with PMM free list, causing overwrite corruption.
-    // Try to allocate contiguous pages. If 75% fails (fragmentation), retry with smaller chunks.
     void* heapBase = PMM::AllocContiguous(heapSize / 4096);
-    
-    // Fallback if huge allocation fails: try 128MB, then 64MB
     if (!heapBase) {
-        heapSize = 128 * 1024 * 1024;
-        heapBase = PMM::AllocContiguous(heapSize / 4096);
-    }
-    if (!heapBase) {
-        heapSize = 64 * 1024 * 1024;
-        heapBase = PMM::AllocContiguous(heapSize / 4096);
+        // Retry logic...
+         heapSize = 128 * 1024 * 1024;
+         heapBase = PMM::AllocContiguous(heapSize / 4096);
     }
     
     if (!heapBase) {
-        UART::Write("[KERNEL] CRITICAL: Failed to allocate KHeap!\n");
+        EarlyTerm::Print("[KERNEL] CRITICAL: Failed to allocate KHeap!\n");
         while(1) __asm__("hlt");
     }
     
-    UART::Write("[KERNEL] Heap Allocated at: "); UART::WriteHex((uint64_t)heapBase); 
-    UART::Write(" Size: "); UART::WriteDec(heapSize); UART::Write("\n");
-    
-    KHeap::Init(heapBase, heapSize);
+    KHeap::Init(heapBase, heapSize); 
+    BootScreen::Update(20, "Memory Initialized");
 
-
-    
     // ===== TRACE CHECKPOINTS =====
-    UART::Write("[BOOT-TRACE] After UART init\n");
-    
-    // 5. Initialize Graphics HAL
-    Graphics::Init(&bootInfo->framebuffer);
-    UART::Write("[BOOT-TRACE] After Graphics::Init\n");
+    UART::Write("[BOOT-TRACE] After UART init\n"); 
     
     Verbose::Init();
     UART::Write("[BOOT-TRACE] After Verbose::Init\n");
@@ -139,99 +140,59 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     UART::Write("[BOOT-TRACE] After WriteCombining::InitPAT\n");
     
     Mouse::Init();
+    Mouse::SetBounds(bootInfo->framebuffer.width, bootInfo->framebuffer.height);
     UART::Write("[BOOT-TRACE] After Mouse::Init\n");
     
-    Mouse::SetBounds(bootInfo->framebuffer.width, bootInfo->framebuffer.height);
-    UART::Write("[BOOT-TRACE] After Mouse::SetBounds\n");
-    
-    // 5b. Initialize Compositor
-    UART::Write("[BOOT-TRACE] Skipping Compositor::Init to avoid large alloc crash\n");
-    // Compositor::Init();
-    UART::Write("[BOOT-TRACE] After Compositor::Init (Skipped)\n");
+    BootScreen::Update(30, "Input Devices Ready");
 
     // 6. Initialize HAL Device Registry
     DeviceRegistry::Init();
-    UART::Write("[BOOT-TRACE] After DeviceRegistry::Init\n");
-
-    // 7. Initialize VFS and InitRD
+    
+    BootScreen::Update(40, "Loading Virtual File System...");
     VFS::Init();
-    UART::Write("[BOOT-TRACE] After VFS::Init\n");
-    
     InitRD::Init(bootInfo->initrdAddr, bootInfo->initrdSize);
-    UART::Write("[BOOT-TRACE] After InitRD::Init\n");
     
-    // 8. Load BootConfig from VFS
+    BootScreen::Update(50, "Reading Boot Configuration...");
     BootConfiguration::Init();
-    UART::Write("[BOOT-TRACE] After BootConfiguration::Init\n");
-    
     BootConfiguration::LoadFromFile("/etc/boot.cfg");
-    UART::Write("[BOOT-TRACE] After BootConfig::LoadFromFile\n");
-    
-    // 8b. Initialize Keymap HAL with config
     KeymapHAL::Init();
-    UART::Write("[BOOT-TRACE] After KeymapHAL::Init\n");
-    
     KeymapHAL::SetKeymap(BootConfiguration::GetKeymap());
-    UART::Write("[BOOT-TRACE] After KeymapHAL::SetKeymap\n");
     
-    // 8c. Initialize Font Renderer
-    FontRenderer::Init();
-    UART::Write("[BOOT-TRACE] After FontRenderer::Init\n");
-    
-    // 8d. Initialize Audio HAL and Mixer
+    // Audio
+    BootScreen::Update(60, "Initializing Audio Subsystem...");
     Audio::Init();
-    UART::Write("[BOOT-TRACE] After Audio::Init\n");
-    
     AudioMixer::Init();
-    UART::Write("[BOOT-TRACE] After AudioMixer::Init\n");
 
-    // 9. Initialize Drivers (register with HAL)
-    // 1000Hz so PIT_GetTicks() ~= milliseconds.
-    // Many parts of the system (SYS_SLEEP/SYS_GET_TIME_MS, GUI pacing) assume ms granularity.
+    // Drivers
+    BootScreen::Update(70, "Starting Hardware Drivers...");
     PIT::Init(1000);
     UART::Write("[BOOT-TRACE] After PIT::Init\n");
     
-    // --- MOUSE DRIVER REGISTRATION ---
-    // Moved to global scope to avoid local class issues
     DeviceRegistry::Register(DeviceType::INPUT, GetMouseAdapter());
-    UART::Write("[BOOT-TRACE] Mouse Registered with InputManager\n");
+    UART::Write("[BOOT-TRACE] Mouse Registered\n");
     
-    // Check if Keyboard namespace has OnInterrupt
-    // Assuming Keyboard::Init and Keyboard::OnInterrupt exist (based on typical structure)
-    // If NOT, we skip it or check header. 
-    // Let's register Mouse first as priority.
-
     Keyboard::Init();
     UART::Write("[BOOT-TRACE] After Keyboard::Init\n");
     
+    BootScreen::Update(80, "Mounting Disks...");
     RAMDisk::Init();
-    UART::Write("[BOOT-TRACE] After RAMDisk::Init\n");
-
     IDE::Init();
-    UART::Write("[BOOT-TRACE] After IDE::Init\n");
+    UART::Write("[BOOT-TRACE] After Storage Init\n");
     
-    // 10. Enable Interrupts
-    EarlyTerm::Print("[Kernel] Enabling Interrupts... ");
-    UART::Write("[BOOT-TRACE] About to enable interrupts...\n");
+    // Interrupts
+    BootScreen::Update(90, "Enabling Interrupts...");
     HAL::Platform::EnableInterrupts();
-    UART::Write("[BOOT-TRACE] After IDT::EnableInterrupts\n");
-    
-    // Unmask: IRQ0 (timer), IRQ1 (keyboard), IRQ2 (cascade to slave)
+    // Unmask IRQs...
     __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0xF8), "Nd"((uint16_t)0x21));
-    // Unmask: IRQ12 (mouse) on slave = bit 4 of slave mask
     __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0xEF), "Nd"((uint16_t)0xA1));
-    EarlyTerm::Print("DONE. (IRQ0,1,2,12)\\n");
-    UART::Write("[BOOT-TRACE] After IRQ unmasking\n");
     
-    // 7. Scheduler Init
-    EarlyTerm::Print("[Kernel] Initializing Scheduler... ");
+    // Scheduler
+    BootScreen::Update(95, "Starting Scheduler...");
     Scheduler::Init();
-    UART::Write("[BOOT-TRACE] After Scheduler::Init\n");
-    
-    // BackgroundTask disabled - was showing Swift counter and interfering with graphics
-    // Scheduler::CreateTask(BackgroundTask);
-    EarlyTerm::Print("DONE.\n");
 
+    BootScreen::Update(100, "System Ready. Launching Desktop...");
+    // Artificial delay to see the 100% (optional)
+    for(volatile int i=0; i<5000000; i++); 
 
     EarlyTerm::Print("--------------------------------------------------\n");
     EarlyTerm::Print("Morphic OS Kernel (v0.6)\n");
