@@ -13,6 +13,12 @@ if [ ! -f "$OVMF" ]; then
     exit 1
 fi
 
+# Parse Arguments
+DEBUG=0
+if [[ "$1" == "--debug" ]]; then
+    DEBUG=1
+fi
+
 # Kill previous instances
 pkill -f "qemu-system-x86_64" 2>/dev/null
 pkill -f "websockify" 2>/dev/null
@@ -39,44 +45,16 @@ if [ ! -f debug_disk.img ]; then
     fi
 fi
 
-# Start QEMU with audio support
-echo "[*] Starting QEMU with PC Speaker audio..."
-qemu-system-x86_64 \
-    -bios "$OVMF" \
-    -drive format=raw,file="$ISO",index=0,media=disk \
-    -drive format=raw,file="debug_disk.img",index=1,media=disk \
-    -m $RAM \
-    -vga std \
-    -vnc :0 \
-    -audiodev pa,id=speaker \
-    -machine pc,usb=off,i8042=on,pcspk-audiodev=speaker \
-    -daemonize 2>/dev/null || {
-        # Fallback without PulseAudio
-        echo "[*] Trying SDL audio backend..."
-        qemu-system-x86_64 \
-            -bios "$OVMF" \
-            -drive format=raw,file="$ISO",index=0,media=disk \
-            -drive format=raw,file="debug_disk.img",index=1,media=disk \
-            -m $RAM \
-            -vga std \
-            -vnc :0 \
-            -audiodev sdl,id=speaker \
-            -machine pc,usb=off,i8042=on,pcspk-audiodev=speaker \
-            -daemonize 2>/dev/null || {
-                # Final fallback without audio
-                echo "[!] Audio not available, running without sound"
-                qemu-system-x86_64 \
-                    -bios "$OVMF" \
-                    -drive format=raw,file="$ISO",index=0,media=disk \
-                    -drive format=raw,file="debug_disk.img",index=1,media=disk \
-                    -m $RAM \
-                    -vga std \
-                    -vnc :0 \
-                    -daemonize
-            }
-    }
+# Define Flags based on Debug Mode
+if [ $DEBUG -eq 1 ]; then
+    echo "[!] DEBUG MODE ENABLED: Serial Output to Terminal, Foreground Process"
+    QEMU_OPTS="-serial stdio"
+    # No daemonize, so we can see output
+else
+    QEMU_OPTS="-daemonize"
+fi
 
-# Start web bridge
+# Start web bridge FIRST (so it's ready)
 echo "[*] Starting web VNC bridge..."
 NOVNC_DIR=/usr/share/novnc
 websockify -D --web="$NOVNC_DIR" 8080 localhost:5900 2>/dev/null
@@ -88,7 +66,51 @@ echo "╚═══════════════════════�
 echo ""
 echo "  RAM:   $RAM"
 echo "  Audio: PC Speaker (beep command)"
+echo "  Debug: $(if [ $DEBUG -eq 1 ]; then echo 'ENABLED (Check terminal)'; else echo 'Disabled'; fi)"
 echo ""
 echo "  Web:   http://localhost:8080/vnc.html"
 echo ""
-echo "  Test beep: type 'beep' in Morphic shell"
+if [ $DEBUG -eq 1 ]; then
+    echo "  [INFO] QEMU is running in foreground. Press Ctrl+C to stop."
+    echo "  [INFO] Boot logs follow below:"
+    echo "---------------------------------------------------------------"
+fi
+
+# Start QEMU with audio support (Logic preserved, but flags injected)
+# We use $QEMU_OPTS which contains -daemonize (if normal) or -serial stdio (if debug)
+
+echo "[*] Starting QEMU..."
+qemu-system-x86_64 \
+    -bios "$OVMF" \
+    -drive format=raw,file="$ISO",index=0,media=disk \
+    -drive format=raw,file="debug_disk.img",index=1,media=disk \
+    -m $RAM \
+    -vga std \
+    -vnc :0 \
+    -audiodev pa,id=speaker \
+    -machine pc,usb=off,i8042=on,pcspk-audiodev=speaker \
+    $QEMU_OPTS 2>/dev/null || {
+        # Fallback without PulseAudio
+        echo "[*] Trying SDL audio backend..."
+        qemu-system-x86_64 \
+            -bios "$OVMF" \
+            -drive format=raw,file="$ISO",index=0,media=disk \
+            -drive format=raw,file="debug_disk.img",index=1,media=disk \
+            -m $RAM \
+            -vga std \
+            -vnc :0 \
+            -audiodev sdl,id=speaker \
+            -machine pc,usb=off,i8042=on,pcspk-audiodev=speaker \
+            $QEMU_OPTS 2>/dev/null || {
+                # Final fallback without audio
+                echo "[!] Audio not available, running without sound"
+                qemu-system-x86_64 \
+                    -bios "$OVMF" \
+                    -drive format=raw,file="$ISO",index=0,media=disk \
+                    -drive format=raw,file="debug_disk.img",index=1,media=disk \
+                    -m $RAM \
+                    -vga std \
+                    -vnc :0 \
+                    $QEMU_OPTS
+            }
+    }
