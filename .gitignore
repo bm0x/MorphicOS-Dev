@@ -6,6 +6,7 @@ build/
 *.iso
 *.mpk
 *_mpk.cpp
+*.bin
 
 # ISO temporary directory
 iso_root/

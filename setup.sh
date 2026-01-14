@@ -10,6 +10,7 @@ sudo apt-get install -y \
     build-essential \
     nasm \
     mtools \
+    dosfstools \
     xorriso \
     qemu-system-x86 \
     clang \
@@ -33,3 +34,10 @@ mkdir -p boot/src
 mkdir -p shared
 
 echo "--- Dependencies Installed. Ready to Build. ---"
+
+# Ensure mkfs.fat is available (used to create EFI System Partition image)
+if ! command -v mkfs.fat >/dev/null 2>&1; then
+    echo "mkfs.fat not found after install. Attempting to install dosfstools..."
+    sudo apt-get update && sudo apt-get install -y dosfstools || \
+        echo "Failed to install dosfstools - please install it manually (package: dosfstools)" >&2
+fi
