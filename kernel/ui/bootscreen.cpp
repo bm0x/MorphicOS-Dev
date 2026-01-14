@@ -87,7 +87,8 @@ namespace BootScreen {
     }
 
     void Finish() {
-        // Optional: Fade out or just clear.
-        // For now, let the desktop take over.
+        // Force full refresh to clear any artifacts
+        Graphics::Clear(0xFF000000); // Clear to Black
+        Graphics::Flip();
     }
 }

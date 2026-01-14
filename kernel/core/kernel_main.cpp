@@ -193,6 +193,8 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     BootScreen::Update(100, "System Ready. Launching Desktop...");
     // Artificial delay to see the 100% (optional)
     for(volatile int i=0; i<5000000; i++); 
+    
+    BootScreen::Finish(); 
 
     EarlyTerm::Print("--------------------------------------------------\n");
     EarlyTerm::Print("Morphic OS Kernel (v0.6)\n");

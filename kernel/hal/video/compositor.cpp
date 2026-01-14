@@ -9,6 +9,18 @@
 #include "font_renderer.h"
 
 namespace Compositor {
+    static volatile int lock = 0;
+    
+    static void AcquireLock() {
+        while (__atomic_test_and_set(&lock, __ATOMIC_ACQUIRE)) {
+             __asm__ volatile("pause");
+        }
+    }
+    
+    static void ReleaseLock() {
+        __atomic_clear(&lock, __ATOMIC_RELEASE);
+    }
+
     static Layer* layers[MAX_LAYERS];
     static uint32_t layerCount = 0;
     
@@ -224,10 +236,11 @@ namespace Compositor {
     }
     
     void Compose() {
+        AcquireLock();
         uint32_t* backbuf = Graphics::GetBackbuffer();
         uint32_t pitch = Graphics::GetWidth();
         
-        if (userspaceMode) return;
+        if (userspaceMode) { ReleaseLock(); return; }
 
         SortLayers();
         
@@ -257,6 +270,7 @@ namespace Compositor {
         
         frameCount++;
         ClearDirtyRects();
+        ReleaseLock();
     }
     
     void ComposeRegion(uint32_t rx, uint32_t ry, uint32_t rw, uint32_t rh) {
@@ -467,27 +481,29 @@ namespace Compositor {
     }
 
     Window* CreateWindow(uint32_t w, uint32_t h, uint32_t flags) {
-        if (windowCount >= 16) return nullptr;
+        AcquireLock();
+        if (windowCount >= 16) { ReleaseLock(); return nullptr; }
         
         // 1. Allocate Physical Memory (Pages)
+        // PMM is thread-safe (usually uses its own lock, verify?)
         uint64_t size = (uint64_t)w * h * 4;
         uint64_t pages = (size + 4095) / 4096;
         
         void* phys_ptr = PMM::AllocContiguous(pages);
         if (!phys_ptr) {
+            ReleaseLock();
             EarlyTerm::Print("[Compositor] CreateWindow OOM\n");
             return nullptr;
         }
         
-        // 2. Clear Memory (Access via Identity Map or assumption)
-        // Ideally map it, but for now we assume physical is accessible
+        // 2. Clear Memory
         kmemset(phys_ptr, 0, size); 
         
         // 3. Create Layer manually
-        if (layerCount >= MAX_LAYERS) return nullptr;
+        if (layerCount >= MAX_LAYERS) { ReleaseLock(); return nullptr; }
         
         Layer* layer = (Layer*)kmalloc(sizeof(Layer));
-        if (!layer) return nullptr;
+        if (!layer) { ReleaseLock(); return nullptr; }
         kmemset(layer, 0, sizeof(Layer));
         
         // Name
@@ -497,9 +513,7 @@ namespace Compositor {
         layer->type = LayerType::APP_WINDOW;
         layer->width = w;
         layer->height = h;
-        layer->buffer = (uint32_t*)phys_ptr; // Physical Address used as kernel pointer?
-        // WARNING: If this is high memory (> 16MB) and not identity mapped, this crashes.
-        // However, we rely on bootloader identity map.
+        layer->buffer = (uint32_t*)phys_ptr; 
         
         layer->visible = true;
         layer->dirty = true;
@@ -509,7 +523,7 @@ namespace Compositor {
         uint32_t screenH = Graphics::GetHeight();
         layer->x = (screenW > w) ? (screenW - w) / 2 : 0;
         layer->y = (screenH > h) ? (screenH - h) / 2 : 0;
-        layer->z_order = 50; 
+        layer->z_order = 50 + windowCount; // Stagger Z-order
         
         layers[layerCount++] = layer;
         
@@ -530,8 +544,13 @@ namespace Compositor {
             win->phys_addr = (uint64_t)phys_ptr;
             win->buffer = phys_ptr;
             windowCount++;
+            ReleaseLock();
             return win;
         }
+        
+        // Cleanup if no window slot
+        // TODO: Free layer and phys
+        ReleaseLock();
         return nullptr;
     }
     

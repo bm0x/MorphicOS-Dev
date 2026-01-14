@@ -41,6 +41,12 @@ syscall_entry:
     pop rcx         ; User RIP
     pop r10         ; User RSP
     
+    ; CRITICAL: Disable interrupts before switching to user stack.
+    ; If an interrupt fires while we are in Ring 0 but using User Stack,
+    ; the scheduler will save a User Stack Pointer as the Task's Kernel Memory.
+    ; This corrupts TSS.RSP0 and leads to Kernel Panics (Running on User Stack).
+    cli
+
     ; Restore user stack
     mov rsp, r10
     
