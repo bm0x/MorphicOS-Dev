@@ -23,13 +23,28 @@ echo "║       Morphic OS - QEMU Launcher          ║"
 echo "╚═══════════════════════════════════════════╝"
 
 # Memory configuration
-RAM=2046M          # 2GB RAM (plenty for video + kernel)
+RAM=2048M          # 2GB RAM (Matches run_direct.sh)
+
+# Create Debug Disk (2GB) if not exists (Copied from run_direct.sh)
+if [ ! -f debug_disk.img ]; then
+    echo "Creating 2GB Debug Disk..."
+    dd if=/dev/zero of=debug_disk.img bs=1M count=2048
+    
+    # Format as FAT32 if mkfs.vfat exists
+    if command -v mkfs.vfat &> /dev/null; then
+        echo "Formatting debug_disk.img as FAT32..."
+        mkfs.vfat -F 32 debug_disk.img
+    else
+        echo "mkfs.vfat not found, leaving disk as RAW."
+    fi
+fi
 
 # Start QEMU with audio support
 echo "[*] Starting QEMU with PC Speaker audio..."
 qemu-system-x86_64 \
     -bios "$OVMF" \
-    -drive format=raw,file="$ISO" \
+    -drive format=raw,file="$ISO",index=0,media=disk \
+    -drive format=raw,file="debug_disk.img",index=1,media=disk \
     -m $RAM \
     -vga std \
     -vnc :0 \
@@ -40,7 +55,8 @@ qemu-system-x86_64 \
         echo "[*] Trying SDL audio backend..."
         qemu-system-x86_64 \
             -bios "$OVMF" \
-            -drive format=raw,file="$ISO" \
+            -drive format=raw,file="$ISO",index=0,media=disk \
+            -drive format=raw,file="debug_disk.img",index=1,media=disk \
             -m $RAM \
             -vga std \
             -vnc :0 \
@@ -51,7 +67,8 @@ qemu-system-x86_64 \
                 echo "[!] Audio not available, running without sound"
                 qemu-system-x86_64 \
                     -bios "$OVMF" \
-                    -drive format=raw,file="$ISO" \
+                    -drive format=raw,file="$ISO",index=0,media=disk \
+                    -drive format=raw,file="debug_disk.img",index=1,media=disk \
                     -m $RAM \
                     -vga std \
                     -vnc :0 \

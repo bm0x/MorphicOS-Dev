@@ -40,9 +40,12 @@ namespace Compositor {
     bool IsDebugOverlayVisible();
     void UpdateDebugOverlay();
     
-    // Input Handling (for Window Manager)
+    // Input
     // Returns true if the event was consumed by the Compositor (e.g. dragging, buttons)
     bool ProcessMouseEvent(int32_t x, int32_t y, uint8_t buttons);
+
+    // Userspace Composition Control
+    void EnableUserspaceMode();
 
     // Constants (Professional Style)
     const uint32_t TITLE_BAR_HEIGHT = 26;

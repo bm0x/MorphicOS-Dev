@@ -760,6 +760,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
     case SYS_REGISTER_COMPOSITOR:
         // arg1: Unused (Registers Current Process)
         InputManager::SetCompositorPID(Scheduler::GetCurrentTaskId());
+        Compositor::EnableUserspaceMode();
         return 0;
 
     case SYS_MAP_WINDOW:

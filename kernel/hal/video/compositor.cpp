@@ -21,6 +21,7 @@ namespace Compositor {
     static Layer* overlayLayer = nullptr;
     
     static bool debugOverlayVisible = false;
+    static bool userspaceMode = false;
     static uint32_t frameCount = 0;
     
     static void DrawWindowDecoration(Layer* layer);
@@ -226,6 +227,8 @@ namespace Compositor {
         uint32_t* backbuf = Graphics::GetBackbuffer();
         uint32_t pitch = Graphics::GetWidth();
         
+        if (userspaceMode) return;
+
         SortLayers();
         
         // Render layers bottom to top
@@ -265,6 +268,8 @@ namespace Compositor {
         if (rx + rw > pitch) rw = pitch - rx;
         if (ry + rh > screenH) rh = screenH - ry;
         
+        if (userspaceMode) return;
+
         SortLayers();
         
         // Render layers but only within the dirty region
@@ -568,6 +573,8 @@ namespace Compositor {
     }
 
     bool ProcessMouseEvent(int32_t x, int32_t y, uint8_t buttons) {
+        if (userspaceMode) return false; // Hand off completely to userspace
+
         static bool wasLeftDown = false;
         bool leftDown = (buttons & 1); // Bit 0 is left button
         bool handled = false;
@@ -664,7 +671,14 @@ namespace Compositor {
         }
         
         wasLeftDown = leftDown;
+        wasLeftDown = leftDown;
         return handled;
+    }
+
+    void EnableUserspaceMode() {
+        userspaceMode = true;
+        // Optionally clear screen or release layers?
+        EarlyTerm::Print("[Compositor] Userspace Mode Active (Kernel Rendering Disabled)\n");
     }
 }
 
