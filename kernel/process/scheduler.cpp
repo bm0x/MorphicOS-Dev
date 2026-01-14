@@ -2,6 +2,10 @@
 #include "../mm/heap.h"
 #include "../utils/std.h"
 #include "../hal/video/early_term.h"
+#include "../hal/arch/x86_64/tss.h"
+#include "../hal/platform.h"
+
+extern "C" uint64_t kernel_stack_top; // Boot stack symbol
 
 namespace Scheduler {
     Task* currentTask = nullptr;
@@ -36,6 +40,15 @@ namespace Scheduler {
         
         mainTask->id = 0;
         mainTask->stack_pointer = nullptr; // Will be set on first Schedule call
+        
+        // Main task runs in the boot page table
+        uint64_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        mainTask->cr3 = cr3;
+        
+        // Main Task uses the Boot Stack
+        mainTask->kernel_stack_top = (uint64_t)&kernel_stack_top;
+        
         mainTask->state = TaskState::RUNNING; // It's already running!
         mainTask->next = mainTask; // Circular list
         
@@ -49,7 +62,7 @@ namespace Scheduler {
     extern "C" uint64_t PIT_GetTicks();
     
     // Halt wrapper
-    namespace HAL { namespace Platform { void Halt(); void EnableInterrupts(); } }
+    // namespace HAL { namespace Platform { void Halt(); void EnableInterrupts(); } }
 
     void CreateTask(void (*entry_point)()) {
         Task* newTask = (Task*)kmalloc(sizeof(Task));
@@ -86,7 +99,10 @@ namespace Scheduler {
         frame->rsp = (uint64_t)stackBase + 4096; // Top of allocated stack
         frame->ss = 0x10; // Kernel Data Segment
         
+        frame->ss = 0x10; // Kernel Data Segment
+        
         newTask->stack_pointer = (uint64_t*)stackTop;
+        newTask->kernel_stack_top = (uint64_t)stackBase + 4096; // Store original top for TSS
         newTask->state = TaskState::READY;
         
         // Insert into circular list after current head
@@ -100,12 +116,13 @@ namespace Scheduler {
         EarlyTerm::Print("\n");
     }
 
-    void CreateUserTask(void (*entry_point)(), void* user_stack) {
+    void CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3) {
         Task* newTask = (Task*)kmalloc(sizeof(Task));
         if (!newTask) return;
         
         newTask->id = nextTaskId++;
         newTask->wake_up_time = 0;
+        newTask->cr3 = cr3;
         
         // Allocate Kernel Stack for this task (used when interrupt occurs in Ring 3)
         uint64_t* kstackBase = (uint64_t*)kmalloc(4096);
@@ -126,6 +143,7 @@ namespace Scheduler {
         frame->ss = 0x1B; // User Data (RPL 3)
         
         newTask->stack_pointer = (uint64_t*)kstackTop;
+        newTask->kernel_stack_top = (uint64_t)kstackBase + 4096; // Store original top for TSS
         newTask->state = TaskState::READY;
         
         newTask->next = tasksHead->next;
@@ -236,10 +254,80 @@ namespace Scheduler {
         currentTask = next;
         currentTask->state = TaskState::RUNNING;
         
+        // Context Switch: Page Table
+        // Only switch if different to avoid TLB flush penalty
+        uint64_t currentCR3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(currentCR3));
+        
+        if (currentTask->cr3 != (currentCR3 & ~0xFFF)) {
+            // EarlyTerm::Print("[Sched] Switch CR3\n");
+            __asm__ volatile("mov %0, %%cr3" : : "r"(currentTask->cr3) : "memory");
+        }
+        
+        // CRITICAL: Update TSS RSP0 so next Interrupt/Syscall uses THIS task's stack
+        TSS::SetKernelStack(currentTask->kernel_stack_top);
+        
         return currentTask->stack_pointer;
     }
     
     uint64_t GetCurrentTaskId() {
         return currentTask ? currentTask->id : 0;
+    }
+
+    Task* GetCurrentTask() {
+        return currentTask;
+    }
+
+    Task* GetTaskById(uint64_t id) {
+        if (!tasksHead) return nullptr;
+        Task* t = tasksHead;
+        do {
+            if (t->id == id) return t;
+            t = t->next;
+        } while (t != tasksHead);
+        return nullptr;
+    }
+
+    bool PushEventToTask(uint64_t taskId, const OSEvent& ev) {
+        Task* t = GetTaskById(taskId);
+        if (!t) return false;
+
+        // Use lock? (We are single core for now, but interrupt safety needed)
+        bool ints = HAL::Platform::AreInterruptsEnabled();
+        HAL::Platform::DisableInterrupts();
+
+        int next = (t->eventHead + 1) % Task::EVENT_QUEUE_SIZE;
+        if (next == t->eventTail) {
+            // Full
+            if (ints) HAL::Platform::EnableInterrupts();
+            return false;
+        }
+
+        t->eventQueue[t->eventHead] = ev;
+        t->eventHead = next;
+        
+        // Wake up task if sleeping? (Optional optimization)
+        
+        if (ints) ::HAL::Platform::EnableInterrupts();
+        return true;
+    }
+
+    bool PopEventFromCurrentTask(OSEvent* outEv) {
+        Task* t = currentTask;
+        if (!t || !outEv) return false;
+
+        bool ints = ::HAL::Platform::AreInterruptsEnabled();
+        ::HAL::Platform::DisableInterrupts();
+
+        if (t->eventHead == t->eventTail) {
+            if (ints) ::HAL::Platform::EnableInterrupts();
+            return false;
+        }
+
+        *outEv = t->eventQueue[t->eventTail];
+        t->eventTail = (t->eventTail + 1) % Task::EVENT_QUEUE_SIZE;
+
+        if (ints) ::HAL::Platform::EnableInterrupts();
+        return true;
     }
 }

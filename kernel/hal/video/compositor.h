@@ -39,4 +39,27 @@ namespace Compositor {
     void ToggleDebugOverlay();
     bool IsDebugOverlayVisible();
     void UpdateDebugOverlay();
+    
+    // Input Handling (for Window Manager)
+    // Returns true if the event was consumed by the Compositor (e.g. dragging, buttons)
+    bool ProcessMouseEvent(int32_t x, int32_t y, uint8_t buttons);
+
+    // Constants (Professional Style)
+    const uint32_t TITLE_BAR_HEIGHT = 26;
+    const uint32_t BORDER_WIDTH = 1;
+
+    // Window Management (Userspace API Helpers)
+    struct Window {
+        uint64_t id;
+        Layer* layer;
+        uint32_t width;
+        uint32_t height;
+        void* buffer; // Kernel virt address of buffer
+        uint64_t phys_addr; // Physical address for mapping
+    };
+    
+    Window* CreateWindow(uint32_t w, uint32_t h, uint32_t flags);
+    void UpdateWindow(uint64_t window_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    void DestroyWindow(uint64_t window_id);
+    Window* GetWindow(uint64_t window_id);
 }

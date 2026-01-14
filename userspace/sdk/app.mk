@@ -53,7 +53,7 @@ $(RUNTIME_OBJ): $(MORPHIC_ROOT)/userspace/sdk/runtime.cpp
 # Link to binary
 $(APP_BIN): $(APP_OBJS) $(ENTRY_OBJ) $(SYSCALLS_OBJ) $(RUNTIME_OBJ)
 	@echo "  [APP] Linking $(APP_BIN)..."
-	$(LD) -T "$(MORPHIC_ROOT)/userspace/linker.ld" -o $@ $(ENTRY_OBJ) $(RUNTIME_OBJ) $(APP_OBJS) $(SYSCALLS_OBJ) "$(GUI_LIB)" --oformat binary
+	$(LD) -T "$(MORPHIC_ROOT)/userspace/linker.ld" -z max-page-size=4096 -o $@ $(ENTRY_OBJ) $(RUNTIME_OBJ) $(APP_OBJS) $(SYSCALLS_OBJ) "$(GUI_LIB)" --oformat binary
 
 # Pack to MPK
 # Check for manifest

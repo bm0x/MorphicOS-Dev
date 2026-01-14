@@ -10,8 +10,8 @@
 
 namespace HAL {
 
-    // Kernel stack for TSS (4KB aligned) - Moved from kernel_main
-    static uint8_t kernel_tss_stack[4096] __attribute__((aligned(16)));
+    // Use the robust 64KB stack defined in kernel/core/entry.asm
+    extern "C" uint64_t kernel_stack_top;
 
     void Platform::Init() {
         // Disable interrupts during initialization
@@ -26,7 +26,8 @@ namespace HAL {
         EarlyTerm::Print("[HAL] GDT Initialized.\n");
         
         // 2b. Initialize TSS (Task State Segment) for Ring 3 support
-        TSS::Init((uint64_t)&kernel_tss_stack[4096]);
+        // Point TSS RSP0 to the safe 64KB Kernel Stack
+        TSS::Init((uint64_t)&kernel_stack_top);
         GDT::LoadTSS(TSS::GetTSS());
         EarlyTerm::Print("[HAL] TSS Initialized.\n");
 
@@ -53,6 +54,12 @@ namespace HAL {
 
     void Platform::DisableInterrupts() {
         __asm__ volatile("cli");
+    }
+
+    bool Platform::AreInterruptsEnabled() {
+        uint64_t rflags;
+        __asm__ volatile("pushfq; pop %0" : "=r"(rflags));
+        return (rflags & 0x200) != 0; // IF bit is bit 9
     }
 
     void Platform::Halt() {

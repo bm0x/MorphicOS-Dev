@@ -3,7 +3,7 @@
  * Target: x86_64 ELF
  */
 
-ENTRY(kernel_main)
+ENTRY(_start)
 
 SECTIONS
 {

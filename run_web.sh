@@ -3,7 +3,7 @@
 # Provides PC Speaker audio and high memory allocation
 
 # Configuration
-ISO=morphic.img
+ISO=morphic_os.iso
 OVMF=/usr/share/ovmf/OVMF.fd
 
 # Find OVMF
@@ -23,7 +23,7 @@ echo "║       Morphic OS - QEMU Launcher          ║"
 echo "╚═══════════════════════════════════════════╝"
 
 # Memory configuration
-RAM=1024M          # 1GB RAM (plenty for video + kernel)
+RAM=2046M          # 2GB RAM (plenty for video + kernel)
 
 # Start QEMU with audio support
 echo "[*] Starting QEMU with PC Speaker audio..."

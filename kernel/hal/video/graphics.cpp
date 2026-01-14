@@ -4,6 +4,7 @@
 #include "../serial/uart.h"
 #include "early_term.h"
 #include "alpha_lut.h"
+#include "../../mm/pmm.h"
 
 // SIMD optimized memory operations (from blit_fast.S)
 extern "C" {
@@ -47,55 +48,29 @@ namespace Graphics {
         Alpha::InitLUT();
         UART::Write("[Graphics::Init] Alpha::InitLUT done\n");
         
-        // Allocate backbuffer
+        // Allocate backbuffer using PMM (Contiguous Physical Memory)
         uint32_t bufferSize = pitch * height * sizeof(uint32_t);
-        UART::Write("[Graphics::Init] Requesting kmalloc for ");
-        UART::WriteDec(bufferSize);
-        UART::Write(" bytes\n");
+        uint32_t pages = (bufferSize + 4095) / 4096;
         
-        // TEMPORARY FIX: Force single buffering to bypass memory mapping crash
-        // The heap memory beyond 1MB seems unmapped. We need to implement proper paging later.
-        UART::Write("[Graphics] WARN: Forcing single-buffer mode to avoid unmapped memory crash\n");
-        backbuffer = nullptr; // Force failure of alloc logic below
+        UART::Write("[Graphics::Init] Allocating backbuffer (PMM): ");
+        UART::WriteDec(pages);
+        UART::Write(" pages\n");
         
-        // backbuffer = (uint32_t*)kmalloc(bufferSize);
+        // PMM returns physical address. In Identity Mapped Kernel, Phys == Virt.
+        void* phys = PMM::AllocContiguous(pages);
         
-        /* 
-        UART::Write("[Graphics::Init] kmalloc returned: ");
-        UART::WriteHex((uint64_t)backbuffer);
-        UART::Write("\n");
-        
-        if (backbuffer) {
-            // DEBUG: Write in small chunks to find where crash occurs
-            UART::Write("[Graphics::Init] Writing backbuffer in 1MB chunks...\n");
-            uint32_t totalPixels = pitch * height;
-            uint32_t chunkSize = 256 * 1024;  // 256K pixels = 1MB per chunk
-            uint32_t written = 0;
+        if (phys) {
+            backbuffer = (uint32_t*)phys;
             
-            while (written < totalPixels) {
-                uint32_t remaining = totalPixels - written;
-                uint32_t toWrite = (remaining < chunkSize) ? remaining : chunkSize;
-                
-                // Simple byte-by-byte write instead of SIMD
-                for (uint32_t i = 0; i < toWrite; i++) {
-                    backbuffer[written + i] = 0x00000000;
-                }
-                
-                written += toWrite;
-            }
-            
-            UART::Write("[Graphics::Init] All chunks written successfully!\n");
-            
-            EarlyTerm::Print("[Graphics] Double buffer: ");
-            EarlyTerm::PrintDec(bufferSize / 1024);
-            EarlyTerm::Print(" KB allocated.\n");
-        } else {
-        */
-            EarlyTerm::Print("[Graphics] WARNING: Backbuffer alloc skipped/failed. Using direct FB.\n");
-            backbuffer = (uint32_t*)fb->baseAddress;
-            // Clear screen directly
+            // Clear backbuffer (Black)
             memset_fast_32(backbuffer, 0, pitch * height);
-       // }
+            
+            EarlyTerm::Print("[Graphics] Double buffering ENABLED.\n");
+        } else {
+            EarlyTerm::Print("[Graphics] WARNING: Backbuffer alloc failed. Using direct FB (Flicker prone).\n");
+            backbuffer = (uint32_t*)fb->baseAddress;
+            memset_fast_32(backbuffer, 0, pitch * height);
+        }
 
         
         UART::Write("[Graphics::Init] COMPLETE\n");

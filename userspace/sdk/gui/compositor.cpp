@@ -29,18 +29,18 @@ bool Compositor::Initialize() {
     
     if (width == 0 || height == 0) return false;
     
-    // 2. Map Front Buffer (VRAM)
+    // 2. Map Window Buffer (Kernel Managed)
+    // sys_video_map now returns the Window Buffer (Virtual Address)
     frontBuffer = (uint32_t*)sys_video_map();
     if (!frontBuffer) return false;
     
-    // 3. Allocate Back Buffer (RAM)
-    // Size = Width * Height * 4 bytes
-    uint64_t size = (uint64_t)width * height * 4;
-    uint64_t backAddr = sys_alloc_backbuffer(size);
+    // 3. Use Window Buffer for Drawing
+    // The Kernel Compositor handles the "Real" backbuffering.
+    // Apps draw "directly" to their Window Layer (which is offscreen).
+    backBuffer = frontBuffer;
     
-    if (backAddr == 0) return false;
-    
-    backBuffer = (uint32_t*)backAddr;
+    // Legacy support: Don't allocate separate backbuffer.
+    // sys_alloc_backbuffer is not needed for Windowed Apps.
     
     return true;
 }

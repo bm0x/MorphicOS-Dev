@@ -5,9 +5,10 @@
 // Layer types for Z-ordering
 enum class LayerType {
     WALLPAPER = 0,  // Z=0 (bottom)
-    WINDOW = 1,     // Z=1
-    CURSOR = 2,     // Z=2
-    OVERLAY = 3     // Z=3 (top)
+    WINDOW = 1,     // Z=1 (Generic)
+    APP_WINDOW = 2, // Z=50+ (Apps)
+    CURSOR = 3,     // Z=100
+    OVERLAY = 4     // Z=200 (top)
 };
 
 // Dirty rectangle for partial updates

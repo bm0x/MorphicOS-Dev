@@ -79,7 +79,8 @@ KERNEL_OBJECTS = $(KERNEL_SOURCES:.cpp=.o)
 # NASM assembly sources
 ASM_SOURCES = kernel/hal/arch/x86_64/tables.asm \
               kernel/hal/arch/x86_64/interrupts.asm \
-              kernel/hal/arch/x86_64/syscall_entry.asm
+              kernel/hal/arch/x86_64/syscall_entry.asm \
+              kernel/core/entry.asm
 
 ASM_OBJECTS = $(ASM_SOURCES:.asm=.o)
 
@@ -151,7 +152,8 @@ userspace/desktop.mpk: userspace/syscalls.o userspace/entry.o
 	cp $(DESKTOP_APP_DIR)/desktop.mpk userspace/desktop.mpk
 
 CALCULATOR_APP_DIR = userspace/apps/calculator
-userspace/calculator.mpk:
+CALCULATOR_APP_DIR = userspace/apps/calculator
+userspace/calculator.mpk: userspace/syscalls.o userspace/entry.o
 	@echo "========================================"
 	@echo "  [USER] Building Calculator App..."
 	@echo "========================================"
@@ -159,7 +161,8 @@ userspace/calculator.mpk:
 	cp $(CALCULATOR_APP_DIR)/calculator.mpk userspace/calculator.mpk
 
 TERMINAL_APP_DIR = userspace/apps/terminal
-userspace/terminal.mpk:
+TERMINAL_APP_DIR = userspace/apps/terminal
+userspace/terminal.mpk: userspace/syscalls.o userspace/entry.o
 	@echo "========================================"
 	@echo "  [USER] Building Terminal App..."
 	@echo "========================================"
@@ -209,7 +212,7 @@ image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspac
 
 
 clean:
-	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/desktop_mpk.cpp kernel/fs/desktop_mpk.o userspace/*.mpk
+	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/*_mpk.cpp kernel/fs/*_mpk.o userspace/*.mpk userspace/initrd.img
 	# Dynamic Cleanup of Apps
 	rm -f userspace/apps/*/*.mpk userspace/apps/*/*.bin userspace/apps/*/*.o
 	$(MAKE) -C $(DESKTOP_APP_DIR) clean

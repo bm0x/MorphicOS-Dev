@@ -59,7 +59,11 @@ namespace InputManager {
     void PushEvent(const OSEvent& ev);
     
     // Pop an event for the Syscall
+    // Pop an event for the Syscall
     bool GetNextOSEvent(OSEvent* outEv);
+
+    // Compositor Registration
+    void SetCompositorPID(uint64_t pid);
     
     // Get registered device count
     uint32_t GetDeviceCount();

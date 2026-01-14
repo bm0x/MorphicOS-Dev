@@ -30,68 +30,102 @@ public:
     }
 
     void Draw(int screenW, int screenH) {
-        // Full screen overlay with semi-transparent background
-        // Compositor doesn't support transparency well yet? 
-        // We'll draw a dark overlay.
-        Compositor::DrawRect(0, 0, screenW, screenH, 0xEE101010); // Alpha? 0xEE is alpha?
-        // Assuming ARGB.
+        // Full screen overlay
+        // Dark background (matches macOS Launchpad blur/darkening)
+        Compositor::DrawRect(0, 0, screenW, screenH, 0xD0000000); 
         
-        // Draw Grid
-        int gridStartX = 100;
-        int gridStartY = 100;
-        int cellSize = 120;
-        int gap = 20;
+        // Search Bar (Rounded Rect approximation)
+        int searchW = 300;
+        int searchH = 34;
+        int searchX = (screenW - searchW) / 2;
+        int searchY = 60;
+        Compositor::DrawRect(searchX, searchY, searchW, searchH, 0x40FFFFFF); 
+        // Search Text
+        const char* sTxt = "Search";
+        Compositor::DrawText(searchX + 110, searchY + 9, sTxt, 0x80FFFFFF, 1);
+        // Magnifying glass icon simulation (simple circle)
+         // Compositor::DrawRect(searchX + 10, searchY + 10, 14, 14, 0xFFFFFFFF);
 
-        // Title
-        Compositor::DrawText(gridStartX, 50, "Morphic OS Launcher", 0xFFFFFFFF, 3);
+        // App Grid
+        // 5 columns, centered
+        int cols = 5;
+        int iconSize = 80; // Standard icon size
+        int gapX = 60;
+        int gapY = 60;
+        
+        int totalRowW = (cols * iconSize) + ((cols - 1) * gapX);
+        int gridStartX = (screenW - totalRowW) / 2;
+        int gridStartY = 160;
 
         for (int i = 0; i < appCount; i++) {
-            int cx = gridStartX + apps[i].x * (cellSize + gap);
-            int cy = gridStartY + apps[i].y * (cellSize + gap);
-            int cw = apps[i].w * cellSize + (apps[i].w - 1) * gap;
-            int ch = apps[i].h * cellSize + (apps[i].h - 1) * gap;
-
-            Compositor::DrawRect(cx, cy, cw, ch, apps[i].color);
-            Compositor::DrawRect(cx, cy, cw, ch, 0x40FFFFFF); // Shine/Highlight (simulated)
+            int col = i % cols;
+            int row = i / cols;
             
-            // Text Centered
+            int cx = gridStartX + col * (iconSize + gapX);
+            int cy = gridStartY + row * (iconSize + gapY);
+            
+            // Icon Background (Rounded Rect Shape)
+            // Color mapping based on name to match style
+            uint32_t iconColor = apps[i].color;
+            if (apps[i].name[0] == 'C') iconColor = 0xFF404040; // Calc (Grey)
+            if (apps[i].name[0] == 'T') iconColor = 0xFF202020; // Term (Black)
+            if (apps[i].name[0] == 'S') iconColor = 0xFF4080A0; // System (Blue)
+            
+            Compositor::DrawRect(cx, cy, iconSize, iconSize, iconColor);
+            
+            // Icon Gloss/Gradient (Top half lighter)
+            Compositor::DrawRect(cx, cy, iconSize, iconSize/2, 0x20FFFFFF);
+            
+            // Icon Label
             int textLen = StrLen(apps[i].name);
-            int textW = textLen * 8 * 2;
-            int textH = 16 * 2;
-            Compositor::DrawText(cx + (cw - textW)/2, cy + (ch - textH)/2, apps[i].name, 0xFFFFFFFF, 2);
+            int textW = textLen * 8; // Font size 1
+            int textX = cx + (iconSize - textW) / 2;
+            int textY = cy + iconSize + 10;
+            
+            Compositor::DrawText(textX, textY, apps[i].name, 0xFFE0E0E0, 1);
         }
+        
+        // Pagination Dots (Bottom Center)
+        int dotsY = screenH - 120; // Above dock
+        int dotSize = 8;
+        int dotGap = 12;
+        int pages = 2; // Simulate 2 pages
+        int totalDotsW = (pages * dotSize) + ((pages - 1) * dotGap);
+        int dotX = (screenW - totalDotsW) / 2;
+        
+        // Page 1 (Active) - White
+        Compositor::DrawRect(dotX, dotsY, dotSize, dotSize, 0xFFFFFFFF);
+        // Page 2 (Inactive) - Gray
+        Compositor::DrawRect(dotX + dotSize + dotGap, dotsY, dotSize, dotSize, 0x80FFFFFF);
+
     }
 
     bool HandleClick(int mx, int my) {
-        // Check grid
-        int gridStartX = 100;
-        int gridStartY = 100;
-        int cellSize = 120;
-        int gap = 20;
+        // Redefine grid constants to match Draw
+        int screenW = Compositor::GetWidth();
+        int cols = 5;
+        int iconSize = 80; 
+        int gapX = 60;
+        int gapY = 60;
+        
+        int totalRowW = (cols * iconSize) + ((cols - 1) * gapX);
+        int gridStartX = (screenW - totalRowW) / 2;
+        int gridStartY = 160;
 
         for (int i = 0; i < appCount; i++) {
-            int cx = gridStartX + apps[i].x * (cellSize + gap);
-            int cy = gridStartY + apps[i].y * (cellSize + gap);
-            int cw = apps[i].w * cellSize + (apps[i].w - 1) * gap;
-            int ch = apps[i].h * cellSize + (apps[i].h - 1) * gap;
+            int col = i % cols;
+            int row = i / cols;
+
+            int cx = gridStartX + col * (iconSize + gapX);
+            int cy = gridStartY + row * (iconSize + gapY);
+            int cw = iconSize;
+            int ch = iconSize;
 
             if (mx >= cx && mx < cx + cw && my >= cy && my < cy + ch) {
                 // Launch!
                 if (apps[i].mpk_path && apps[i].mpk_path[0]) {
-                    // sys_spawn(apps[i].mpk_path);
-                    // Syscall expects absolute path or VFS path.
-                    // VFS path inside MPK? No, we need to load checking VFS.
-                    // The loader expects VFS path.
-                    // "userspace/calculator.mpk" should work if it is in initrd/root.
-                    // In `kernel_main`, we mount initrd as `/`.
-                    // So `/calculator.mpk` likely if flat.
-                    // Wait, `Makefile` copies them to `::/`. So they are at `/calculator.mpk`.
-                    // But `userspace/desktop.mpk` is at `/desktop.mpk`.
-                    // Let's try `/userspace/calculator.mpk` if directories are preserved?
-                    // `mcopy -i morphic.img userspace/calculator.mpk ::/` -> This puts it at root if no dest dir specified.
-                    // It puts it at `/calculator.mpk`.
-                    
-                    sys_spawn(apps[i].mpk_path); // Start with provided path, verify later.
+                    // Try absolute path launching first (standard for initrd)
+                    sys_spawn(apps[i].mpk_path); 
                     return true;
                 }
             }

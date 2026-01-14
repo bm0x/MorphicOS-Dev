@@ -462,7 +462,9 @@ namespace Shell {
         // Use PackageLoader to load the structured application container
         LoadedProcess proc = PackageLoader::Load("/initrd/desktop.mpk");
         if (proc.error_code == 0) {
-            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top);
+            uint64_t cr3;
+            __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3);
         } else {
             EarlyTerm::Print("Error: Failed to load desktop.mpk\n");
         }

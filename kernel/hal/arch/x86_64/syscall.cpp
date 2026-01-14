@@ -14,6 +14,7 @@
 #include "system_info.h"
 #include "../../../core/loader.h"
 #include "../../../process/scheduler.h"
+#include "../../platform.h"
 
 extern "C" uint64_t PIT_GetTicks();
 
@@ -549,113 +550,60 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case 50: // SYS_VIDEO_MAP
     {
-        // Return pointer to framebuffer/backbuffer for direct access
-        // FIX: Map the framebuffer info userspace with PAGE_USER permissions
-        // Otherwise, writing to it causes a Page Fault (Protection Write Triggered)
-
-        uint32_t *fb_ptr = Graphics::GetFramebuffer();
-        if (!fb_ptr)
-            return 0;
-
-        uint64_t phys_base = (uint64_t)fb_ptr;
+        // OLD: Map Direct Framebuffer.
+        // NEW: Create a Fullscreen Window managed by Compositor.
+        // This ensures the app draws to a backbuffer, and Compositor handles display.
+        
         uint32_t width = Graphics::GetWidth();
         uint32_t height = Graphics::GetHeight();
-        // SAFETY FIX: Ensure we calculate size for 32bpp (4 bytes/pixel)
-        // Some UEFI implementations might return pitch in pixels or we might interpret it wrong.
-        uint32_t pitch = Graphics::GetPitch();
-
-        // Minimum size = Width * Height * 4.
-        uint64_t size_bytes_min = (uint64_t)width * height * 4;
-        uint64_t size_bytes_pitch = (uint64_t)pitch * height;
-
-        // Use the larger of the two to be safe (covers physical padding if pitch is bytes, covers BPP if pitch is pixels)
-        uint64_t total_size = (size_bytes_pitch > size_bytes_min) ? size_bytes_pitch : size_bytes_min;
-
-        uint64_t pages = (total_size + 4095) / 4096;
-
-        // FIX: Map to a new USER virtual address to avoid Huge Page collisions in kernel space
-        // Userspace base is 0x600000000000. Let's use 0x600100000000 for MMIO/Video.
-        uint64_t user_video_virt = 0x600100000000ULL;
-
-        UART::Write("[Syscall] Mapping Video Memory to User\n");
-        UART::Write("  Phys Base: ");
-        UART::WriteHex(phys_base);
-        UART::Write("\n");
-        UART::Write("  Virt Base: ");
-        UART::WriteHex(user_video_virt);
-        UART::Write("\n");
-        UART::Write("  Size: ");
-        UART::WriteDec(total_size);
-        UART::Write(" bytes (");
-        UART::WriteDec(pages);
-        UART::Write(" pages)\n");
-
-        // Map every page of the framebuffer
-        for (uint64_t i = 0; i < pages; i++)
-        {
-            uint64_t offset = i * 4096;
-            // Map Physical Framebuffer -> New User Virtual Address
-            bool success = MMU::MapPage(user_video_virt + offset, phys_base + offset,
-                                        PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT | PAGE_NOCACHE);
-
-            if (!success)
-            {
-                UART::Write("  [ERROR] MapPage failed at offset ");
-                UART::WriteHex(offset);
-                UART::Write("\n");
-                // Continue trying others or break?
-            }
+        
+        // Create Window (Layer)
+        // Check "Compositor::CreateWindow" exposed in header? Yes.
+        Compositor::Window* win = Compositor::CreateWindow(width, height, 0);
+        
+        if (!win) {
+             UART::Write("[Syscall] SYS_VIDEO_MAP: Failed to create window\n");
+             return 0;
         }
-
-        // FLUSH TLB: Reload CR3 to make sure new permissions are seen
+        
+        UART::Write("[Syscall] Window Created ID: ");
+        UART::WriteDec(win->id);
+        UART::Write("\n");
+        
+        uint64_t user_video_virt = 0x600100000000ULL;
+        uint64_t pages = ((uint64_t)width * height * 4 + 4095) / 4096;
+        
+        // Map Window Buffer (Physical) to User Virtual
+        for (uint64_t i = 0; i < pages; i++) {
+             MMU::MapPage(user_video_virt + i * 4096, 
+                          win->phys_addr + i * 4096, 
+                          PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT); // Cacheable RAM
+        }
+        
+        // Flush TLB
         uint64_t cr3;
         __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
         __asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
-
+        
         return user_video_virt;
     }
 
     case 51: // SYS_VIDEO_FLIP
     {
-        // Present a userspace backbuffer into the real framebuffer.
-        // arg1: pointer to userspace backbuffer (width*height BGRA32)
-
-        if (arg1 == 0)
-            return 0;
-
-        const uint64_t USER_SPACE_MIN = 0x600000000000ULL;
-        if (arg1 < USER_SPACE_MIN)
-            return 0;
-
-        uint32_t* dest = Graphics::GetFramebuffer();
-        if (!dest)
-            return 0;
-
-        uint32_t width = Graphics::GetWidth();
-        uint32_t height = Graphics::GetHeight();
-        uint32_t pitch = Graphics::GetPitch();
-
-        uint32_t* src = (uint32_t*)arg1;
-
-        // Best-effort VSync wait. This only works on VGA-compatible adapters (e.g. QEMU -vga std).
-        // Never hang if the status bit doesn't toggle.
-        bool vsynced = WaitVBlankTimeoutMs(20);
-
-        // Fast path: same pitch -> one big blit.
-        if (pitch == width)
-        {
-            blit_fast_32(dest, src, (size_t)((uint64_t)width * height));
-        }
-        else
-        {
-            // Copy row-by-row: userspace buffer is tightly packed (width*height).
-            for (uint32_t y = 0; y < height; y++)
-            {
-                blit_fast_32(&dest[(uint64_t)y * pitch], &src[(uint64_t)y * width], width);
-            }
-        }
-
-        return vsynced ? 1 : 0;
+        // OLD: Manual Blit.
+        // NEW: Trigger Compositor Composition.
+        // We assume the user has written to their Window Buffer (Allocated in VIDEO_MAP).
+        // Since we don't know WHICH window (no ID passed), we mark whole screen dirty.
+        // Ideally we use SYS_UPDATE_WINDOW(id) but this provides backward compat.
+        
+        uint32_t w = Graphics::GetWidth();
+        uint32_t h = Graphics::GetHeight();
+        
+        Compositor::MarkDirty(0, 0, w, h);
+        Compositor::Compose();
+        Compositor::Flip();
+        
+        return 0;
     }
 
     case 54: // SYS_VIDEO_FLIP_RECT
@@ -715,24 +663,135 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         // For now, return 0 (no event)
         return 0;
 
-    case SYS_SPAWN: {
-        const char* path = (const char*)arg1;
-        // Find a free slot. For now, just increment base address.
-        // Start at 0x600100000000 (Desktop is at 0x600000000000)
-        static uint64_t next_base = 0x600100000000ULL;
+    case 62: // SYS_CREATE_WINDOW (width, height, flags)
+    {
+        uint32_t w = (uint32_t)arg1;
+        uint32_t h = (uint32_t)arg2;
+        uint32_t flags = (uint32_t)arg3;
+
+        // Validation
+        if (w == 0 || h == 0 || w > 4096 || h > 4096) return 0;
+
+        // Create Window Layer (Physical Buffer allocated)
+        Compositor::Window* win = Compositor::CreateWindow(w, h, flags);
+        if (!win) return 0;
         
-        LoadedProcess proc = PackageLoader::Load(path, next_base);
-        if (proc.error_code == 0) {
-            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top);
-            next_base += 0x100000000ULL; // +4GB
-            return 0; // Success
+        UART::Write("[Syscall] Window Created ID: ");
+        UART::WriteDec(win->id);
+        UART::Write("\n");
+        
+        // Map to User Space (Fixed Video Base)
+        uint64_t user_video_virt = 0x600100000000ULL;
+        uint64_t pages = ((uint64_t)w * h * 4 + 4095) / 4096;
+        
+        for (uint64_t i = 0; i < pages; i++) {
+             MMU::MapPage(user_video_virt + i * 4096, 
+                          win->phys_addr + i * 4096, 
+                          PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
         }
-        return (uint64_t)proc.error_code;
+        
+        // Flush TLB
+        uint64_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        __asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
+        
+        return user_video_virt;
+    }
+
+    case SYS_SPAWN: {
+        const char* user_path = (const char*)arg1;
+        // Copy path to kernel stack buffer (256 chars max)
+        // This is crucial because user_path is in the Caller's address space (e.g. 0x6000...)
+        // Once we switch CR3 to the new process, that address space is GONE.
+        char path_buf[256];
+        int i = 0;
+        while (i < 255) {
+            path_buf[i] = user_path[i];
+            if (path_buf[i] == 0) break;
+            i++;
+        }
+        path_buf[i] = 0; // Ensure null termination
+        
+        // 1. Create a new Process Address Space (PML4)
+        uint64_t newCR3 = MMU::CreatePageTable();
+        if (!newCR3) {
+            UART::Write("[Syscall] Spawn failed: Cannot create Page Table\n");
+            return -1;
+        }
+        
+        // 2. Switch to new Address Space temporarily
+        // CRITICAL: Disable Interrupts to prevent Scheduler from preempting us
+        // and restoring the old CR3 (since current_task->cr3 is still oldCR3).
+        bool ints_enabled = HAL::Platform::AreInterruptsEnabled();
+        HAL::Platform::DisableInterrupts();
+        
+        uint64_t oldCR3 = MMU::GetCurrentPageTable();
+        MMU::SwitchPageTable(newCR3);
+        
+        // 3. Load App at FIXED Base Address (Standard Morphic App Base)
+        // Since we are in a new address space, we can reuse 0x600000000000
+        const uint64_t APP_BASE = 0x600000000000ULL;
+        // Use path_buf which is on Kernel Stack (mapped in Identity/Kernel Space, so visible in newCR3)
+        LoadedProcess proc = PackageLoader::Load(path_buf, APP_BASE);
+        
+        // 4. Switch back to Kernel/Caller Address Space
+        MMU::SwitchPageTable(oldCR3);
+        
+        if (ints_enabled) HAL::Platform::EnableInterrupts();
+        
+        if (proc.error_code == 0) {
+            // 5. Register Task with the NEW CR3
+            // The Scheduler will switch to newCR3 when running this task
+            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, newCR3);
+            return 0; // Success
+        } else {
+            // Failed. Cleanup Page Table? (Memory Leak TODO: DestroyPageTable)
+            UART::Write("[Syscall] Spawn failed: Loader error ");
+            UART::WriteDec(proc.error_code);
+            UART::Write("\n");
+            return (uint64_t)proc.error_code;
+        }
     }
 
     case SYS_DEBUG_PRINT:
         UART::Write((const char*)arg1);
         return 0;
+
+    case SYS_REGISTER_COMPOSITOR:
+        // arg1: Unused (Registers Current Process)
+        InputManager::SetCompositorPID(Scheduler::GetCurrentTaskId());
+        return 0;
+
+    case SYS_MAP_WINDOW:
+    {
+        // arg1: WindowID
+        uint64_t winId = arg1;
+        
+        Compositor::Window* win = Compositor::GetWindow(winId);
+        if (!win) return 0;
+
+        // Calculate size
+        uint64_t sizeBytes = (uint64_t)win->width * win->height * 4;
+        uint64_t pages = (sizeBytes + 4095) / 4096;
+
+        // Find a free virtual address in user space (Simple increment for now)
+        // Ideally we need a User Virtual Allocator
+        // HACK: Use a fixed high range for Compositor mappings: 0x7000_0000_0000 + (ID * 16MB)
+        uint64_t compos_base = 0x700000000000ULL + (winId * 0x1000000); // 16MB per window max slot
+        
+        for (uint64_t i = 0; i < pages; i++) {
+             MMU::MapPage(compos_base + i * 4096, 
+                          win->phys_addr + i * 4096, 
+                          PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
+        }
+        
+        // Flush TLB (lazy)
+        uint64_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        __asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
+
+        return compos_base;
+    }
 
     default:
         return (uint64_t)-1;

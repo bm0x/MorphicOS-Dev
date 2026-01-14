@@ -3,7 +3,7 @@
 
 class CalculatorApp : public MorphicAPI::Window {
 public:
-    CalculatorApp() {
+    CalculatorApp() : MorphicAPI::Window(300, 400) {
         value = 0;
         currentOp = 0;
         inputBuffer[0] = '0';

@@ -22,6 +22,10 @@
 #define SYS_ALLOC_BACKBUFFER 53 // Allocate and map userspace backbuffer
 #define SYS_SPAWN 60
 #define SYS_DEBUG_PRINT 61
+#define SYS_CREATE_WINDOW 62
+#define SYS_REGISTER_COMPOSITOR 63 
+#define SYS_MAP_WINDOW 64
+#define SYS_POST_MESSAGE 65
 
 
 

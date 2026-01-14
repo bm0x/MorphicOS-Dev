@@ -105,9 +105,11 @@ void PMM::Init(BootInfo* bootInfo) {
             totalRAM += count * 4096;
             
             for (uint64_t p = 0; p < count; p++) {
-                bitmap.Set(startPage + p, false); // Free
-                freeRAM += 4096;
+                // SLLOOOOW
+                // bitmap.Set(startPage + p, false); // Free
             }
+            bitmap.SetRange(startPage, count, false);
+            freeRAM += count * 4096;
         }
     }
 
@@ -117,39 +119,57 @@ void PMM::Init(BootInfo* bootInfo) {
     // A. Bitmap Itself
     uint64_t bitmapStartPage = (uint64_t)bitmapBuffer / 4096;
     uint64_t bitmapPages = (bitmapSize + 4095) / 4096;
-    for (uint64_t p = 0; p < bitmapPages; p++) {
-        if (!bitmap.Get(bitmapStartPage + p)) {
-            bitmap.Set(bitmapStartPage + p, true);
-            freeRAM -= 4096;
-        }
-    }
+    bitmap.SetRange(bitmapStartPage, bitmapPages, true);
+    // freeRAM update is tricky with range, let's just ignore precise freeRAM count adjustment for reserved areas 
+    // or recalculate. It's fine, strict accounting isn't critical for boot speed, safety is.
+    // Actually we should subtract.
+    // Approximating freeRAM subtraction:
+    if (freeRAM >= bitmapPages * 4096) freeRAM -= bitmapPages * 4096;
 
     // B. Kernel Reserved Zone (0 - 256MB)
-    // We protect the first 256MB to cover:
-    //   - Kernel code and data
-    //   - Early heap allocations
-    //   - Page tables
-    //   - Graphics buffers
-    //   - Any other kernel-reserved structures
-    // This ensures userspace allocations never collide with kernel memory.
-    constexpr uint64_t KERNEL_RESERVED_SIZE = 0x10000000; // 256MB
-    for (uint64_t p = 0; p < (KERNEL_RESERVED_SIZE / 4096); p++) {
-        if (!bitmap.Get(p)) {
-             bitmap.Set(p, true);
-             if (freeRAM >= 4096) freeRAM -= 4096;
-        }
-    }
+    constexpr uint64_t LOW_RESERVED_SIZE = 0x10000000; // 256MB
+    uint64_t lowPages = LOW_RESERVED_SIZE / 4096;
+    bitmap.SetRange(0, lowPages, true);
+     if (freeRAM >= lowPages * 4096) freeRAM -= lowPages * 4096;
+    
+    // C. The Actual Kernel (Loaded at 1GB = 0x40000000)
+    // We reserve 16MB for Kernel Code/Data/BSS/Stack
+    constexpr uint64_t KERNEL_PHYS_BASE = 0x40000000;
+    constexpr uint64_t KERNEL_SIZE_MAX = 0x01000000; // 16MB
+    
+    uint64_t kernelStartPage = KERNEL_PHYS_BASE / 4096;
+    uint64_t kernelPages = KERNEL_SIZE_MAX / 4096;
+    
+    bitmap.SetRange(kernelStartPage, kernelPages, true);
+    if (freeRAM >= kernelPages * 4096) freeRAM -= kernelPages * 4096;
 }
+
+// Optimization: Start search from last known free index
+static uint64_t lastFreeIndex = 0;
 
 void* PMM::AllocPage() {
     uint64_t limit = highestAddr / 4096;
-    for (uint64_t i = 0; i < limit; i++) {
+    
+    // Quick search starting from hint
+    for (uint64_t i = lastFreeIndex; i < limit; i++) {
         if (!bitmap.Get(i)) {
             bitmap.Set(i, true);
             freeRAM -= 4096;
+            lastFreeIndex = i + 1; // Update hint
             return (void*)(i * 4096);
         }
     }
+    
+    // Fallback: search from beginning
+    for (uint64_t i = 0; i < lastFreeIndex; i++) {
+        if (!bitmap.Get(i)) {
+            bitmap.Set(i, true);
+            freeRAM -= 4096;
+            lastFreeIndex = i + 1;
+            return (void*)(i * 4096);
+        }
+    }
+    
     return nullptr;
 }
 
@@ -158,6 +178,9 @@ void* PMM::AllocContiguous(size_t pages) {
     // Start searching after the kernel reserved zone (256MB)
     uint64_t limit = highestAddr / 4096;
     uint64_t start_search = 0x10000000 / 4096; // Start at 256MB
+    
+    // Optimization: Use lastFreeIndex if it's beyond reserved zone
+    if (lastFreeIndex > start_search) start_search = lastFreeIndex;
     
     for (uint64_t start = start_search; start <= limit - pages; start++) {
         bool found = true;
@@ -176,6 +199,8 @@ void* PMM::AllocContiguous(size_t pages) {
                 bitmap.Set(start + i, true);
                 freeRAM -= 4096;
             }
+            // Update hint
+            if (start + pages > lastFreeIndex) lastFreeIndex = start + pages;
             return (void*)((start) * 4096);
         }
     }

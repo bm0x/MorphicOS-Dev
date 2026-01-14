@@ -3,6 +3,10 @@
 #include "early_term.h"
 #include "../../mm/heap.h"
 #include "../../utils/std.h"
+#include "../../mm/pmm.h"
+#include "../../mm/pmm.h"
+#include "../../arch/common/mmu.h"
+#include "font_renderer.h"
 
 namespace Compositor {
     static Layer* layers[MAX_LAYERS];
@@ -19,6 +23,8 @@ namespace Compositor {
     static bool debugOverlayVisible = false;
     static uint32_t frameCount = 0;
     
+    static void DrawWindowDecoration(Layer* layer);
+
     void Init() {
         layerCount = 0;
         dirtyCount = 0;
@@ -239,6 +245,11 @@ namespace Compositor {
                     }
                 }
             }
+            
+            // Draw Decorations ON TOP of the window layer (or around it)
+            if (layer->type == LayerType::APP_WINDOW) {
+                DrawWindowDecoration(layer);
+            }
         }
         
         frameCount++;
@@ -299,7 +310,8 @@ namespace Compositor {
     }
     
     void Flip() {
-        Graphics::Flip();
+        // Use VSync to eliminate tearing
+        Graphics::FlipWithVSync();
     }
     
     void ToggleDebugOverlay() {
@@ -360,6 +372,299 @@ namespace Compositor {
                 buf[y * w + x] = 0xFFFF00FF;  // Magenta progress bar
             }
         }
+    }
+
+    // Window System
+    // Window System State
+    static Window windows[16];
+    static uint32_t windowCount = 0;
+    static uint64_t nextWindowInfoId = 1;
+
+    // Dragging State
+    static Window* dragWindow = nullptr;
+    static int32_t dragOffsetX = 0;
+    static int32_t dragOffsetY = 0;
+
+    // Helper: Draw Window Decorations (Professional Style)
+    static void DrawWindowDecoration(Layer* layer) {
+        if (!layer) return;
+
+        uint32_t border = BORDER_WIDTH;
+        uint32_t titleH = TITLE_BAR_HEIGHT;
+        
+        uint32_t lx = layer->x;
+        uint32_t ly = layer->y;
+        uint32_t lw = layer->width;
+        uint32_t lh = layer->height;
+
+        // Professional Palette
+        uint32_t c_title_bg   = 0xFF121212;
+        uint32_t c_border     = 0xFF2A2A2A;
+        uint32_t c_accent     = 0xFF4080A0; // Morphic Blue
+        uint32_t c_btn_bg     = 0xFF1A1A1A;
+        uint32_t c_btn_border = 0xFF2A2A2A;
+        uint32_t c_close      = 0xFFB04040;
+        uint32_t c_max        = 0xFF4040B0;
+        uint32_t c_min        = 0xFFEAEAEA; // Indicator color
+
+        if (ly < titleH) return; // Prevent out of bounds
+
+        // 1. Title Bar Background
+        Graphics::FillRect(lx - border, ly - titleH, lw + 2 * border, titleH, c_title_bg);
+        
+        // 2. Borders (1px)
+        Graphics::FillRect(lx - border, ly, border, lh, c_border); // Left
+        Graphics::FillRect(lx + lw, ly, border, lh, c_border);     // Right
+        Graphics::FillRect(lx - border, ly + lh, lw + 2 * border, border, c_border); // Bottom
+        
+        // 3. Accent Line (Bottom of Title Bar)
+        Graphics::FillRect(lx, ly - 2, lw, 1, c_accent);
+
+        // 4. Title Text
+        FontRenderer::DrawText(Graphics::GetBackbuffer(), Graphics::GetWidth(), Graphics::GetHeight(),
+                               lx + 8, ly - titleH + 6, layer->name, 0xFFE0E0E0, 0);
+
+        // 5. Window Control Buttons
+        int btnSize = 14;
+        int pad = 6;
+        int bx = lx + lw - pad - btnSize;
+        int by = ly - titleH + (titleH - btnSize) / 2;
+
+        // Close Button [X]
+        Graphics::FillRect(bx, by, btnSize, btnSize, c_btn_bg);
+        // DrawRect manually for border
+        Graphics::FillRect(bx, by, btnSize, 1, c_btn_border);
+        Graphics::FillRect(bx, by+btnSize-1, btnSize, 1, c_btn_border);
+        Graphics::FillRect(bx, by, 1, btnSize, c_btn_border);
+        Graphics::FillRect(bx+btnSize-1, by, 1, btnSize, c_btn_border);
+        // Inner Red
+        Graphics::FillRect(bx + 4, by + 4, btnSize - 8, btnSize - 8, c_close);
+
+        // Max Point (Visual)
+        bx -= (btnSize + 6);
+        Graphics::FillRect(bx, by, btnSize, btnSize, c_btn_bg);
+        Graphics::FillRect(bx, by, btnSize, 1, c_btn_border); // Border...
+        Graphics::FillRect(bx, by+btnSize-1, btnSize, 1, c_btn_border);
+        Graphics::FillRect(bx, by, 1, btnSize, c_btn_border);
+        Graphics::FillRect(bx+btnSize-1, by, 1, btnSize, c_btn_border);
+        Graphics::FillRect(bx + 4, by + 4, btnSize - 8, btnSize - 8, c_max);
+
+        // Min Point (Visual)
+        bx -= (btnSize + 6);
+        Graphics::FillRect(bx, by, btnSize, btnSize, c_btn_bg); 
+        // Border...
+        Graphics::FillRect(bx, by, btnSize, 1, c_btn_border);
+        Graphics::FillRect(bx, by+btnSize-1, btnSize, 1, c_btn_border);
+        Graphics::FillRect(bx, by, 1, btnSize, c_btn_border);
+        Graphics::FillRect(bx+btnSize-1, by, 1, btnSize, c_btn_border);
+        // Line
+        Graphics::FillRect(bx + 4, by + btnSize - 6, btnSize - 8, 2, c_min);
+    }
+
+    Window* CreateWindow(uint32_t w, uint32_t h, uint32_t flags) {
+        if (windowCount >= 16) return nullptr;
+        
+        // 1. Allocate Physical Memory (Pages)
+        uint64_t size = (uint64_t)w * h * 4;
+        uint64_t pages = (size + 4095) / 4096;
+        
+        void* phys_ptr = PMM::AllocContiguous(pages);
+        if (!phys_ptr) {
+            EarlyTerm::Print("[Compositor] CreateWindow OOM\n");
+            return nullptr;
+        }
+        
+        // 2. Clear Memory (Access via Identity Map or assumption)
+        // Ideally map it, but for now we assume physical is accessible
+        kmemset(phys_ptr, 0, size); 
+        
+        // 3. Create Layer manually
+        if (layerCount >= MAX_LAYERS) return nullptr;
+        
+        Layer* layer = (Layer*)kmalloc(sizeof(Layer));
+        if (!layer) return nullptr;
+        kmemset(layer, 0, sizeof(Layer));
+        
+        // Name
+        const char* defaultName = "Window";
+        for(int i=0; i<6; i++) layer->name[i] = defaultName[i];
+        
+        layer->type = LayerType::APP_WINDOW;
+        layer->width = w;
+        layer->height = h;
+        layer->buffer = (uint32_t*)phys_ptr; // Physical Address used as kernel pointer?
+        // WARNING: If this is high memory (> 16MB) and not identity mapped, this crashes.
+        // However, we rely on bootloader identity map.
+        
+        layer->visible = true;
+        layer->dirty = true;
+        layer->has_alpha = false; // Default opaque
+        
+        uint32_t screenW = Graphics::GetWidth();
+        uint32_t screenH = Graphics::GetHeight();
+        layer->x = (screenW > w) ? (screenW - w) / 2 : 0;
+        layer->y = (screenH > h) ? (screenH - h) / 2 : 0;
+        layer->z_order = 50; 
+        
+        layers[layerCount++] = layer;
+        
+        // 4. Register Window
+        Window* win = nullptr;
+        for (int i = 0; i < 16; i++) {
+             if (windows[i].id == 0) {
+                 win = &windows[i];
+                 break;
+             }
+        }
+        
+        if (win) {
+            win->id = nextWindowInfoId++;
+            win->layer = layer;
+            win->width = w;
+            win->height = h;
+            win->phys_addr = (uint64_t)phys_ptr;
+            win->buffer = phys_ptr;
+            windowCount++;
+            return win;
+        }
+        return nullptr;
+    }
+    
+    void UpdateWindow(uint64_t window_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+        Window* win = GetWindow(window_id);
+        if (win && win->layer) {
+            // Convert to Screen Coords
+            uint32_t screenX = win->layer->x + x;
+            uint32_t screenY = win->layer->y + y;
+            
+            MarkDirty(screenX, screenY, w, h);
+            win->layer->dirty = true;
+            
+            // Immediate composition
+            Compose();
+            Flip();
+        }
+    }
+    
+    void DestroyWindow(uint64_t window_id) {
+        Window* win = GetWindow(window_id);
+        if (win) {
+             // TODO: Layer destruction requires care not to free phys buffer with kfree
+             // For now we leak slightly to avoid crash or need to refactor DestroyLayer
+             // DestroyLayer(win->layer); 
+             win->layer->visible = false; // Hide it at least
+             win->layer = nullptr;
+             
+             win->id = 0;
+             windowCount--;
+        }
+    }
+    
+    Window* GetWindow(uint64_t window_id) {
+        for (int i = 0; i < 16; i++) {
+            if (windows[i].id == window_id) return &windows[i];
+        }
+        return nullptr;
+    }
+
+    bool ProcessMouseEvent(int32_t x, int32_t y, uint8_t buttons) {
+        static bool wasLeftDown = false;
+        bool leftDown = (buttons & 1); // Bit 0 is left button
+        bool handled = false;
+
+        // 1. Handle Dragging
+        if (dragWindow) {
+            handled = true;
+            if (leftDown) {
+                // Determine new position
+                int32_t newX = x - dragOffsetX;
+                int32_t newY = y - dragOffsetY;
+                
+                SetLayerPosition(dragWindow->layer, newX, newY);
+                MarkDirty(newX - BORDER_WIDTH, newY - TITLE_BAR_HEIGHT, 
+                          dragWindow->width + BORDER_WIDTH*2, dragWindow->height + TITLE_BAR_HEIGHT + BORDER_WIDTH);
+
+            } else {
+                // Release Drop
+                dragWindow = nullptr;
+            }
+            // Always consume events during drag
+            return true;
+        }
+
+        // 2. Handle Click (Start Drag or Buttons)
+        if (leftDown && !wasLeftDown) {
+            // Sort to ensure we hit the top-most window
+            SortLayers(); 
+            
+            for (int i = layerCount - 1; i >= 0; i--) {
+                Layer* layer = layers[i];
+                if (!layer || !layer->visible || layer->type != LayerType::APP_WINDOW) continue;
+
+                // Hit Test: Title Bar + Borders
+                int32_t titleX = layer->x - BORDER_WIDTH;
+                int32_t titleY = layer->y - TITLE_BAR_HEIGHT;
+                int32_t titleW = layer->width + 2 * BORDER_WIDTH;
+                int32_t titleH = TITLE_BAR_HEIGHT;
+
+                // Check Hit on Title Bar
+                if (x >= titleX && x < titleX + titleW && y >= titleY && y < titleY + titleH) {
+                    handled = true;
+
+                    // Locate Window Struct
+                    Window* win = nullptr;
+                    for(int w=0; w<16; w++) {
+                        if (windows[w].layer == layer) { win = &windows[w]; break; }
+                    }
+                    if (!win) return true; // Orphan layer?
+
+                     // Controls Geometry
+                     int btnSize = 14;
+                     int pad = 6;
+                     // Right-to-Left: Close, Max, Min
+                     int bxClose = layer->x + layer->width - pad - btnSize;
+                     int bxMax   = bxClose - (btnSize + 6);
+                     int bxMin   = bxMax - (btnSize + 6);
+                     int by      = layer->y - titleH + (titleH - btnSize) / 2;
+
+                     // HIT: Close
+                     if (x >= bxClose && x < bxClose + btnSize && y >= by && y < by + btnSize) {
+                         DestroyWindow(win->id);
+                         return true;
+                     }
+
+                     // HIT: Maximize (Toggle)
+                     if (x >= bxMax && x < bxMax + btnSize && y >= by && y < by + btnSize) {
+                         // Simple Maximize Logic: Move to 0,0 and resize to Screen
+                         // Note: We need to store restore state. For now, simple toggle logic.
+                         // TODO: Actual resize requires reallocation of buffer (expensive/complex here).
+                         // Alternative: Just move to 0,0 and prevent drag?
+                         // For now, let's just center it as a placeholder for "Restore"
+                         SetLayerPosition(layer, (Graphics::GetWidth() - layer->width)/2, (Graphics::GetHeight() - layer->height)/2);
+                         return true;
+                     }
+
+                     // HIT: Minimize (Hide)
+                     if (x >= bxMin && x < bxMin + btnSize && y >= by && y < by + btnSize) {
+                         // Hide Layer
+                         SetLayerVisible(layer, false);
+                         // TODO: How to restore? This is the "Not inside desktop" problem.
+                         // For now, we allow it to vanish. Relaunching app might create new window.
+                         return true;
+                     }
+
+                     // HIT: Drag (Title Bar, not buttons)
+                     dragWindow = win;
+                     dragOffsetX = x - layer->x;
+                     dragOffsetY = y - layer->y;
+                     SetLayerZOrder(layer, 60); // Bring to front
+                     return true;
+                }
+            }
+        }
+        
+        wasLeftDown = leftDown;
+        return handled;
     }
 }
 

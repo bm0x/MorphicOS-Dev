@@ -2,21 +2,23 @@
 
 global syscall_entry
 
+extern kernel_tss_ptr
 extern syscall_handler
 
 ; SYSCALL entry point
 ; CPU saves: RIP -> RCX, RFLAGS -> R11
 ; User passes: RAX=syscall#, RDI=arg1, RSI=arg2, RDX=arg3
 syscall_entry:
-    ; Swap to kernel stack (we need TSS.rsp0)
-    ; For now, use a simple kernel stack
-    ; In production, would get from TSS
-    
+    ; Critical: Disable interrupts immediately
+    cli
+
     ; Save user stack
     mov r10, rsp
     
-    ; Switch to temporary kernel stack (simple approach)
-    mov rsp, kernel_syscall_stack_top
+    ; Switch to Thread-Specific Kernel Stack (from TSS.RSP0)
+    ; This ensures we don't corrupt a global stack if interrupted and switched.
+    mov rsp, [kernel_tss_ptr] ; Load address of TSS
+    mov rsp, [rsp + 4]        ; Load RSP0 (Offset 4 in packed struct)
     
     ; Save registers
     push r10        ; User RSP

@@ -5,6 +5,9 @@
 namespace TSS {
     static TSS64 tss;
     
+    // Export pointer for assembly (syscall_entry.asm)
+    extern "C" TSS64* kernel_tss_ptr = &tss;
+    
     void Init(uint64_t kernel_stack) {
         kmemset(&tss, 0, sizeof(TSS64));
         

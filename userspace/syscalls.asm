@@ -94,3 +94,27 @@ sys_debug_print:
     mov rax, 61
     syscall
     ret
+
+global sys_create_window
+sys_create_window:
+    mov rax, 62
+    syscall
+    ret
+
+global sys_register_compositor
+sys_register_compositor:
+    mov rax, 63
+    syscall
+    ret
+
+global sys_map_window
+sys_map_window:
+    mov rax, 64
+    syscall
+    ret
+
+global sys_post_message
+sys_post_message:
+    mov rax, 65
+    syscall
+    ret

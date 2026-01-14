@@ -11,6 +11,9 @@ namespace HAL {
 
         // Disable global interrupts
         static void DisableInterrupts();
+        
+        // Check if interrupts are enabled
+        static bool AreInterruptsEnabled();
 
         // Halt the CPU (wait for interrupt)
         static void Halt();

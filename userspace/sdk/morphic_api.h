@@ -74,37 +74,41 @@ namespace MorphicAPI {
         uint32_t* backbuffer;
         uint64_t width, height;
         uint64_t sys_width, sys_height;
+        uint32_t requestW, requestH;
         bool running;
 
     public:
-        Window() : backbuffer(nullptr), width(0), height(0), running(false) {}
+        Window(uint32_t w = 0, uint32_t h = 0) 
+            : backbuffer(nullptr), width(0), height(0), 
+              requestW(w), requestH(h), running(false) {}
         virtual ~Window() {}
 
         virtual bool Init() {
-            // Get screen info from Kernel (packed 64-bit)
-            // Hi32 = W, Lo32 = H (or similar protocol)
-            // Current syscall 11 just returns values?
-            // Actually sys_get_screen_info is implementation defined.
-            // Let's assume we map video first.
+            // Get Screen Dimensions
+            uint64_t info = sys_get_screen_info();
+            sys_width = (info >> 32) & 0xFFFFFFFF;
+            sys_height = info & 0xFFFFFFFF;
+            if (sys_width == 0) sys_width = 1280;
+            if (sys_height == 0) sys_height = 800;
             
-            // Map physical framebuffer (unsafe legacy mode) OR allocate backbuffer (safer)
-            // For independent apps, we should allocate backbuffer.
+            void* addr = nullptr;
             
-            // Get Screen Dimensions (Protocol TBD, assuming 1280x800 for now or read from somewhere)
-            sys_width = 1280; 
-            sys_height = 800;
-            
-            // TODO: Proper capability query
-            
-            // Allocate a backbuffer for the app
-             // 1280*800*4 approx 4MB
-            uint64_t fb_size = sys_width * sys_height * 4;
-            uint64_t addr = sys_alloc_backbuffer(fb_size);
+            if (requestW > 0 && requestH > 0) {
+                // Request specific window size
+                addr = sys_create_window(requestW, requestH, 0);
+                width = requestW;
+                height = requestH;
+            } else {
+                // Request fullscreen window (Legacy)
+                addr = sys_video_map();
+                width = sys_width;
+                height = sys_height;
+            }
+
             if (!addr) return false;
             
+            // Use this buffer directly (Kernel handles double buffering)
             backbuffer = (uint32_t*)addr;
-            width = sys_width;
-            height = sys_height;
             running = true;
             return true;
         }

@@ -1,5 +1,6 @@
 #include "input_device.h"
 #include "../video/early_term.h"
+#include "../../process/scheduler.h"
 
 namespace InputManager {
     // Maximum registered input devices
@@ -55,37 +56,34 @@ namespace InputManager {
     }
     
     // === RING BUFFER IMPLEMENTATION ===
-    struct EventRB {
-        static const int SIZE = 64;
-        OSEvent events[SIZE];
-        volatile int head = 0; // Write index
-        volatile int tail = 0; // Read index
-    };
-    static EventRB eventBuffer;
+    // OLD: static EventRB eventBuffer;
+    // NEW: Per-Process Queues in Scheduler
+    static uint64_t g_compositorPID = 0;
+
+    void SetCompositorPID(uint64_t pid) {
+        g_compositorPID = pid;
+        EarlyTerm::Print("[InputManager] Compositor Registered PID: ");
+        EarlyTerm::PrintDec(pid);
+        EarlyTerm::Print("\n");
+    }
     
     void PushEvent(const OSEvent& ev) {
-        int next = (eventBuffer.head + 1) % EventRB::SIZE;
-        
-        // If buffer full, overwrite oldest (advance tail)
-        if (next == eventBuffer.tail) {
-            eventBuffer.tail = (eventBuffer.tail + 1) % EventRB::SIZE;
+        // Route to Compositor if registered
+        if (g_compositorPID > 0) {
+            if (!Scheduler::PushEventToTask(g_compositorPID, ev)) {
+                // Buffer full or task dead
+                // EarlyTerm::Print("[Input] Drop (Full)\n");
+            }
+        } else {
+            // Fallback? Broadcast? 
+            // For now, if no compositor, input is lost (or we could cache it).
+            // EarlyTerm::Print("[Input] Drop (No Compositor)\n");
         }
-        
-        eventBuffer.events[eventBuffer.head] = ev;
-        eventBuffer.head = next;
     }
     
     bool GetNextOSEvent(OSEvent* outEv) {
-        if (!outEv) return false;
-        
-        // Empty check
-        if (eventBuffer.head == eventBuffer.tail) {
-            return false;
-        }
-        
-        *outEv = eventBuffer.events[eventBuffer.tail];
-        eventBuffer.tail = (eventBuffer.tail + 1) % EventRB::SIZE;
-        return true;
+        // Pop from Current Task's Queue
+        return Scheduler::PopEventFromCurrentTask(outEv);
     }
 
     // Called by IRQ dispatcher to notify all input devices

@@ -90,13 +90,37 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     EarlyTerm::Print("[OK] Core Systems Validated.\n");
 
     // 3. Initialize Heap dynamically based on available RAM
+    // 3. Initialize Heap dynamically based on available RAM
     size_t freeRAM = PMM::GetFreeMemory();
     size_t heapSize = (freeRAM * 3) / 4;  // Use 75% of free RAM
     
     // Minimum 32MB, no maximum limit
     if (heapSize < 32 * 1024 * 1024) heapSize = 32 * 1024 * 1024;
     
-    KHeap::Init((void*)0x400000, heapSize);
+    // CRITICAL FIX: Allocate Heap from PMM to identify RESERVED vs FREE RAM
+    // Previous hardcoded 0x400000 overlapped with PMM free list, causing overwrite corruption.
+    // Try to allocate contiguous pages. If 75% fails (fragmentation), retry with smaller chunks.
+    void* heapBase = PMM::AllocContiguous(heapSize / 4096);
+    
+    // Fallback if huge allocation fails: try 128MB, then 64MB
+    if (!heapBase) {
+        heapSize = 128 * 1024 * 1024;
+        heapBase = PMM::AllocContiguous(heapSize / 4096);
+    }
+    if (!heapBase) {
+        heapSize = 64 * 1024 * 1024;
+        heapBase = PMM::AllocContiguous(heapSize / 4096);
+    }
+    
+    if (!heapBase) {
+        UART::Write("[KERNEL] CRITICAL: Failed to allocate KHeap!\n");
+        while(1) __asm__("hlt");
+    }
+    
+    UART::Write("[KERNEL] Heap Allocated at: "); UART::WriteHex((uint64_t)heapBase); 
+    UART::Write(" Size: "); UART::WriteDec(heapSize); UART::Write("\n");
+    
+    KHeap::Init(heapBase, heapSize);
 
 
     
@@ -210,7 +234,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
 
 
     EarlyTerm::Print("--------------------------------------------------\n");
-    EarlyTerm::Print("Morphic OS - Phase Swift HAL (v0.5)\n");
+    EarlyTerm::Print("Morphic OS Kernel (v0.6)\n");
     EarlyTerm::Print("Type 'help' for commands. HAL: Active.\n");
     UART::Write("[BOOT-TRACE] Kernel boot complete, entering AUTO-TEST\n");
     
@@ -220,31 +244,34 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     // =======================================================================
     UART::Write("\n");
     UART::Write("*****************************************************\n");
-    UART::Write("*** AUTO-TEST: Loading desktop.mpk for debugging ***\n");
+    UART::Write("***            Desktop.mpk: GUI Desktop            ***\n");
     UART::Write("*****************************************************\n");
     UART::Write("\n");
-    
-    EarlyTerm::Print("\n[AUTO-TEST] Loading desktop.mpk...\n");
+    EarlyTerm::Print("\n[Desktop.mpk] Loading...\n");
+    UART::Write("\n");
     
     // Call loader directly (loader.h included at top)
     LoadedProcess proc = PackageLoader::Load("/initrd/desktop.mpk");
     
     if (proc.error_code == 0) {
-        UART::Write("[AUTO-TEST] Load success. Entry: ");
+        UART::Write("[Desktop.mpk] Load success. Entry: ");
         UART::WriteHex(proc.entry_point);
         UART::Write(" Stack: ");
         UART::WriteHex(proc.stack_top);
         UART::Write("\n");
         
         // Create User Task
-        Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top);
+        // For the Desktop (AUTO-TEST), we use the current kernel CR3 (shared space)
+        uint64_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3);
     } else {
-        UART::Write("!!! PackageLoader::Load failed: ");
+        UART::Write("!!! Desktop.mpk: PackageLoader::Load failed: ");
         UART::WriteDec(proc.error_code);
         UART::Write(" !!!\n");
     }
     
-    EarlyTerm::Print("[AUTO-TEST] Load returned: ");
+    EarlyTerm::Print("[Desktop.mpk] Load returned: ");
     EarlyTerm::PrintDec(proc.error_code);
     EarlyTerm::Print("\n");
     // =======================================================================

@@ -2,6 +2,7 @@
 #include "input_device.h"
 #include "../arch/x86_64/io.h"
 #include "../video/graphics.h"
+#include "../video/compositor.h"
 #include "../video/early_term.h"
 #include "../serial/uart.h"
 #include "../../utils/std.h"
@@ -302,6 +303,14 @@ namespace Mouse {
             if (posX >= maxX) posX = maxX - 1;
             if (posY >= maxY) posY = maxY - 1;
             
+            // Forward to Compositor (Window Manager)
+            if (Compositor::ProcessMouseEvent(posX, posY, buttons)) {
+                // If handled by Compositor (dragging, buttons), do NOT send to Userspace.
+                // This prevents "Ghost Clicks" on the underlying Desktop.
+                lastButtons = buttons; // Still update internal state
+                return;
+            }
+
             // Push to Userspace
             OSEvent ev;
             ev.type = OSEvent::MOUSE_MOVE;

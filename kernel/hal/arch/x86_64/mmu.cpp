@@ -65,28 +65,22 @@ namespace MMU {
     // Allocate a page-aligned page for page tables
     // CRITICAL: Page tables MUST be 4KB-aligned!
     // kmalloc only aligns to 16 bytes, so we over-allocate and round up.
+    // Allocate a page-aligned page for page tables
+    // CRITICAL: Page tables MUST be 4KB-aligned!
+    // We use PMM::AllocPage() directly to ensure we get valid PHYSICAL RAM
+    // avoiding the unsafe Heap which might overlap reserved regions.
     static uint64_t* AllocateTable() {
-        // Allocate 8KB to guarantee we can find a 4KB-aligned region within
-        void* raw_ptr = kmalloc(4096 + 4096);
-        if (!raw_ptr) {
-            UART::Write("[MMU] ERROR: AllocateTable failed - kmalloc returned null\n");
+        void* page = PMM::AllocPage();
+        if (!page) {
+            UART::Write("[MMU] ERROR: PMM::AllocPage failed (OOM)\n");
             return nullptr;
         }
         
-        // Round up to next 4KB boundary
-        uint64_t aligned_addr = ((uint64_t)raw_ptr + 0xFFF) & ~0xFFFULL;
-        uint64_t* table = (uint64_t*)aligned_addr;
+        uint64_t* table = (uint64_t*)page;
         
-        // Clear the page using a direct loop (kmemset might fail with volatile memory)
+        // Clear the page using a direct loop 
         for (int i = 0; i < 512; i++) {
             table[i] = 0;
-        }
-        
-        // DEBUG: Verify table is zeroed
-        if (table[0] != 0 || table[1] != 0) {
-            UART::Write("[MMU] ERROR: Table NOT zeroed! table[0]=");
-            UART::WriteHex(table[0]);
-            UART::Write("\n");
         }
         
         return table;
@@ -100,13 +94,7 @@ namespace MMU {
     }
     
     bool MapPage(uint64_t virt, uint64_t phys, uint32_t flags) {
-        // DEBUG: Trace MapPage calls for user-space addresses
-        if (virt == 0x8000000000ULL) {
-            UART::Write("\n[MMU] MapPage called for 0x8000000000\n");
-            UART::Write("  phys: "); UART::WriteHex(phys); UART::Write("\n");
-            UART::Write("  flags: "); UART::WriteHex(flags); UART::Write("\n");
-        }
-        
+        // Trace MapPage errors only if needed
         // CRITICAL: Disable Write Protect to allow modifying UEFI page tables
         // UEFI marks its page tables as read-only, causing Page Fault if we try to write
         DisableWriteProtect();
@@ -123,7 +111,8 @@ namespace MMU {
         bool needs_executable = (flags & PAGE_EXECUTABLE) != 0;
         
         // Get or create page table entries at each level
-        uint64_t* pml4 = kernel_pml4;
+        // Always use the ACTIVE page table (CR3)
+        uint64_t* pml4 = (uint64_t*)(GetCurrentPageTable() & PTE_ADDR_MASK);
         if (!pml4) {
             EnableWriteProtect();
             return false;
@@ -131,13 +120,6 @@ namespace MMU {
         
         // PML4 -> PDPT
         uint64_t* pdpt;
-        
-        // Debug: Check what UEFI has in PML4
-        if (virt == 0x8000000000ULL) {
-            UART::Write("  PML4 addr: "); UART::WriteHex((uint64_t)pml4); UART::Write("\n");
-            UART::Write("  PML4_INDEX(virt): "); UART::WriteDec(PML4_INDEX(virt)); UART::Write("\n");
-            UART::Write("  PML4[index] = "); UART::WriteHex(pml4[PML4_INDEX(virt)]); UART::Write("\n");
-        }
         
         if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) {
             pdpt = AllocateTable();
@@ -236,36 +218,6 @@ namespace MMU {
             UART::Write("  needs_executable: "); UART::WriteDec(needs_executable ? 1 : 0); UART::Write("\n");
         }
         
-        // DEBUG: Hierarchy Dump for User Address
-        if (virt == 0x8000000000ULL) {
-            UART::Write("\n[MMU] HIERARCHY CHECK for 0x8000000000:\n");
-            
-            uint64_t pml4_e = pml4[PML4_INDEX(virt)];
-            UART::Write("  PML4["); UART::WriteDec(PML4_INDEX(virt)); UART::Write("]: "); UART::WriteHex(pml4_e);
-            UART::Write(" NX="); UART::WriteDec((pml4_e >> 63) & 1);
-            UART::Write(" U="); UART::WriteDec((pml4_e >> 2) & 1);
-            UART::Write(" W="); UART::WriteDec((pml4_e >> 1) & 1);
-            UART::Write("\n");
-
-            uint64_t pdpt_e = pdpt[PDPT_INDEX(virt)];
-            UART::Write("  PDPT["); UART::WriteDec(PDPT_INDEX(virt)); UART::Write("]: "); UART::WriteHex(pdpt_e);
-            UART::Write(" NX="); UART::WriteDec((pdpt_e >> 63) & 1);
-            UART::Write(" U="); UART::WriteDec((pdpt_e >> 2) & 1);
-            UART::Write("\n");
-
-            uint64_t pd_e = pd[PD_INDEX(virt)];
-            UART::Write("  PD  ["); UART::WriteDec(PD_INDEX(virt)); UART::Write("]: "); UART::WriteHex(pd_e);
-            UART::Write(" NX="); UART::WriteDec((pd_e >> 63) & 1);
-            UART::Write(" U="); UART::WriteDec((pd_e >> 2) & 1);
-            UART::Write("\n");
-
-            uint64_t pt_e = pt[PT_INDEX(virt)];
-            UART::Write("  PT  ["); UART::WriteDec(PT_INDEX(virt)); UART::Write("]: "); UART::WriteHex(pt_e);
-            UART::Write(" NX="); UART::WriteDec((pt_e >> 63) & 1);
-            UART::Write(" U="); UART::WriteDec((pt_e >> 2) & 1);
-            UART::Write("\n");
-        }
-        
         // Flush TLB for this address
         FlushTLB(virt);
         
@@ -311,10 +263,12 @@ namespace MMU {
     }
     
     uint64_t GetPhysical(uint64_t virt) {
-        if (!kernel_pml4) return 0;
+        // Use ACTIVE Page Table, not static kernel_pml4
+        uint64_t* pml4 = (uint64_t*)(GetCurrentPageTable() & PTE_ADDR_MASK);
+        if (!pml4) return 0;
         
-        if (!(kernel_pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return 0;
-        uint64_t* pdpt = (uint64_t*)(kernel_pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
+        if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return 0;
+        uint64_t* pdpt = (uint64_t*)(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
         
         if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return 0;
         uint64_t* pd = (uint64_t*)(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
@@ -343,6 +297,11 @@ namespace MMU {
         
         // Copy kernel mappings (upper half)
         if (kernel_pml4) {
+            // Copy Identity Map (Lower Half - Entry 0 covers 0-512GB)
+            // Essential because Kernel Code is at 0x40000000 and InitRD/RAM is in lower half.
+            pml4[0] = kernel_pml4[0]; 
+
+            // Copy Upper Half (Standard Kernel Space)
             for (int i = 256; i < 512; i++) {
                 pml4[i] = kernel_pml4[i];
             }
