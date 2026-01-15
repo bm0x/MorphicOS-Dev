@@ -1,12 +1,13 @@
 #pragma once
 #include "compositor.h"
+#include "../../sdk/morphic_syscalls.h"
 
 // Define external sys_spawn if not in header
 extern "C" int sys_spawn(const char* path);
 
 struct AppItem {
-    const char* name;
-    const char* mpk_path;
+    char name[32];
+    char mpk_path[64];
     uint32_t color;
     int x, y, w, h;
 };
@@ -14,19 +15,31 @@ struct AppItem {
 class Launcher {
 public:
     void Init() {
-        // Initialize Bento Grid Layout
-        // 4 Columns
-        // In a real dynamic system, we would scan, but for this refactor (Simulated Registry),
-        // we hardcode the known apps.
+        // Scan /initrd/ for .mpk files dynamically
+        ScanApps();
+    }
+    
+    void ScanApps() {
+        appCount = 0;
         
-        apps[0] = {"Calculator", "/initrd/calculator.mpk", 0xFFE05050, 0, 0, 1, 1}; // 1x1
-        apps[1] = {"Terminal",   "/initrd/terminal.mpk",   0xFF40A040, 1, 0, 2, 1}; // 2x1 Wide
-        // Add placeholders to show off the grid
-        apps[2] = {"System",     "",                         0xFF4080A0, 3, 0, 1, 1};
-        apps[3] = {"Editor",     "",                         0xFFCCA040, 0, 1, 1, 1};
-        apps[4] = {"Files",      "",                         0xFFA040A0, 1, 1, 1, 1};
+        // Scan initrd for installed apps
+        DirEntry entries[32];
+        int count = sys_readdir("/initrd", entries, 32);
         
-        appCount = 5;
+        for (int i = 0; i < count && appCount < 16; i++) {
+            // Check if it's an .mpk file
+            if (entries[i].type == 0) { // File
+                if (EndsWith(entries[i].name, ".mpk")) {
+                    // Skip desktop.mpk - launching multiple compositors causes kernel panic
+                    if (StrCmp(entries[i].name, "desktop.mpk") == 0) continue;
+                    
+                    // Add to apps list
+                    BuildAppItem(entries[i].name, "/initrd/");
+                }
+            }
+        }
+        
+        // TODO: Future - also scan /usr/apps/ for installed apps from debug_disk
     }
 
     void Draw(int screenW, int screenH) {
@@ -43,8 +56,6 @@ public:
         // Search Text
         const char* sTxt = "Search";
         Compositor::DrawText(searchX + 110, searchY + 9, sTxt, 0x80FFFFFF, 1);
-        // Magnifying glass icon simulation (simple circle)
-         // Compositor::DrawRect(searchX + 10, searchY + 10, 14, 14, 0xFFFFFFFF);
 
         // App Grid
         // 5 columns, centered
@@ -64,12 +75,8 @@ public:
             int cx = gridStartX + col * (iconSize + gapX);
             int cy = gridStartY + row * (iconSize + gapY);
             
-            // Icon Background (Rounded Rect Shape)
-            // Color mapping based on name to match style
-            uint32_t iconColor = apps[i].color;
-            if (apps[i].name[0] == 'C') iconColor = 0xFF404040; // Calc (Grey)
-            if (apps[i].name[0] == 'T') iconColor = 0xFF202020; // Term (Black)
-            if (apps[i].name[0] == 'S') iconColor = 0xFF4080A0; // System (Blue)
+            // Icon Background color based on app name hash
+            uint32_t iconColor = GetAppColor(apps[i].name);
             
             Compositor::DrawRect(cx, cy, iconSize, iconSize, iconColor);
             
@@ -89,20 +96,56 @@ public:
         int dotsY = screenH - 120; // Above dock
         int dotSize = 8;
         int dotGap = 12;
-        int pages = 2; // Simulate 2 pages
+        int pages = 1; // Dynamic based on app count
         int totalDotsW = (pages * dotSize) + ((pages - 1) * dotGap);
         int dotX = (screenW - totalDotsW) / 2;
         
         // Page 1 (Active) - White
         Compositor::DrawRect(dotX, dotsY, dotSize, dotSize, 0xFFFFFFFF);
-        // Page 2 (Inactive) - Gray
-        Compositor::DrawRect(dotX + dotSize + dotGap, dotsY, dotSize, dotSize, 0x80FFFFFF);
-
+        
+        // Power Buttons (Bottom Right)
+        int btnW = 70;
+        int btnH = 28;
+        int btnY = screenH - 80;
+        int btnGap = 10;
+        
+        // Shutdown button (red)
+        int shutdownX = screenW - btnW - 20;
+        Compositor::DrawRect(shutdownX, btnY, btnW, btnH, 0xE0B02020);
+        Compositor::DrawText(shutdownX + 8, btnY + 8, "Apagar", 0xFFFFFFFF, 1);
+        
+        // Reboot button (blue)
+        int rebootX = shutdownX - btnW - btnGap;
+        Compositor::DrawRect(rebootX, btnY, btnW, btnH, 0xE02060A0);
+        Compositor::DrawText(rebootX + 6, btnY + 8, "Reiniciar", 0xFFFFFFFF, 1);
     }
 
     bool HandleClick(int mx, int my) {
-        // Redefine grid constants to match Draw
         int screenW = Compositor::GetWidth();
+        int screenH = Compositor::GetHeight();
+        
+        // Power Buttons hit test
+        int btnW = 70;
+        int btnH = 28;
+        int btnY = screenH - 80;
+        int btnGap = 10;
+        
+        int shutdownX = screenW - btnW - 20;
+        int rebootX = shutdownX - btnW - btnGap;
+        
+        // Shutdown button
+        if (mx >= shutdownX && mx < shutdownX + btnW && my >= btnY && my < btnY + btnH) {
+            sys_shutdown();
+            return true;
+        }
+        
+        // Reboot button  
+        if (mx >= rebootX && mx < rebootX + btnW && my >= btnY && my < btnY + btnH) {
+            sys_reboot();
+            return true;
+        }
+        
+        // App grid hit test
         int cols = 5;
         int iconSize = 80; 
         int gapX = 60;
@@ -123,9 +166,8 @@ public:
 
             if (mx >= cx && mx < cx + cw && my >= cy && my < cy + ch) {
                 // Launch!
-                if (apps[i].mpk_path && apps[i].mpk_path[0]) {
-                    // Try absolute path launching first (standard for initrd)
-                    sys_spawn(apps[i].mpk_path); 
+                if (apps[i].mpk_path[0]) {
+                    sys_spawn(apps[i].mpk_path);
                     return true;
                 }
             }
@@ -139,5 +181,70 @@ private:
 
     int StrLen(const char* s) {
         int l=0; while(s[l]) l++; return l;
+    }
+    
+    bool EndsWith(const char* str, const char* suffix) {
+        int strLen = StrLen(str);
+        int sufLen = StrLen(suffix);
+        if (sufLen > strLen) return false;
+        
+        for (int i = 0; i < sufLen; i++) {
+            if (str[strLen - sufLen + i] != suffix[i]) return false;
+        }
+        return true;
+    }
+    
+    int StrCmp(const char* a, const char* b) {
+        while (*a && *b && *a == *b) { a++; b++; }
+        return *a - *b;
+    }
+    
+    void BuildAppItem(const char* filename, const char* basePath) {
+        AppItem& app = apps[appCount];
+        
+        // Build full path
+        int i = 0;
+        const char* p = basePath;
+        while (*p && i < 63) app.mpk_path[i++] = *p++;
+        p = filename;
+        while (*p && i < 63) app.mpk_path[i++] = *p++;
+        app.mpk_path[i] = 0;
+        
+        // Extract name (remove .mpk extension and capitalize first letter)
+        i = 0;
+        while (filename[i] && filename[i] != '.' && i < 31) {
+            app.name[i] = filename[i];
+            i++;
+        }
+        app.name[i] = 0;
+        
+        // Capitalize first letter
+        if (app.name[0] >= 'a' && app.name[0] <= 'z') {
+            app.name[0] = app.name[0] - 'a' + 'A';
+        }
+        
+        app.color = GetAppColor(app.name);
+        app.x = appCount % 5;
+        app.y = appCount / 5;
+        app.w = 1;
+        app.h = 1;
+        
+        appCount++;
+    }
+    
+    uint32_t GetAppColor(const char* name) {
+        // Simple hash-based color
+        uint32_t hash = 0;
+        while (*name) {
+            hash = hash * 31 + *name;
+            name++;
+        }
+        
+        // Generate color from hash (avoid too bright or too dark)
+        uint8_t r = 40 + (hash % 160);
+        uint8_t g = 40 + ((hash >> 8) % 160);
+        uint8_t b = 40 + ((hash >> 16) % 160);
+        
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 };

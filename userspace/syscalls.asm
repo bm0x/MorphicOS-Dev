@@ -146,3 +146,21 @@ sys_set_keymap:
     syscall
     ret
 
+global sys_readdir
+sys_readdir:
+    ; arg1: path (rdi), arg2: entries buffer (rsi), arg3: max_entries (rdx)
+    mov rax, 71
+    syscall
+    ret
+
+global sys_shutdown
+sys_shutdown:
+    mov rax, 72
+    syscall
+    ret
+
+global sys_reboot
+sys_reboot:
+    mov rax, 73
+    syscall
+    ret

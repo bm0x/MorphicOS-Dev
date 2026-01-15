@@ -50,7 +50,8 @@ set "BIOS_FLAG=-bios "!OVMF!""
 :run_qemu
 "!QEMU!" ^
     -m 2048M ^
-    -cdrom "!ISO!" ^
+    -drive format=raw,file="!ISO!",index=0,media=disk ^
+    -drive format=raw,file="debug_disk.img",index=1,media=disk ^
     -serial stdio ^
     !BIOS_FLAG! ^
     -s ^

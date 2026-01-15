@@ -43,6 +43,20 @@ uint64_t sys_update_window(uint64_t id, uint64_t packed_pos, uint64_t packed_siz
 
 // Keymap
 int sys_set_keymap(const char* id);
+
+// Directory listing entry
+struct DirEntry {
+    char name[64];
+    uint32_t type;  // 0=file, 1=directory
+    uint32_t size;
+};
+
+// List directory contents, returns count of entries written
+int sys_readdir(const char* path, DirEntry* entries, int max_entries);
+
+// Power controls
+void sys_shutdown();
+void sys_reboot();
 #ifdef __cplusplus
 }
 #endif

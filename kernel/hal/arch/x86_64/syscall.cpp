@@ -16,6 +16,7 @@
 #include "../../../core/loader.h"
 #include "../../../process/scheduler.h"
 #include "../../platform.h"
+#include "../../../fs/vfs.h"
 
 extern "C" uint64_t PIT_GetTicks();
 
@@ -873,7 +874,102 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         return compos_base;
     }
 
+    case SYS_READDIR: // arg1=path, arg2=entries buffer, arg3=max_entries
+    {
+        const char* user_path = (const char*)arg1;
+        if (!user_path || arg1 < 0x600000000000ULL) return 0;
+        if (!arg2 || arg2 < 0x600000000000ULL) return 0;
+        
+        // Copy path from userspace
+        char path_buf[128];
+        for (int i = 0; i < 127; i++) {
+            path_buf[i] = user_path[i];
+            if (path_buf[i] == 0) break;
+        }
+        path_buf[127] = 0;
+        
+        // Open directory via VFS
+        VFSNode* dir = VFS::Open(path_buf);
+        if (!dir || dir->type != NodeType::DIRECTORY) return 0;
+        
+        uint32_t count = 0;
+        VFSNode** children = VFS::ListDir(dir, &count);
+        if (!children) return 0;
+        
+        // Define entry struct matching userspace
+        struct DirEntry {
+            char name[64];
+            uint32_t type;  // 0=file, 1=directory
+            uint32_t size;
+        };
+        
+        DirEntry* user_entries = (DirEntry*)arg2;
+        uint32_t max_entries = (uint32_t)arg3;
+        uint32_t written = 0;
+        
+        for (uint32_t i = 0; i < count && written < max_entries; i++) {
+            VFSNode* node = children[i];
+            if (!node) continue;
+            
+            // Copy name
+            for (int j = 0; j < 63 && node->name[j]; j++) {
+                user_entries[written].name[j] = node->name[j];
+                user_entries[written].name[j + 1] = 0;
+            }
+            user_entries[written].type = (node->type == NodeType::DIRECTORY) ? 1 : 0;
+            user_entries[written].size = node->size;
+            written++;
+        }
+        
+        kfree(children);
+        return written;
+    }
 
+    case SYS_SHUTDOWN:
+    {
+        UART::Write("[Syscall] Shutdown requested\n");
+        
+        #if defined(__x86_64__)
+        // QEMU shutdown via debug exit port
+        __asm__ volatile("outw %0, %1" : : "a"((uint16_t)0x2000), "Nd"((uint16_t)0x604));
+        
+        // Bochs/older QEMU shutdown
+        __asm__ volatile("outw %0, %1" : : "a"((uint16_t)0x2000), "Nd"((uint16_t)0xB004));
+        
+        // ACPI shutdown (write to PM1a_CNT)
+        __asm__ volatile("outw %0, %1" : : "a"((uint16_t)(0x2000 | (5 << 10))), "Nd"((uint16_t)0x4004));
+        #endif
+        
+        // Fallback: halt with interrupts disabled
+        __asm__ volatile("cli");
+        for (;;) __asm__ volatile("hlt");
+        return 0;
+    }
+
+    case SYS_REBOOT:
+    {
+        UART::Write("[Syscall] Reboot requested\n");
+        
+        #if defined(__x86_64__)
+        // Method 1: 8042 Keyboard Controller Reset
+        uint8_t status;
+        do {
+            __asm__ volatile("inb $0x64, %0" : "=a"(status));
+        } while (status & 0x02);
+        
+        // Send CPU reset command to keyboard controller
+        __asm__ volatile("outb %0, $0x64" : : "a"((uint8_t)0xFE));
+        
+        // Method 2: Triple fault (backup)
+        struct { uint16_t limit; uint64_t base; } __attribute__((packed)) null_idt = {0, 0};
+        __asm__ volatile("lidt %0" : : "m"(null_idt));
+        __asm__ volatile("int $3");
+        #endif
+        
+        // Fallback: infinite halt
+        for (;;) __asm__ volatile("hlt");
+        return 0;
+    }
 
     default:
         return (uint64_t)-1;
