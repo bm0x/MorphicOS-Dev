@@ -7,6 +7,8 @@ build/
 *.mpk
 *_mpk.cpp
 *.bin
+mpk_assets.h
+libmorphic_gui.a
 
 # ISO temporary directory
 iso_root/

@@ -12,6 +12,7 @@
 #include "../../../mm/pmm.h"
 #include "../../storage/block_device.h"
 #include "system_info.h"
+#include "../../input/keymap.h"
 #include "../../../core/loader.h"
 #include "../../../process/scheduler.h"
 #include "../../platform.h"
@@ -688,7 +689,48 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         // Arg1 = Pointer to InputEvent struct
         // Logic: Pop from input queue and copy to user buffer
         // For now, return 0 (no event)
+        // NOTE: We assume userspace uses sys_get_event instead.
         return 0;
+
+    case 65: // SYS_POST_MESSAGE (targetPid, eventPtr)
+    {
+        uint64_t targetPid = arg1;
+        uint64_t msgPtr = arg2;
+        if (msgPtr < 0x600000000000ULL) return 0;
+        
+        OSEvent ev = *(OSEvent*)msgPtr; // Copy from user
+        Scheduler::PushEventToTask(targetPid, ev);
+        return 1;
+    }
+    
+    case 66: // SYS_COMPOSE_LAYERS
+        Compositor::ComposeAppWindowsOnly();
+        return 0;
+
+    case 67: // SYS_GET_WINDOW_LIST (buffer, max)
+        return Compositor::GetWindowList((void*)arg1, (uint32_t)arg2);
+
+    case 68: // SYS_UPDATE_WINDOW (id, pos, size)
+        Compositor::UpdateWindow(arg1, 
+            (uint32_t)(arg2 >> 32), (uint32_t)(arg2 & 0xFFFFFFFF),
+            (uint32_t)(arg3 >> 40), (uint32_t)((arg3 >> 16) & 0xFFFFFF),
+            (uint32_t)(arg3 & 0xFFFF));
+        return 0;
+
+    case 70: // SYS_SET_KEYMAP
+    {
+        uint64_t ptr = arg1;
+        if (ptr < 0x600000000000ULL) return 0; // Sanity check user pointer
+        
+        char id[4];
+        char* user_id = (char*)ptr;
+        // Copy safely
+        for(int i=0; i<3; i++) id[i] = user_id[i];
+        id[3] = 0;
+        
+        if (KeymapHAL::SetKeymap(id)) return 1;
+        return 0;
+    }
 
     case 62: // SYS_CREATE_WINDOW (width, height, flags)
     {
@@ -831,50 +873,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         return compos_base;
     }
 
-    case 66: // SYS_COMPOSE_LAYERS
-    {
-        // Desktop calls this after drawing its own scene to the backbuffer.
-        // This overlays APP_WINDOW layers (Calculator, Terminal, etc.) on top.
-        // Does NOT clear the backbuffer - just draws window layers.
-        Compositor::ComposeAppWindowsOnly();
-        return 0;
-    }
 
-    case 67: // SYS_GET_WINDOW_LIST
-    {
-        // arg1: buffer, arg2: max_count
-        return Compositor::GetWindowList((void*)arg1, (uint32_t)arg2);
-    }
-    
-    case 68: // SYS_UPDATE_WINDOW
-    {
-        // arg1: id
-        // arg2: (x << 32) | y
-        // arg3: (w << 20) | (h << 8) | flags (8 bits) ? Or reuse strict packing
-        // Let's use:
-        // arg2: (x << 32) | y  (unchanged)
-        // arg3: (w << 32) | (h << 16) | flags  <-- Change packing scheme
-        // Old: w=32, h=32. New: w=24, h=24, flags=16. Max dim 16777216. Fine.
-        
-        uint32_t x = (uint32_t)(arg2 >> 32);
-        uint32_t y = (uint32_t)(arg2 & 0xFFFFFFFFULL);
-        
-        // Unpack arg3: High 24 bits W, Next 24 bits H, Low 16 bits Flags
-        // Or simple: High 32 W, Low 32 H -> No space.
-        // Let's do: (w << 32) is invalid if w is 32-bit.
-        
-        // Revised Packing for Arg3:
-        // Bits 0-15: Flags
-        // Bits 16-39: Height (24 bits)
-        // Bits 40-63: Width (24 bits)
-        
-        uint32_t flags = (uint32_t)(arg3 & 0xFFFF);
-        uint32_t h = (uint32_t)((arg3 >> 16) & 0xFFFFFF);
-        uint32_t w = (uint32_t)((arg3 >> 40) & 0xFFFFFF);
-        
-        Compositor::UpdateWindow(arg1, x, y, w, h, flags);
-        return 0;
-    }
 
     default:
         return (uint64_t)-1;

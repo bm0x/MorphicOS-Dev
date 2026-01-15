@@ -139,3 +139,10 @@ sys_compose_layers:
     syscall
     ret
 
+global sys_set_keymap
+sys_set_keymap:
+    ; arg1: keymap_id (string ptr)
+    mov rax, 70
+    syscall
+    ret
+

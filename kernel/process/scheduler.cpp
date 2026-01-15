@@ -70,6 +70,7 @@ namespace Scheduler {
             EarlyTerm::Print("[Scheduler] ERROR: Cannot allocate new task!\n");
             return;
         }
+        kmemset(newTask, 0, sizeof(Task));
         
         newTask->id = nextTaskId++;
         newTask->wake_up_time = 0;
@@ -119,6 +120,7 @@ namespace Scheduler {
     void CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3) {
         Task* newTask = (Task*)kmalloc(sizeof(Task));
         if (!newTask) return;
+        kmemset(newTask, 0, sizeof(Task));
         
         newTask->id = nextTaskId++;
         newTask->wake_up_time = 0;

@@ -33,6 +33,7 @@ struct WindowInfo {
     uint32_t x, y, w, h;
     uint32_t flags;
     char title[32];
+    uint64_t pid;
 };
 
 uint32_t sys_get_window_list(void* buffer, uint32_t max_count);
@@ -40,6 +41,8 @@ uint32_t sys_get_window_list(void* buffer, uint32_t max_count);
 // packed_size = (w << 32) | h
 uint64_t sys_update_window(uint64_t id, uint64_t packed_pos, uint64_t packed_size);
 
+// Keymap
+int sys_set_keymap(const char* id);
 #ifdef __cplusplus
 }
 #endif

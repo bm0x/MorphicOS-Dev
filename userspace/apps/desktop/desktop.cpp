@@ -134,14 +134,39 @@ const int MAX_EXT_WINDOWS = 32;
 WindowInfo externalWindows[MAX_EXT_WINDOWS];
 uint32_t externalWindowCount = 0;
 uint64_t drag_target_external_id = 0;
+uint64_t active_pid = 0;
 
 void FetchExternalWindows() {
     externalWindowCount = sys_get_window_list(externalWindows, MAX_EXT_WINDOWS);
 }
 
+// Global Keymap State
+static int currentKeymapIndex = 0;
+
+static const char* GetKeymapName(int idx) {
+    if (idx == 1) return "ES";
+    if (idx == 2) return "LA";
+    return "US";
+}
+
+void CycleKeymap() {
+    currentKeymapIndex = (currentKeymapIndex + 1) % 3;
+    const char* newMap = GetKeymapName(currentKeymapIndex);
+    sys_set_keymap(newMap);
+    sys_debug_print("Switched Keymap to: ");
+    sys_debug_print(newMap);
+    sys_debug_print("\n");
+    ui_dirty = true;
+}
+
 void HandleEvent(const OSEvent& ev) {
     // Pass keyboard events to the focused window (topmost)
     if (ev.type == OSEvent::KEY_PRESS) {
+        if (active_pid != 0) {
+            OSEvent fwd = ev; // Copy
+            sys_post_message(active_pid, &fwd);
+            return;
+        }
         if (window_count > 0) {
             Compositor::Window& top = windows[window_count - 1];
             if (!top.minimized && top.title) {
@@ -173,7 +198,16 @@ void HandleEvent(const OSEvent& ev) {
             const int taskH = 40;
             const int taskY = Compositor::GetHeight() - taskH;
             if (click_y >= taskY) {
+                // Keymap Toggle (Right side, left of clock)
+                // Clock is ~180px wide? Let's say click area is [Width-220, Width-180]
+                int width = Compositor::GetWidth();
+                if (HitRect(click_x, click_y, width - 130, taskY + 10, 40, 30)) {
+                    CycleKeymap();
+                    return;
+                }
+
                 // Menu button
+                active_pid = 0; // Clear focus
                 if (HitRect(click_x, click_y, 10, taskY + 8, 28, 24)) {
                     menu_open = !menu_open;
                     ui_dirty = true;
@@ -249,6 +283,22 @@ void HandleEvent(const OSEvent& ev) {
                      drag_target_external_id = w.id;
                      drag_offset_x = click_x - w.x;
                      drag_offset_y = click_y - w.y;
+                     return;
+                 }
+
+                 // 3. Forward Client Area Clicks (Content)
+                 if (click_x >= (int)w.x && click_x < (int)(w.x + w.w) &&
+                     click_y >= (int)w.y && click_y < (int)(w.y + w.h)) {
+                     
+                     // Construct Event
+                     OSEvent ev;
+                     ev.type = OSEvent::MOUSE_CLICK;
+                     ev.dx = click_x - w.x; // Local X
+                     ev.dy = click_y - w.y; // Local Y
+                     ev.buttons = 1; // Left Click
+                     
+                     sys_post_message(w.pid, &ev);
+                     active_pid = w.pid; // Set Focus
                      return;
                  }
             }
@@ -592,6 +642,17 @@ extern "C" int main(void* asset_ptr) {
         Compositor::RenderTaskbar(windows, window_count, 
                                 externalWindows, externalWindowCount, 
                                 menu_open, g_rtc);
+        
+        // Render Keymap Indicator
+        {
+            int w = Compositor::GetWidth();
+            int h = Compositor::GetHeight();
+            int ky = h - 40 + 12;
+            int kx = w - 130; // Left of clock
+            Compositor::DrawText(kx, ky, GetKeymapName(currentKeymapIndex), 0xFFCCCCCC, 1);
+            // Small border or underline?
+            // Compositor::DrawRect(kx-2, ky-2, 20, 16, 0xFF444444);
+        }
         
         // Overlay spawned app windows (Calculator, Terminal, etc.) from kernel compositor
         // These are APP_WINDOW layers created via SYS_CREATE_WINDOW

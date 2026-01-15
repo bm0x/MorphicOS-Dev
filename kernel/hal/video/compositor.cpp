@@ -7,6 +7,7 @@
 #include "../../arch/common/mmu.h"
 #include "font_renderer.h"
 #include "../serial/uart.h"
+#include "../../process/scheduler.h"
 
 namespace Compositor {
     static volatile int lock = 0;
@@ -638,6 +639,7 @@ namespace Compositor {
             win->height = h;
             win->phys_addr = (uint64_t)phys_ptr;
             win->buffer = phys_ptr;
+            win->owner_pid = Scheduler::GetCurrentTaskId();
             windowCount++;
             ReleaseLock();
             return win;
@@ -677,6 +679,7 @@ namespace Compositor {
         uint32_t x, y, w, h;
         uint32_t flags;
         char title[32];
+        uint64_t pid;
     };
 
     uint32_t GetWindowList(void* user_buf, uint32_t max_count) {
@@ -701,6 +704,8 @@ namespace Compositor {
                     j++;
                 }
                 infos[count].title[j] = 0;
+                
+                infos[count].pid = windows[i].owner_pid;
                 
                 count++;
             }

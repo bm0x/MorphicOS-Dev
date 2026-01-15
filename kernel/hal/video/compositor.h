@@ -60,6 +60,7 @@ namespace Compositor {
         uint32_t height;
         void* buffer; // Kernel virt address of buffer
         uint64_t phys_addr; // Physical address for mapping
+        uint64_t owner_pid;
     };
     
     Window* CreateWindow(uint32_t w, uint32_t h, uint32_t flags);

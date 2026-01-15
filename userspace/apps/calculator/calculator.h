@@ -68,6 +68,7 @@ public:
     }
 
     void OnMouseDown(int x, int y, int btn) override {
+        sys_debug_print("[Calc] MouseDown\n");
         // Grid Layout Recalculation
         int startY = 110;
         int gap = 10;
