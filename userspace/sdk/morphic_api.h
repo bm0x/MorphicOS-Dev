@@ -322,6 +322,7 @@ namespace MorphicAPI {
             Graphics g(backbuffer, width, height, width); // Pitch = width (linear)
 
             while (running) {
+                // Process all pending events first (responsive input)
                 OSEvent ev;
                 while (sys_get_event(&ev)) {
                     if (ev.type == OSEvent::KEY_PRESS) {
@@ -334,7 +335,7 @@ namespace MorphicAPI {
                         OnMouseDown(ev.dx, ev.dy, ev.buttons);
                     }
                     if (ev.type == OSEvent::MOUSE_MOVE) {
-                        OnMouseMove(ev.dx, ev.dy); // Note: kernel sends absolute pos usually or delta
+                        OnMouseMove(ev.dx, ev.dy);
                     }
                 }
 
@@ -348,6 +349,10 @@ namespace MorphicAPI {
 
                 // Flip/Notify Kernel
                 sys_video_flip(kernelBuffer);
+                
+                // Frame rate limiter (~30 FPS) - improves input responsiveness
+                // Without this, the loop runs too fast and creates input lag
+                sys_sleep(16);  // ~60 FPS, or use 33 for ~30 FPS
             }
         }
         
