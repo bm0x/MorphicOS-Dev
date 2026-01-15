@@ -216,19 +216,7 @@ void HandleEvent(const OSEvent& ev) {
                  WindowInfo& w = externalWindows[i];
                  if (!w.flags) continue; // Only visible
                  
-                 // Hit Test Title Bar for Drag
-                 // x, y from kernel are screen coords
-                 if (click_x >= (int)w.x && click_x < (int)(w.x + w.w) &&
-                     click_y >= (int)w.y - titleH && click_y < (int)(w.y)) {
-                     
-                     drag_target_external_id = w.id;
-                     drag_offset_x = click_x - w.x;
-                     drag_offset_y = click_y - w.y;
-                     return;
-                 }
-
-                 // Hit Test Buttons (Close, Max, Min)
-                 // Layout matches Kernel DrawWindowDecoration
+                 // 1. Hit Test Buttons (Close, Max, Min) - CHECK FIRST
                  const int btnSize = 14;
                  const int pad = 6;
                  int by = w.y - titleH + (titleH - btnSize) / 2;
@@ -237,9 +225,9 @@ void HandleEvent(const OSEvent& ev) {
                  int bxMin = bxMax - (btnSize + 6);
 
                  // Close Button (Hide)
+                 // Layout: W (24) | H (24) | Flags (16)
+                 // Flags: 0=Hidden, 1=Visible
                  if (HitRect(click_x, click_y, bxClose, by, btnSize, btnSize)) {
-                     // Flag 0 = Hidden
-                     // Pack: W (24) | H (24) | Flags (16)
                      uint64_t xy = ((uint64_t)w.x << 32) | w.y;
                      uint64_t wh_flags = ((uint64_t)w.w << 40) | ((uint64_t)w.h << 16) | 0; 
                      sys_update_window(w.id, xy, wh_flags);
@@ -248,10 +236,19 @@ void HandleEvent(const OSEvent& ev) {
                  
                  // Minimize Button (Hide)
                  if (HitRect(click_x, click_y, bxMin, by, btnSize, btnSize)) {
-                     // Flag 0 = Hidden
                      uint64_t xy = ((uint64_t)w.x << 32) | w.y;
                      uint64_t wh_flags = ((uint64_t)w.w << 40) | ((uint64_t)w.h << 16) | 0;
                      sys_update_window(w.id, xy, wh_flags);
+                     return;
+                 }
+
+                 // 2. Hit Test Title Bar for Drag (If not button)
+                 if (click_x >= (int)w.x && click_x < (int)(w.x + w.w) &&
+                     click_y >= (int)w.y - titleH && click_y < (int)(w.y)) {
+                     
+                     drag_target_external_id = w.id;
+                     drag_offset_x = click_x - w.x;
+                     drag_offset_y = click_y - w.y;
                      return;
                  }
             }
@@ -349,6 +346,26 @@ void HandleEvent(const OSEvent& ev) {
     }
 }
 
+struct DirtyRect {
+    int x, y, w, h;
+    bool valid;
+};
+
+static void DirtyInit(DirtyRect& r) { r.valid = false; r.x = r.y = r.w = r.h = 0; }
+static void DirtyAdd(DirtyRect& r, int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (!r.valid) { r.x = x; r.y = y; r.w = w; r.h = h; r.valid = true; return; }
+    int x2 = r.x + r.w;
+    int y2 = r.y + r.h;
+    int nx = (x < r.x) ? x : r.x;
+    int ny = (y < r.y) ? y : r.y;
+    int nx2 = (x + w > x2) ? (x + w) : x2;
+    int ny2 = (y + h > y2) ? (y + h) : y2;
+    r.x = nx; r.y = ny; r.w = nx2 - nx; r.h = ny2 - ny;
+}
+
+static DirtyRect g_dirty;
+
 static void UpdateMousePerFrame() {
     // Goal: minimal lag. We only smooth tiny jitter; real movement snaps to target.
     const int32_t dx16 = mouse_target_x16 - mouse_x16;
@@ -398,40 +415,34 @@ static void UpdateMousePerFrame() {
                 if (externalWindows[i].id == drag_target_external_id) {
                     w = externalWindows[i].w;
                     h = externalWindows[i].h;
-                    // Update local cache too so it feels responsive
+                    
+                    // Mark OLD pos dirty (Trail fix)
+                    DirtyAdd(g_dirty, externalWindows[i].x - 2, externalWindows[i].y - 26, w + 4, h + 30);
+                    
+                    // Update local cache
                     externalWindows[i].x = targetX;
                     externalWindows[i].y = targetY;
+                    
+                    // Mark NEW pos dirty
+                    DirtyAdd(g_dirty, targetX - 2, targetY - 26, w + 4, h + 30);
+                    
                     break;
                 }
             }
 
             // Send to Kernel
             // packed_pos = (x << 32) | y
-            // packed_size = (w << 32) | h
+            // Layout: W (24) | H (24) | Flags (16)
+            // We must set Flag=1 (Visible) when dragging!
             uint64_t packed_pos = ((uint64_t)(uint32_t)targetX << 32) | (uint32_t)targetY;
-            uint64_t packed_size = ((uint64_t)w << 32) | (uint32_t)h;
+            uint64_t packed_size = ((uint64_t)w << 40) | ((uint64_t)h << 16) | 1;
             sys_update_window(drag_target_external_id, packed_pos, packed_size);
+
         }
     }
 }
 
-struct DirtyRect {
-    int x, y, w, h;
-    bool valid;
-};
 
-static void DirtyInit(DirtyRect& r) { r.valid = false; r.x = r.y = r.w = r.h = 0; }
-static void DirtyAdd(DirtyRect& r, int x, int y, int w, int h) {
-    if (w <= 0 || h <= 0) return;
-    if (!r.valid) { r.x = x; r.y = y; r.w = w; r.h = h; r.valid = true; return; }
-    int x2 = r.x + r.w;
-    int y2 = r.y + r.h;
-    int nx = (x < r.x) ? x : r.x;
-    int ny = (y < r.y) ? y : r.y;
-    int nx2 = (x + w > x2) ? (x + w) : x2;
-    int ny2 = (y + h > y2) ? (y + h) : y2;
-    r.x = nx; r.y = ny; r.w = nx2 - nx; r.h = ny2 - ny;
-}
 
 void PollInput() {
     OSEvent ev;
@@ -490,8 +501,8 @@ extern "C" int main(void* asset_ptr) {
     while (1) {
         uint64_t start_time = sys_get_time_ms();
 
-        DirtyRect dirty;
-        DirtyInit(dirty);
+    // DirtyRect dirty; - Using Global g_dirty
+    DirtyInit(g_dirty);
         
         // Update External Windows List
         FetchExternalWindows();
@@ -504,7 +515,7 @@ extern "C" int main(void* asset_ptr) {
 
         // Force a full redraw at startup (ensures the desktop paints 100%).
         if (first_frame) {
-            DirtyAdd(dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+            DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
         }
 
         // Add External Windows to Dirty (so they get composed/swapped)
@@ -514,26 +525,26 @@ extern "C" int main(void* asset_ptr) {
             WindowInfo& w = externalWindows[i];
             if (w.flags) {
                 // Add window area (plus shadows/borders if any)
-                DirtyAdd(dirty, w.x - 2, w.y - 26, w.w + 4, w.h + 30);
+                DirtyAdd(g_dirty, w.x - 2, w.y - 26, w.w + 4, w.h + 30);
             }
         }
 
         // Cursor dirty (old + new)
-        DirtyAdd(dirty, prev_mouse_x - 2, prev_mouse_y - 2, 20, 24);
-        DirtyAdd(dirty, mouse_x - 2, mouse_y - 2, 20, 24);
+        DirtyAdd(g_dirty, prev_mouse_x - 2, prev_mouse_y - 2, 20, 24);
+        DirtyAdd(g_dirty, mouse_x - 2, mouse_y - 2, 20, 24);
 
         // Window moves (drag/max/min)
         for (int i = 0; i < window_count; i++) {
             if (windows[i].minimized != prev_min[i] || windows[i].maximized != prev_max[i]) {
                 // Minimize/restore doesn't change geometry, but it changes visibility.
-                DirtyAdd(dirty, prev_wx[i] - 2, prev_wy[i] - 2, prev_ww[i] + 4, prev_wh[i] + 4);
-                DirtyAdd(dirty, windows[i].x - 2, windows[i].y - 2, windows[i].width + 4, windows[i].height + 4);
+                DirtyAdd(g_dirty, prev_wx[i] - 2, prev_wy[i] - 2, prev_ww[i] + 4, prev_wh[i] + 4);
+                DirtyAdd(g_dirty, windows[i].x - 2, windows[i].y - 2, windows[i].width + 4, windows[i].height + 4);
                 ui_dirty = true;
             }
             if (windows[i].x != prev_wx[i] || windows[i].y != prev_wy[i] ||
                 windows[i].width != prev_ww[i] || windows[i].height != prev_wh[i]) {
-                DirtyAdd(dirty, prev_wx[i] - 2, prev_wy[i] - 2, prev_ww[i] + 4, prev_wh[i] + 4);
-                DirtyAdd(dirty, windows[i].x - 2, windows[i].y - 2, windows[i].width + 4, windows[i].height + 4);
+                DirtyAdd(g_dirty, prev_wx[i] - 2, prev_wy[i] - 2, prev_ww[i] + 4, prev_wh[i] + 4);
+                DirtyAdd(g_dirty, windows[i].x - 2, windows[i].y - 2, windows[i].width + 4, windows[i].height + 4);
             }
         }
 
@@ -541,40 +552,40 @@ extern "C" int main(void* asset_ptr) {
         uint32_t now_sec = GetClockSeconds();
         if (now_sec != prev_clock_sec || menu_open != prev_menu_open) {
             int taskH = 40;
-            DirtyAdd(dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
+            DirtyAdd(g_dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
             // menu area (Launcher is full screen now)
             if (menu_open || prev_menu_open) {
-                DirtyAdd(dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+                DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
             }
         }
 
         // If RTC second changed, update the taskbar clock.
         if (now_sec != g_last_clock_sec) {
             int taskH = 40;
-            DirtyAdd(dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
+            DirtyAdd(g_dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
             g_last_clock_sec = now_sec;
         }
 
         // Any UI reorder/state change: repaint taskbar/menu.
         if (ui_dirty) {
             int taskH = 40;
-            DirtyAdd(dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
+            DirtyAdd(g_dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
             if (menu_open || prev_menu_open) {
-                DirtyAdd(dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+                DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
             }
         }
         
         // C. Render
         // If nothing marked dirty (rare), still redraw cursor region.
-        if (!dirty.valid) {
-            DirtyAdd(dirty, mouse_x - 2, mouse_y - 2, 20, 24);
+        if (!g_dirty.valid) {
+            DirtyAdd(g_dirty, mouse_x - 2, mouse_y - 2, 20, 24);
         }
 
         // Redraw only dirty region: background + UI + windows + cursor.
         // (Compositor is clip-aware internally.)
         // Set clip via SwapBuffersRect usage: we redraw full but clipped.
         // We reuse RenderScene for windows/cursor and draw taskbar/menu explicitly.
-        Compositor::SetClip(dirty.x, dirty.y, dirty.w, dirty.h);
+        Compositor::SetClip(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
         // Full render within clip
         // Background is drawn inside RenderScene
         Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
@@ -750,7 +761,7 @@ extern "C" int main(void* asset_ptr) {
         Compositor::ClearClip();
 
         // D. Swap only dirty region
-        const bool vsynced = Compositor::SwapBuffersRect(dirty.x, dirty.y, dirty.w, dirty.h);
+        const bool vsynced = Compositor::SwapBuffersRect(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
         // TEMPORARY GLOBAL FLUSH REMOVED - using dirty tracking + kernel composition
         
         // E. Sync

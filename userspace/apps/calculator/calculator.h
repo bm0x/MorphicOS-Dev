@@ -21,24 +21,20 @@ public:
         g.Clear(0xFF202020);
 
         // Header Title
-        // Assuming simple font rendering for now, mimicking DrawText logic
-        // For now, we will draw the display and buttons.
+        g.DrawText(10, 5, "Morphic Calc", 0xFFAAAAAA, 1);
         
         // Display Background
-        g.FillRect(20, 20, width - 40, 80, 0xFF000000);
+        g.FillRect(20, 30, width - 40, 60, 0xFF000000);
+        g.FillRect(20, 30 + 60, width - 40, 2, 0xFF404040); // underline
         
         // Display Text (Right aligned simulation)
-        // TODO: Need Font Support in MorphicAPI or embedded bitmap font.
-        // For this refactor, I will assume a DrawSimpleString helper is available 
-        // or just draw rectangles as placeholders if font is missing.
-        // Actually, let's copy the FontRenderer logic/assets? 
-        // No, independent apps can't easily access kernel symbols.
-        // They need their own font.
-        // For this Iteration, I'll rely on a basic pixel font included in the header or shared lib.
-        // BUT, looking at `morphic_api.h`, I didn't include font support.
-        // I will implement a rudimentary 5x7 debugger font here for self-containment.
-        
-        DrawString(g, width - 40 - (inputLen * 10), 50, inputBuffer, 0xFF00FF00, 2);
+        // Calculate text width to right align
+        int charW = 6 * 2; // 5+1 * scale 2
+        int textW = inputLen * charW;
+        int textX = (20 + width - 40) - textW - 10; // Right margin 10
+        if (textX < 25) textX = 25; // Clip left
+
+        g.DrawText(textX, 45, inputBuffer, 0xFF00FF00, 2);
 
         // Grid Layout
         const char* labels[] = {
@@ -48,10 +44,10 @@ public:
             "C", "0", "=", "+"
         };
 
-        int startY = 120;
+        int startY = 110;
         int gap = 10;
         int btnW = (width - 40 - (3 * gap)) / 4;
-        int btnH = (height - startY - 40) / 4;
+        int btnH = (height - startY - 20) / 4;
 
         for (int i = 0; i < 16; i++) {
             int col = i % 4;
@@ -59,23 +55,31 @@ public:
             int bx = 20 + col * (btnW + gap);
             int by = startY + row * (btnH + gap);
             
-            // Hover effect? Not getting mouse pos in Render easily without storing it
-            
+            // Highlight press? (Requires state, skip for now)
             g.FillRect(bx, by, btnW, btnH, 0xFF404040);
             
             // Draw Label Centered
-            int tw = 1 * 8 * 2; // len 1, 8px wide, scale 2
-            int th = 16 * 2;
-            DrawString(g, bx + (btnW - tw)/2, by + (btnH - th)/2, labels[i], 0xFFFFFFFF, 2);
+            // We use simple centering
+            const char* lbl = labels[i];
+            int tw = 1 * 6 * 2; // len 1
+            int th = 7 * 2;
+            g.DrawText(bx + (btnW - tw)/2, by + (btnH - th)/2, lbl, 0xFFFFFFFF, 2);
         }
     }
 
     void OnMouseDown(int x, int y, int btn) override {
-        // Grid Layout Recalculation (should cache this)
-        int startY = 120;
+        // Grid Layout Recalculation
+        int startY = 110;
         int gap = 10;
         int btnW = (width - 40 - (3 * gap)) / 4;
-        int btnH = (height - startY - 40) / 4;
+        int btnH = (height - startY - 20) / 4;
+
+        const char* labels[] = {
+            "7", "8", "9", "/",
+            "4", "5", "6", "*",
+            "1", "2", "3", "-",
+            "C", "0", "=", "+"
+        };
 
         for (int i = 0; i < 16; i++) {
             int col = i % 4;
@@ -84,9 +88,22 @@ public:
             int by = startY + row * (btnH + gap);
 
             if (x >= bx && x < bx + btnW && y >= by && y < by + btnH) {
-                HandleInput(i);
+                ProcessInput(labels[i][0]);
                 return;
             }
+        }
+    }
+
+    void OnKeyDown(char c) override {
+        // Map functionality for Enter/Esc
+        if (c == 13) c = '='; // Enter -> =
+        if (c == 27) c = 'C'; // Esc -> Clear
+
+        // Allow digits and ops
+        if ((c >= '0' && c <= '9') || 
+            c == '+' || c == '-' || c == '*' || c == '/' || 
+            c == '=' || c == 'C') {
+            ProcessInput(c);
         }
     }
 
@@ -97,43 +114,7 @@ private:
     int currentOp;
     bool newNumber;
 
-    // Simple embedded font (A-Z, 0-9, .+-*/=)
-    void DrawString(MorphicAPI::Graphics& g, int x, int y, const char* s, uint32_t color, int scale) {
-        // Minimal implementation for demo, drawing rectangles for characters
-        // Real implementation needs a bitmap font.
-        int curX = x;
-        while(*s) {
-            DrawChar(g, curX, y, *s, color, scale);
-            curX += 8 * scale;
-            s++;
-        }
-    }
-
-    void DrawChar(MorphicAPI::Graphics& g, int x, int y, char c, uint32_t color, int scale) {
-        // Placeholder: Draw a box
-        // g.FillRect(x, y, 6*scale, 10*scale, color);
-        // Better: Minimal strokes
-        if (c >= '0' && c <= '9') {
-             // Draw number... complicated without font data. 
-             // Just draw the box for now to ensure architecture works. 
-             // The user asked for "Professional UI", so I should really port the font.
-             // But I don't have access to "font.h" from userspace easily unless I copy it.
-             // I'll stick to rects for "functionality" check first.
-             g.FillRect(x, y, 6*scale, 8*scale, color); 
-        } else {
-             g.FillRect(x + 2*scale, y, 2*scale, 8*scale, color); // Stick
-        }
-    }
-
-    void HandleInput(int btnIdx) {
-        const char* labels[] = {
-            "7", "8", "9", "/",
-            "4", "5", "6", "*",
-            "1", "2", "3", "-",
-            "C", "0", "=", "+"
-        };
-        char c = labels[btnIdx][0];
-
+    void ProcessInput(char c) {
         if (c >= '0' && c <= '9') {
             if (newNumber) {
                 inputBuffer[0] = c;
@@ -141,7 +122,7 @@ private:
                 inputLen = 1;
                 newNumber = false;
             } else {
-                if (inputLen < 30) {
+                if (inputLen < 12) { // Limit to fit display
                     if (inputLen == 1 && inputBuffer[0] == '0') inputLen = 0;
                     inputBuffer[inputLen++] = c;
                     inputBuffer[inputLen] = 0;

@@ -184,7 +184,15 @@ EFI_STATUS InitializeGOP(FramebufferInfo* fbInfo) {
         if (info->PixelFormat == PixelRedGreenBlueReserved8BitPerColor ||
             info->PixelFormat == PixelBlueGreenRedReserved8BitPerColor) {
             
-            // Heuristic: Prefer higher resolution, then larger area
+            // PRIORITY: 1920x1080 (HD) for development convenience
+            if (info->HorizontalResolution == 1920 && info->VerticalResolution == 1080) {
+                 bestWidth = info->HorizontalResolution;
+                 bestHeight = info->VerticalResolution;
+                 bestMode = i;
+                 break; // Found target, stop searching
+            }
+
+            // Heuristic: Prefer higher resolution (Fallback)
             if (info->HorizontalResolution > bestWidth || 
                (info->HorizontalResolution == bestWidth && info->VerticalResolution > bestHeight)) {
                 

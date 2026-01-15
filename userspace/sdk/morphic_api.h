@@ -64,9 +64,68 @@ namespace MorphicAPI {
             }
         }
         
-        // Basic Font 8x16 (embedded in apps usually, or use system font if available)
-        // For now, apps need their own font renderer or use a simple shared one.
-        // We will assume a simple DrawChar is implemented by the app or added later.
+        // Embedded 5x7 Font Data
+        static uint8_t GetFontRow(char c, int row) {
+            if (row < 0 || row >= 7) return 0;
+            // ToUpper
+             if (c >= 'a' && c <= 'z') c -= 32;
+             
+             // Minimal Set
+             if (c >= '0' && c <= '9') {
+                 static const uint8_t d[10][7] = {
+                    {0x1E,0x11,0x13,0x15,0x19,0x11,0x1E}, // 0
+                    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, // 1
+                    {0x1E,0x01,0x01,0x1E,0x10,0x10,0x1F}, // 2
+                    {0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E}, // 3
+                    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, // 4
+                    {0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E}, // 5
+                    {0x0E,0x10,0x10,0x1E,0x11,0x11,0x1E}, // 6
+                    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, // 7
+                    {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, // 8
+                    {0x1E,0x11,0x11,0x1F,0x01,0x01,0x0E}  // 9
+                 };
+                 return d[c - '0'][row];
+             }
+             // Ops
+             if (c == '+') { static const uint8_t r[7]={0,4,4,31,4,4,0}; return r[row]; }
+             if (c == '-') { static const uint8_t r[7]={0,0,0,31,0,0,0}; return r[row]; }
+             if (c == '*') { static const uint8_t r[7]={0,21,14,4,14,21,0}; return r[row]; }
+             if (c == '/') { static const uint8_t r[7]={1,2,4,8,16,0,0}; return r[row]; }
+             if (c == '=') { static const uint8_t r[7]={0,0,31,0,31,0,0}; return r[row]; }
+             if (c == 'C') { static const uint8_t r[7]={14,17,16,16,16,17,14}; return r[row]; } // Clear
+             
+             // Letters (A-Z fallback partial) - only needed for "F" maybe? Or labels.
+             // Very mini implementation for calculator
+             if (c == 'A') { static const uint8_t r[7]={14,17,17,31,17,17,17}; return r[row]; }
+             if (c == 'B') { static const uint8_t r[7]={30,17,17,30,17,17,30}; return r[row]; }
+             if (c == 'E') { static const uint8_t r[7]={31,16,16,30,16,16,31}; return r[row]; }
+             if (c == 'R') { static const uint8_t r[7]={30,17,17,30,20,18,17}; return r[row]; }
+             if (c == 'O') { static const uint8_t r[7]={14,17,17,17,17,17,14}; return r[row]; }
+             if (c == 'R') { static const uint8_t r[7]={30,17,17,30,20,18,17}; return r[row]; }
+
+             // Default block
+             return 0x1F;
+        }
+
+        void DrawChar(int x, int y, char c, uint32_t color, int scale = 1) {
+            for (int r = 0; r < 7; r++) {
+                uint8_t bits = GetFontRow(c, r);
+                for (int col = 0; col < 5; col++) {
+                    if (bits & (1 << (4 - col))) {
+                        FillRect(x + col * scale, y + r * scale, scale, scale, color);
+                    }
+                }
+            }
+        }
+        
+        void DrawText(int x, int y, const char* text, uint32_t color, int scale = 1) {
+            int cx = x;
+            while (*text) {
+                DrawChar(cx, y, *text, color, scale);
+                cx += 6 * scale; // 5 + 1 spacing
+                text++;
+            }
+        }
     };
 
     class Window {
@@ -83,7 +142,23 @@ namespace MorphicAPI {
               requestW(w), requestH(h), running(false) {}
         virtual ~Window() {}
 
+        // Static Scratch Buffer for Double Buffering (Per-Process)
+        // Solves flickering by drawing here first, then copying to kernel buffer.
+        // static uint32_t s_scratchBuffer[1024 * 768]; // Moved to Init() static local
+
+        uint32_t* kernelBuffer; // The shared buffer mapped to kernel layer
+
         virtual bool Init() {
+             // Increase buffer to 4K (3840x2160) to support large windows/maximized apps
+             const uint64_t MAX_PIXELS = 3840 * 2160;
+             const uint64_t BUF_SIZE = MAX_PIXELS * 4;
+
+             static uint32_t* s_scratchBuffer = nullptr;
+             if (!s_scratchBuffer) {
+                 uint64_t addr = sys_alloc_backbuffer(BUF_SIZE);
+                 s_scratchBuffer = (uint32_t*)addr;
+             }
+
             // Get Screen Dimensions
             uint64_t info = sys_get_screen_info();
             sys_width = (info >> 32) & 0xFFFFFFFF;
@@ -107,8 +182,17 @@ namespace MorphicAPI {
 
             if (!addr) return false;
             
-            // Use this buffer directly (Kernel handles double buffering)
-            backbuffer = (uint32_t*)addr;
+            // Double Buffering Setup
+            kernelBuffer = (uint32_t*)addr;
+            
+            // If we have scratch buffer and it fits
+            if (s_scratchBuffer && (width * height <= MAX_PIXELS)) {
+                backbuffer = s_scratchBuffer;
+            } else {
+                // Fallback to single buffering
+                backbuffer = kernelBuffer;
+            }
+            
             running = true;
             return true;
         }
@@ -144,8 +228,13 @@ namespace MorphicAPI {
                 OnUpdate();
                 OnRender(g);
 
-                // Flip backbuffer to screen
-                sys_video_flip(backbuffer);
+                // Commit Frame: Copy scratch to kernel buffer
+                if (backbuffer != kernelBuffer) {
+                    Helpers::memcpy(kernelBuffer, backbuffer, width * height * 4);
+                }
+
+                // Flip/Notify Kernel
+                sys_video_flip(kernelBuffer);
             }
         }
         
