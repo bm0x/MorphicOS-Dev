@@ -40,6 +40,24 @@ extern "C" {
         return *(const unsigned char*)s1 - *(const unsigned char*)s2;
     }
 
+    int kstricmp(const char* s1, const char* s2) {
+        while (*s1 && *s2) {
+            char c1 = *s1;
+            char c2 = *s2;
+            // Convert to lowercase
+            if (c1 >= 'A' && c1 <= 'Z') c1 = c1 - 'A' + 'a';
+            if (c2 >= 'A' && c2 <= 'Z') c2 = c2 - 'A' + 'a';
+            if (c1 != c2) return c1 - c2;
+            s1++;
+            s2++;
+        }
+        char c1 = *s1;
+        char c2 = *s2;
+        if (c1 >= 'A' && c1 <= 'Z') c1 = c1 - 'A' + 'a';
+        if (c2 >= 'A' && c2 <= 'Z') c2 = c2 - 'A' + 'a';
+        return c1 - c2;
+    }
+
     int kmemcmp(const void* s1, const void* s2, size_t n) {
         const unsigned char* p1 = (const unsigned char*)s1;
         const unsigned char* p2 = (const unsigned char*)s2;

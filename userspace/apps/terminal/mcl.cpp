@@ -174,15 +174,52 @@ namespace MCL {
         }
         else if (u_strcmp(verb->name, "list")) {
              if (tokenCount >= 2 && u_strcmp(tokens[1], "files")) {
-                 out->Print("Listing files (root):\n");
-                 // TODO: Implement sys_read_dir or similar
-                 out->Print("  [DIR]  EFI\n");
-                 out->Print("  [FILE] morph_kernel.elf\n");
-                 out->Print("  [FILE] desktop.mpk\n");
-                 out->Print("  (Real VFS listing not yet implemented in userspace)\n");
+                 // Default to /initrd if no path specified
+                 const char* path = "/initrd";
+                 if (tokenCount >= 3) {
+                     path = tokens[2];
+                 }
+                 
+                 out->Print("Listing: ");
+                 out->Print(path);
+                 out->Print("\n");
+                 
+                 DirEntry entries[32];
+                 int count = sys_readdir(path, entries, 32);
+                 
+                 if (count <= 0) {
+                     out->Print("  (empty or not found)\n");
+                 } else {
+                     char buf[8];
+                     for (int i = 0; i < count; i++) {
+                         if (entries[i].type == 1) {
+                             out->Print("  [DIR]  ");
+                         } else {
+                             out->Print("  [FILE] ");
+                         }
+                         out->Print(entries[i].name);
+                         out->Print(" (");
+                         u_itoa(entries[i].size, buf);
+                         out->Print(buf);
+                         out->Print(" bytes)\n");
+                     }
+                     out->Print("Total: ");
+                     u_itoa(count, buf);
+                     out->Print(buf);
+                     out->Print(" entries\n");
+                 }
              } else {
-                 out->Print("Usage: list files\n");
+                 out->Print("Usage: list files [path]\n");
+                 out->Print("  Example: list files /initrd\n");
              }
+        }
+        else if (u_strcmp(verb->name, "reboot")) {
+            out->Print("Rebooting system...\n");
+            sys_reboot();
+        }
+        else if (u_strcmp(verb->name, "shutdown")) {
+            out->Print("Shutting down...\n");
+            sys_shutdown();
         }
         else {
             out->Print("Command recognized but not implemented yet.\n");

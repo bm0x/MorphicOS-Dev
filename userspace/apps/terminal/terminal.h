@@ -16,6 +16,7 @@ public:
 
     // IOutput Overrides
     void Print(const char* text) override;
+    void PrintLine(const char* text);
 
 private:
     char lines[ROWS][COLS + 1];

@@ -18,6 +18,7 @@
 #include "../mm/heap.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
+#include "../fs/drivers/fat32.h"
 #include "shell.h"
 #include "bootconfig.h"
 #include "loader.h"
@@ -150,6 +151,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     
     BootScreen::Update(40, "Loading Virtual File System...");
     VFS::Init();
+    FAT32::Init(); // Register FAT32 driver
     InitRD::Init(bootInfo->initrdAddr, bootInfo->initrdSize);
     
     BootScreen::Update(50, "Reading Boot Configuration...");

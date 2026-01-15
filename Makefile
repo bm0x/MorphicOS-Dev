@@ -66,6 +66,7 @@ KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/fs/initrd.cpp \
                  kernel/core/loader.cpp \
                  kernel/fs/mount.cpp \
+                 kernel/fs/drivers/fat32.cpp \
                  kernel/mcl/mcl_parser.cpp \
                  kernel/mcl/mcl_commands.cpp \
                  kernel/mcl/mcl_module.cpp \
