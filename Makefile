@@ -286,7 +286,7 @@ iso: kernel bootloader initrd
 		-e boot/efi.img \
 		-no-emul-boot \
 		-isohybrid-gpt-basdat \
-		$(ISO_ROOT) 2>/dev/null
+		$(ISO_ROOT)
 	
 	@echo "========================================"
 	@echo "  [ISO] Build Complete: $(ISO_NAME)"

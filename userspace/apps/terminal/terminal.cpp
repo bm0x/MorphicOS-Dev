@@ -5,7 +5,7 @@ static void t_memset(void* ptr, int val, int size) {
     for (int i = 0; i < size; i++) p[i] = (char)val;
 }
 
-TerminalApp::TerminalApp() {
+TerminalApp::TerminalApp() : MorphicAPI::Window(660, 420) {
     for (int i = 0; i < ROWS; i++) {
         t_memset(lines[i], 0, COLS + 1);
     }

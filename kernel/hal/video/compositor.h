@@ -63,7 +63,7 @@ namespace Compositor {
     };
     
     Window* CreateWindow(uint32_t w, uint32_t h, uint32_t flags);
-    void UpdateWindow(uint64_t window_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    void UpdateWindow(uint64_t window_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t flags);
     void DestroyWindow(uint64_t window_id);
     Window* GetWindow(uint64_t window_id);
     // Returns array of Window structs + counts. Max 64 windows.

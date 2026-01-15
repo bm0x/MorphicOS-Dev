@@ -850,13 +850,29 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
     {
         // arg1: id
         // arg2: (x << 32) | y
-        // arg3: (w << 32) | h
+        // arg3: (w << 20) | (h << 8) | flags (8 bits) ? Or reuse strict packing
+        // Let's use:
+        // arg2: (x << 32) | y  (unchanged)
+        // arg3: (w << 32) | (h << 16) | flags  <-- Change packing scheme
+        // Old: w=32, h=32. New: w=24, h=24, flags=16. Max dim 16777216. Fine.
+        
         uint32_t x = (uint32_t)(arg2 >> 32);
         uint32_t y = (uint32_t)(arg2 & 0xFFFFFFFFULL);
-        uint32_t w = (uint32_t)(arg3 >> 32);
-        uint32_t h = (uint32_t)(arg3 & 0xFFFFFFFFULL);
         
-        Compositor::UpdateWindow(arg1, x, y, w, h);
+        // Unpack arg3: High 24 bits W, Next 24 bits H, Low 16 bits Flags
+        // Or simple: High 32 W, Low 32 H -> No space.
+        // Let's do: (w << 32) is invalid if w is 32-bit.
+        
+        // Revised Packing for Arg3:
+        // Bits 0-15: Flags
+        // Bits 16-39: Height (24 bits)
+        // Bits 40-63: Width (24 bits)
+        
+        uint32_t flags = (uint32_t)(arg3 & 0xFFFF);
+        uint32_t h = (uint32_t)((arg3 >> 16) & 0xFFFFFF);
+        uint32_t w = (uint32_t)((arg3 >> 40) & 0xFFFFFF);
+        
+        Compositor::UpdateWindow(arg1, x, y, w, h, flags);
         return 0;
     }
 

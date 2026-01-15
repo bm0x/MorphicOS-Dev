@@ -226,6 +226,34 @@ void HandleEvent(const OSEvent& ev) {
                      drag_offset_y = click_y - w.y;
                      return;
                  }
+
+                 // Hit Test Buttons (Close, Max, Min)
+                 // Layout matches Kernel DrawWindowDecoration
+                 const int btnSize = 14;
+                 const int pad = 6;
+                 int by = w.y - titleH + (titleH - btnSize) / 2;
+                 int bxClose = w.x + w.w - pad - btnSize;
+                 int bxMax = bxClose - (btnSize + 6);
+                 int bxMin = bxMax - (btnSize + 6);
+
+                 // Close Button (Hide)
+                 if (HitRect(click_x, click_y, bxClose, by, btnSize, btnSize)) {
+                     // Flag 0 = Hidden
+                     // Pack: W (24) | H (24) | Flags (16)
+                     uint64_t xy = ((uint64_t)w.x << 32) | w.y;
+                     uint64_t wh_flags = ((uint64_t)w.w << 40) | ((uint64_t)w.h << 16) | 0; 
+                     sys_update_window(w.id, xy, wh_flags);
+                     return;
+                 }
+                 
+                 // Minimize Button (Hide)
+                 if (HitRect(click_x, click_y, bxMin, by, btnSize, btnSize)) {
+                     // Flag 0 = Hidden
+                     uint64_t xy = ((uint64_t)w.x << 32) | w.y;
+                     uint64_t wh_flags = ((uint64_t)w.w << 40) | ((uint64_t)w.h << 16) | 0;
+                     sys_update_window(w.id, xy, wh_flags);
+                     return;
+                 }
             }
 
             // Window interactions (topmost first)

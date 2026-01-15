@@ -333,42 +333,34 @@ namespace Compositor {
             }
             
             if (!layer->visible) continue;
-            if (!layer->buffer) continue;
+            // if (!layer->buffer) continue; // Checked above
+
+            // FORCE REDRAW: Ignore dirty flag for app windows in this composition mode
+            // because the underlay (desktop) might have cleared the background.
+            // Also, we must draw every frame if the desktop is redrawing underneath.
             
-            // Validate layer dimensions
-            if (layer->width == 0 || layer->height == 0) continue;
-            if (layer->width > 4096 || layer->height > 4096) continue;
-            
-            // Validate screen position
-            if (layer->x >= pitch || layer->y >= screenH) continue;
-            
-            // One-time trace to confirm rendering execution
-            static bool renderLogged = false;
-            if (!renderLogged) {
-                UART::Write("[ComposeAppWindowsOnly] RENDERING: backbuf=");
-                UART::WriteHex((uint64_t)backbuf);
-                UART::Write(" pitch=");
-                UART::WriteDec(pitch);
-                UART::Write(" screenH=");
-                UART::WriteDec(screenH);
-                UART::Write("\n");
-                renderLogged = true;
-            }
+            // if (layer->has_alpha) ...
             
             if (layer->has_alpha) {
                 BlitTransparent(backbuf, pitch, layer->buffer, 
                                layer->width, layer->height, layer->x, layer->y);
             } else {
                 // Opaque blit with bounds checking
+                // Optimized loop?
                 for (uint32_t y = 0; y < layer->height && (layer->y + y) < screenH; y++) {
-                    for (uint32_t x = 0; x < layer->width && (layer->x + x) < pitch; x++) {
-                        backbuf[(layer->y + y) * pitch + (layer->x + x)] = 
-                            layer->buffer[y * layer->width + x];
-                    }
+                    // Simple memcpy per row if dimensions align? 
+                    // For now, robust pixel copy
+                    uint32_t* dst = &backbuf[(layer->y + y) * pitch + layer->x];
+                    uint32_t* src = &layer->buffer[y * layer->width];
+                    // Bounds check x
+                    uint32_t max_w = (layer->x + layer->width > pitch) ? (pitch - layer->x) : layer->width;
+                    
+                    // Usage of builtin or simple loop
+                     for(uint32_t x=0; x<max_w; x++) dst[x] = src[x];
                 }
             }
             
-            // Draw window decorations
+            // Draw window decorations (Title bar, buttons)
             DrawWindowDecoration(layer);
         }
         
@@ -657,14 +649,21 @@ namespace Compositor {
         return nullptr;
     }
     
-    void UpdateWindow(uint64_t window_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    void UpdateWindow(uint64_t window_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t flags) {
         Window* win = GetWindow(window_id);
         if (win && win->layer) {
             // Update Position
             SetLayerPosition(win->layer, x, y);
             
-            // TODO: Resize not fully implemented yet (buffer realloc needed)
-            // For now, allow size update if buffer matches or simple crop
+            // Handle Flags
+            // Flag 0 (bit 0 off) = Hidden/Minimized
+            if ((flags & 1) == 0) {
+                win->layer->visible = false;
+            } else {
+                win->layer->visible = true;
+            }
+
+            // TODO: Resize not fully implemented yet
             
             MarkDirty(x - BORDER_WIDTH, y - TITLE_BAR_HEIGHT, 
                       win->width + 2*BORDER_WIDTH, win->height + TITLE_BAR_HEIGHT + BORDER_WIDTH);
