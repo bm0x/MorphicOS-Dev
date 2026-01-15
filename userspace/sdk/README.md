@@ -104,6 +104,7 @@ Los stubs están implementados en [syscalls.asm](../syscalls.asm). Incluye `morp
 |---------|--------|-------------|
 | `sys_get_event(OSEvent*)` | 21 | Obtiene evento de la cola (1=ok, 0=vacía) |
 | `sys_input_poll(out)` | 52 | Poll de input (alternativo) |
+| `sys_set_keymap(code)` | 70 | Cambia layout ("US", "ES", "LA") |
 
 ### Tiempo
 

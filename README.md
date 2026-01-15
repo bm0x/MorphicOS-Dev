@@ -179,6 +179,14 @@ Morphic es un **sistema operativo experimental** (hobby OS) escrito desde cero.
 	- Menú simple.
 	- Botones de ventana: minimizar / maximizar / “cerrar” (en esta versión, cerrar equivale a minimizar).
 	- Reloj simple (por ahora basado en uptime; no RTC real todavía).
+- **Soporte Multi-idioma**:
+	- Teclados: US (Inglés), ES (Español), LA (Latinoamérica).
+	- Cambio dinámico desde la barra de tareas.
+	- Fuente con soporte para caracteres extendidos (`ñ`, `á`, etc.).
+- **Estabilidad y Sistema de Ventanas**:
+	- **Render Seguro**: Implementación de *bounds checking* estricto en el Compositor para prevenir Kernel Panics (Page Faults).
+	- **Anti-Flicker**: Mejoras en el ciclo de dibujado y *z-order* correcto para ventanas superpuestas.
+	- **Apps Integradas**: Terminal y Calculadora ejecutándose nativamente en modo ventana.
 
 ## Quick Start
 
@@ -277,6 +285,7 @@ Structs compartidos (kernel ↔ userspace):
 - `54 SYS_VIDEO_FLIP_RECT(arg1=backbuffer_ptr, arg2=(x<<32)|y, arg3=(w<<32)|h)` → presenta solo rectángulo (dirty-rect)
 - `55 SYS_GET_RTC_DATETIME(arg1=MorphicDateTime*)` → `1` si OK (RTC/CMOS)
 - `56 SYS_GET_SYSTEM_INFO(arg1=MorphicSystemInfo*)` → `1` si OK
+- `70 SYS_SET_KEYMAP(arg1=char* map_code)` → cambia layout ("US", "ES", "LA")
 
 ## Rendimiento: qué se optimiza y por qué
 
@@ -302,6 +311,12 @@ docs/                   Docs internas del proyecto
 	- mpk_format.md         Especificación básica del formato .mpk (MPK1)
 	- mpk_sdk.md            Convenciones/SDK MVP para Apps MPK
 ```
+
+## Historial de Cambios Recientes
+
+- **GUI Core**: Corrección crítica de corrupción de memoria en `FillRectClipped` y `DrawClock`.
+- **Desktop**: Ajuste de diseño en Barra de Tareas (espaciado reloj/idioma).
+- **Input**: Soporte para layouts dinámicos (ES/LA/US) y renderizado de glifos extendidos.
 
 ## Limitaciones conocidas
 
