@@ -83,4 +83,7 @@ namespace Mount {
     
     // Get filesystem driver by name
     IFileSystem* GetFSByName(const char* name);
+    
+    // Add a pre-mounted filesystem directly (used by MountManager)
+    bool AddMount(const char* path, IFileSystem* fs);
 }

@@ -19,6 +19,7 @@
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
 #include "../fs/drivers/fat32.h"
+#include "../fs/mount_manager.h"
 #include "shell.h"
 #include "bootconfig.h"
 #include "loader.h"
@@ -180,6 +181,11 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     RAMDisk::Init();
     IDE::Init();
     UART::Write("[BOOT-TRACE] After Storage Init\n");
+    
+    // Auto-mount detected filesystems (FAT32 on debug_disk, etc.)
+    MountManager::Init();
+    MountManager::ScanAndMount();
+    UART::Write("[BOOT-TRACE] After MountManager ScanAndMount\n");
     
     // Interrupts
     BootScreen::Update(90, "Enabling Interrupts...");

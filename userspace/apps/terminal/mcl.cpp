@@ -122,13 +122,25 @@ namespace MCL {
 
         // Execute
         if (u_strcmp(verb->name, "help")) {
-            out->Print("Available commands:\n");
-            out->Print("  help, clear, list files, show cpu, show memory, show disk\n");
-            out->Print("  reboot, shutdown\n");
+            out->Print("=== MCL Terminal Commands ===\n");
+            out->Print("\n");
+            out->Print("Storage:\n");
+            out->Print("  list files [path]   - List directory\n");
+            out->Print("  list mounts         - Show mounted filesystems\n");
+            out->Print("  read file:path      - Display file contents\n");
+            out->Print("\n");
+            out->Print("System:\n");
+            out->Print("  show cpu            - CPU information\n");
+            out->Print("  show memory         - RAM usage\n");
+            out->Print("  show disk           - Disk info\n");
+            out->Print("\n");
+            out->Print("Control:\n");
+            out->Print("  clear               - Clear screen\n");
+            out->Print("  reboot              - Restart system\n");
+            out->Print("  shutdown            - Power off\n");
         }
         else if (u_strcmp(verb->name, "clear")) {
-            // Handled by terminal usually, but we can print newlines
-            out->Print("\n\n\n\n\n\n\n\n\n\n\n\n");
+            out->Print("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
         }
         else if (u_strcmp(verb->name, "show")) {
             if (tokenCount < 2) {
@@ -173,45 +185,99 @@ namespace MCL {
             }
         }
         else if (u_strcmp(verb->name, "list")) {
-             if (tokenCount >= 2 && u_strcmp(tokens[1], "files")) {
-                 // Default to /initrd if no path specified
-                 const char* path = "/initrd";
-                 if (tokenCount >= 3) {
-                     path = tokens[2];
-                 }
-                 
-                 out->Print("Listing: ");
-                 out->Print(path);
-                 out->Print("\n");
-                 
-                 DirEntry entries[32];
-                 int count = sys_readdir(path, entries, 32);
-                 
-                 if (count <= 0) {
-                     out->Print("  (empty or not found)\n");
-                 } else {
-                     char buf[8];
-                     for (int i = 0; i < count; i++) {
-                         if (entries[i].type == 1) {
-                             out->Print("  [DIR]  ");
-                         } else {
-                             out->Print("  [FILE] ");
-                         }
-                         out->Print(entries[i].name);
-                         out->Print(" (");
-                         u_itoa(entries[i].size, buf);
-                         out->Print(buf);
-                         out->Print(" bytes)\n");
-                     }
-                     out->Print("Total: ");
-                     u_itoa(count, buf);
-                     out->Print(buf);
-                     out->Print(" entries\n");
-                 }
-             } else {
-                 out->Print("Usage: list files [path]\n");
-                 out->Print("  Example: list files /initrd\n");
-             }
+            if (tokenCount >= 2 && u_strcmp(tokens[1], "mounts")) {
+                // List mounted filesystems
+                out->Print("Mounted Filesystems:\n");
+                MountEntry mounts[8];
+                int count = sys_list_mounts(mounts, 8);
+                if (count <= 0) {
+                    out->Print("  (no mounts found)\n");
+                } else {
+                    for (int i = 0; i < count; i++) {
+                        out->Print("  ");
+                        out->Print(mounts[i].path);
+                        out->Print("  [");
+                        out->Print(mounts[i].fstype);
+                        out->Print("]\n");
+                    }
+                }
+            }
+            else if (tokenCount >= 2 && u_strcmp(tokens[1], "files")) {
+                const char* path = "/initrd";
+                if (tokenCount >= 3) {
+                    path = tokens[2];
+                }
+                
+                out->Print("Listing: ");
+                out->Print(path);
+                out->Print("\n");
+                
+                DirEntry entries[32];
+                int count = sys_readdir(path, entries, 32);
+                
+                if (count <= 0) {
+                    out->Print("  (empty or not found)\n");
+                } else {
+                    char buf[16];
+                    for (int i = 0; i < count; i++) {
+                        if (entries[i].type == 1) {
+                            out->Print("  [DIR]  ");
+                        } else {
+                            out->Print("  [FILE] ");
+                        }
+                        out->Print(entries[i].name);
+                        out->Print(" (");
+                        u_itoa(entries[i].size, buf);
+                        out->Print(buf);
+                        out->Print(" bytes)\n");
+                    }
+                    out->Print("Total: ");
+                    u_itoa(count, buf);
+                    out->Print(buf);
+                    out->Print(" entries\n");
+                }
+            } else {
+                out->Print("Usage:\n");
+                out->Print("  list files [path]  - List directory\n");
+                out->Print("  list mounts        - Show filesystems\n");
+            }
+        }
+        else if (u_strcmp(verb->name, "read")) {
+            // read file:/path/to/file
+            if (tokenCount < 2) {
+                out->Print("Usage: read file:/path/to/file\n");
+                return;
+            }
+            
+            const char* arg = tokens[1];
+            // Check for "file:" prefix
+            if (arg[0] == 'f' && arg[1] == 'i' && arg[2] == 'l' && arg[3] == 'e' && arg[4] == ':') {
+                const char* path = arg + 5;
+                
+                out->Print("Reading: ");
+                out->Print(path);
+                out->Print("\n---\n");
+                
+                char buffer[512];
+                u_memset(buffer, 0, sizeof(buffer));
+                int bytes = sys_read_file(path, buffer, 511);
+                
+                if (bytes < 0) {
+                    out->Print("Error: File not found or unreadable.\n");
+                } else if (bytes == 0) {
+                    out->Print("(empty file)\n");
+                } else {
+                    buffer[bytes] = 0;
+                    out->Print(buffer);
+                    out->Print("\n---\n");
+                    char buf[16];
+                    u_itoa(bytes, buf);
+                    out->Print(buf);
+                    out->Print(" bytes read.\n");
+                }
+            } else {
+                out->Print("Usage: read file:/path/to/file\n");
+            }
         }
         else if (u_strcmp(verb->name, "reboot")) {
             out->Print("Rebooting system...\n");
@@ -222,7 +288,9 @@ namespace MCL {
             sys_shutdown();
         }
         else {
-            out->Print("Command recognized but not implemented yet.\n");
+            out->Print("Command not implemented: ");
+            out->Print(verb->name);
+            out->Print("\n");
         }
     }
 

@@ -182,4 +182,43 @@ namespace Mount {
             }
         }
     }
+    
+    bool AddMount(const char* path, IFileSystem* fs) {
+        if (!path || !fs) return false;
+        
+        // Find free slot
+        int slot = -1;
+        for (int i = 0; i < MAX_MOUNT_POINTS; i++) {
+            if (!mounts[i].active) {
+                slot = i;
+                break;
+            }
+        }
+        
+        if (slot < 0) return false;
+        
+        // Fill mount point
+        MountPoint* mp = &mounts[slot];
+        kmemset(mp, 0, sizeof(MountPoint));
+        
+        // Copy path
+        int len = kstrlen(path);
+        if (len >= MAX_PATH_LENGTH) len = MAX_PATH_LENGTH - 1;
+        kmemcpy(mp->path, path, len);
+        mp->path[len] = 0;
+        
+        // Copy fs type name
+        if (fs->name) {
+            len = kstrlen(fs->name);
+            if (len >= MAX_FSTYPE_LENGTH) len = MAX_FSTYPE_LENGTH - 1;
+            kmemcpy(mp->fs_type, fs->name, len);
+            mp->fs_type[len] = 0;
+        }
+        
+        mp->fs = fs;
+        mp->active = true;
+        mountCount++;
+        
+        return true;
+    }
 }

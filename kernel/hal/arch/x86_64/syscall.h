@@ -29,6 +29,14 @@
 #define SYS_READDIR 71
 #define SYS_SHUTDOWN 72
 #define SYS_REBOOT 73
+#define SYS_READ_FILE 74
+#define SYS_WRITE_FILE 75
+#define SYS_CREATE_FILE 76
+#define SYS_DELETE_FILE 77
+#define SYS_MKDIR 78
+#define SYS_STAT 79
+#define SYS_YIELD 80
+#define SYS_LIST_MOUNTS 81
 
 
 

@@ -164,3 +164,23 @@ sys_reboot:
     mov rax, 73
     syscall
     ret
+
+global sys_read_file
+sys_read_file:
+    ; arg1: path (rdi), arg2: buffer (rsi), arg3: max_size (rdx)
+    mov rax, 74
+    syscall
+    ret
+
+global sys_yield
+sys_yield:
+    mov rax, 80
+    syscall
+    ret
+
+global sys_list_mounts
+sys_list_mounts:
+    ; arg1: entries buffer (rdi), arg2: max_entries (rsi)
+    mov rax, 81
+    syscall
+    ret

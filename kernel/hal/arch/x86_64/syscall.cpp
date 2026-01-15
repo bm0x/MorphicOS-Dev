@@ -17,6 +17,7 @@
 #include "../../../process/scheduler.h"
 #include "../../platform.h"
 #include "../../../fs/vfs.h"
+#include "../../../fs/mount_manager.h"
 
 extern "C" uint64_t PIT_GetTicks();
 
@@ -969,6 +970,75 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         // Fallback: infinite halt
         for (;;) __asm__ volatile("hlt");
         return 0;
+    }
+
+    case SYS_READ_FILE: // arg1=path, arg2=buffer, arg3=max_size
+    {
+        const char* user_path = (const char*)arg1;
+        if (!user_path || arg1 < 0x600000000000ULL) return (uint64_t)-1;
+        if (!arg2 || arg2 < 0x600000000000ULL) return (uint64_t)-1;
+        
+        char path_buf[256];
+        for (int i = 0; i < 255; i++) {
+            path_buf[i] = user_path[i];
+            if (path_buf[i] == 0) break;
+        }
+        path_buf[255] = 0;
+        
+        VFSNode* node = VFS::Open(path_buf);
+        if (!node || node->type != NodeType::FILE) return (uint64_t)-1;
+        
+        uint64_t max_size = arg3;
+        if (max_size > node->size) max_size = node->size;
+        
+        uint8_t* user_buf = (uint8_t*)arg2;
+        uint64_t read = VFS::Read(node, 0, max_size, user_buf);
+        return read;
+    }
+
+    case SYS_YIELD: // Voluntarily yield CPU time
+    {
+        // Force a context switch by calling scheduler
+        // For now just return immediately to allow other tasks to run
+        __asm__ volatile("pause");  // CPU hint for spin-wait
+        return 0;
+    }
+
+    case SYS_LIST_MOUNTS: // arg1=buffer, arg2=max_entries
+    {
+        if (!arg1 || arg1 < 0x600000000000ULL) return 0;
+        
+        struct MountEntry {
+            char path[32];
+            char fstype[16];
+        };
+        
+        MountEntry* entries = (MountEntry*)arg1;
+        uint32_t max_entries = (uint32_t)arg2;
+        uint32_t count = 0;
+        
+        // Use MountManager for dynamic mount enumeration
+        int totalMounts = MountManager::GetMountCount();
+        for (int i = 0; i < totalMounts && count < max_entries; i++) {
+            MountManager::MountInfo info;
+            if (MountManager::GetMountInfo(i, &info)) {
+                // Copy path
+                for (int j = 0; info.path[j] && j < 31; j++) {
+                    entries[count].path[j] = info.path[j];
+                }
+                entries[count].path[31] = 0;
+                
+                // Copy fstype
+                for (int j = 0; info.fstype[j] && j < 15; j++) {
+                    entries[count].fstype[j] = info.fstype[j];
+                }
+                entries[count].fstype[15] = 0;
+                
+                count++;
+            }
+        }
+        
+        return count;
     }
 
     default:

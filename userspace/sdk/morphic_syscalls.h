@@ -57,6 +57,18 @@ int sys_readdir(const char* path, DirEntry* entries, int max_entries);
 // Power controls
 void sys_shutdown();
 void sys_reboot();
+
+// File operations
+int sys_read_file(const char* path, void* buffer, int max_size);
+void sys_yield();
+
+// Mount listing
+struct MountEntry {
+    char path[32];
+    char fstype[16];
+};
+int sys_list_mounts(MountEntry* entries, int max_entries);
+
 #ifdef __cplusplus
 }
 #endif
