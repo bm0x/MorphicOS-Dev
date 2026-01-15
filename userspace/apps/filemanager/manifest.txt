@@ -1,0 +1,3 @@
+name=Morphic File Manager
+version=1.0.0
+permissions=VIDEO_ACCESS,INPUT_ACCESS,STORAGE_ACCESS,SYSTEM_ACCESS

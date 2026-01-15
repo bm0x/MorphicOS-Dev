@@ -10,6 +10,8 @@
 #include "../hal/input/keymap.h"
 #include "../hal/audio/mixer.h"
 #include "../process/scheduler.h"
+#include "../fs/mount_manager.h"
+#include "../hal/storage/block_device.h"
 
 
 namespace MCL {
@@ -97,6 +99,47 @@ namespace MCL {
             
             if (children) kfree(children);
             return 0;
+        }
+
+        // LIST MOUNTS
+        if (kstrcmp(action, "list") == 0 && kstrcmp(target, "mounts") == 0) {
+             int count = MountManager::GetMountCount();
+             EarlyTerm::Print("Mounted Filesystems: ");
+             EarlyTerm::PrintDec(count);
+             EarlyTerm::Print("\n");
+             
+             for (int i = 0; i < count; i++) {
+                 MountManager::MountInfo info;
+                 if (MountManager::GetMountInfo(i, &info)) {
+                     EarlyTerm::Print("  ");
+                     EarlyTerm::Print(info.path);
+                     EarlyTerm::Print(" (");
+                     EarlyTerm::Print(info.fstype);
+                     EarlyTerm::Print(") on ");
+                     EarlyTerm::Print(info.device);
+                     EarlyTerm::Print("\n");
+                 }
+             }
+             return 0;
+        }
+        
+        // SHOW DISK (Alias for list mounts + storage info)
+        if (kstrcmp(action, "show") == 0 && kstrcmp(target, "disk") == 0) {
+             // ... duplicate logic or call above? Let's just implement list mounts logic again or simpler
+             
+             EarlyTerm::Print("Physical Storage Devices:\n");
+             int devCount = StorageManager::GetDeviceCount();
+             for(int i=0; i<devCount; i++) {
+                 IBlockDevice* dev = StorageManager::GetDeviceByIndex(i);
+                 if(dev) {
+                     EarlyTerm::Print("  ");
+                     EarlyTerm::Print(dev->name);
+                     EarlyTerm::Print(": ");
+                     EarlyTerm::PrintDec(dev->geometry.total_sectors * dev->geometry.sector_size / 1024 / 1024);
+                     EarlyTerm::Print(" MB\n");
+                 }
+             }
+             return 0;
         }
         
         // READ FILE: read file:name

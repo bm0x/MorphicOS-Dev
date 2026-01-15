@@ -10,6 +10,9 @@
 #include "../hal/serial/uart.h"
 #include "../mm/heap.h"
 #include "../utils/std.h"
+#include "../hal/video/verbose.h"
+#include "../hal/storage/partition.h"
+#include "drivers/ntfs.h"
 
 namespace MountManager {
     static const int MAX_MOUNTS = 8;
@@ -84,56 +87,113 @@ namespace MountManager {
             UART::Write(device->name);
             UART::Write("\n");
             
-            // For now, check device directly (no partition table parsing)
-            // Assume the device is a raw FAT32 filesystem (like debug_disk.img)
-            if (IsFAT32(device, 0)) {
-                UART::Write("[MountManager] FAT32 detected on ");
+            // 1. Scan for MBR Partitions
+            int partitionsFound = PartitionManager::ScanDevice(device);
+            bool mountedPartition = false;
+            
+            if (partitionsFound > 0) {
+                 UART::Write("[MountManager] Found partitions: ");
+                 UART::WriteDec(partitionsFound);
+                 UART::Write("\n");
+                 
+                 for (uint32_t p = 0; p < PartitionManager::GetPartitionCount(); p++) {
+                     Partition* part = PartitionManager::GetPartition(p);
+                     if (part->parent != device) continue;
+                     
+                     // Check for FAT32 on partition
+                     if (IsFAT32(device, part->start_lba)) {
+                         UART::Write("[MountManager] FAT32 detected on ");
+                         UART::Write(part->name);
+                         UART::Write("\n");
+                         
+                         // Mount FAT32
+                         IFileSystem* fs = FAT32::Mount(device, part->start_lba);
+                         if (fs) {
+                             // ... (Mount logic same as before) ...
+                             // Inline duplication or refactor? Let's just duplicate logic for safety/speed
+                             char mount_path[32];
+                             if (mounted == 0) {
+                                 const char* src = "/data";
+                                 for(int k=0; k<6; k++) mount_path[k] = src[k];
+                             } else {
+                                 char num[8];
+                                 kitoa(mounted, num, 10);
+                                 mount_path[0]='/'; mount_path[1]='d'; mount_path[2]='i'; mount_path[3]='s'; mount_path[4]='k';
+                                 int z=0; while(num[z]) mount_path[5+z] = num[z++];
+                                 mount_path[5+z] = 0;
+                             }
+
+                             if (Mount::AddMount(mount_path, fs)) {
+                                 if (mountCount < MAX_MOUNTS) {
+                                     int k=0; while(mount_path[k]) { mounts[mountCount].path[k] = mount_path[k]; k++; } mounts[mountCount].path[k]=0;
+                                     const char* ft = "fat32"; k=0; while(ft[k]) { mounts[mountCount].fstype[k] = ft[k]; k++; } mounts[mountCount].fstype[k]=0;
+                                      k=0; while(part->name[k]) { mounts[mountCount].device[k] = part->name[k]; k++; } mounts[mountCount].device[k]=0;
+                                     mountCount++;
+                                 }
+                                 mounted++;
+                                 mountedPartition = true;
+                                 Verbose::OK("MOUNT", mount_path);
+                             }
+                         }
+                     } 
+                     // Check for NTFS
+                     else {
+                         IFileSystem* ntfs = NTFS::Mount(device, part->start_lba);
+                         if (ntfs) {
+                             UART::Write("[MountManager] NTFS detected on ");
+                             UART::Write(part->name);
+                             UART::Write("\n");
+                             
+                             char mount_path[32];
+                             if (mounted == 0) {
+                                 const char* src = "/data";
+                                 for(int k=0; k<6; k++) mount_path[k] = src[k];
+                             } else {
+                                 char num[8];
+                                 kitoa(mounted, num, 10);
+                                 mount_path[0]='/'; mount_path[1]='d'; mount_path[2]='i'; mount_path[3]='s'; mount_path[4]='k';
+                                 int z=0; while(num[z]) mount_path[5+z] = num[z++];
+                                 mount_path[5+z] = 0;
+                             }
+                             
+                             if (Mount::AddMount(mount_path, ntfs)) {
+                                 if (mountCount < MAX_MOUNTS) {
+                                     int k=0; while(mount_path[k]) { mounts[mountCount].path[k] = mount_path[k]; k++; } mounts[mountCount].path[k]=0;
+                                     const char* ft = "ntfs"; k=0; while(ft[k]) { mounts[mountCount].fstype[k] = ft[k]; k++; } mounts[mountCount].fstype[k]=0;
+                                     k=0; while(part->name[k]) { mounts[mountCount].device[k] = part->name[k]; k++; } mounts[mountCount].device[k]=0;
+                                     mountCount++;
+                                 }
+                                 mounted++;
+                                 mountedPartition = true;
+                                 Verbose::OK("MOUNT", mount_path);
+                             }
+                         }
+                     }
+                 }
+            }
+            
+            // 2. Fallback: Check raw device if no partitions mounted
+            if (!mountedPartition && IsFAT32(device, 0)) {
+                UART::Write("[MountManager] FAT32 detected on RAW device ");
                 UART::Write(device->name);
                 UART::Write("!\n");
                 
-                // Mount the FAT32 filesystem
                 IFileSystem* fs = FAT32::Mount(device, 0);
                 if (fs) {
-                    // Determine mount point based on device name
                     const char* mount_path = "/data";
-                    
-                    // Register with mount system
                     if (Mount::AddMount(mount_path, fs)) {
-                        // Record in our mount list
                         if (mountCount < MAX_MOUNTS) {
-                            const char* mp = mount_path;
-                            for (int j = 0; mp[j] && j < 31; j++) mounts[mountCount].path[j] = mp[j];
-                            mounts[mountCount].path[31] = 0;
-                            
-                            const char* ft = "fat32";
-                            for (int j = 0; ft[j] && j < 15; j++) mounts[mountCount].fstype[j] = ft[j];
-                            mounts[mountCount].fstype[15] = 0;
-                            
-                            for (int j = 0; device->name[j] && j < 15; j++) mounts[mountCount].device[j] = device->name[j];
-                            mounts[mountCount].device[15] = 0;
-                            
-                            mountCount++;
+                             int k=0; while(mount_path[k]) { mounts[mountCount].path[k] = mount_path[k]; k++; } mounts[mountCount].path[k]=0;
+                             const char* ft = "fat32"; k=0; while(ft[k]) { mounts[mountCount].fstype[k] = ft[k]; k++; } mounts[mountCount].fstype[k]=0;
+                             k=0; while(device->name[k]) { mounts[mountCount].device[k] = device->name[k]; k++; } mounts[mountCount].device[k]=0;
+                             mountCount++;
                         }
-                        
                         mounted++;
-                        EarlyTerm::Print("[MountManager] Mounted ");
-                        EarlyTerm::Print(device->name);
-                        EarlyTerm::Print(" as ");
-                        EarlyTerm::Print(mount_path);
-                        EarlyTerm::Print("\n");
-                    } else {
-                        UART::Write("[MountManager] Failed to add mount point!\n");
-                        FAT32::Unmount(fs);
+                        Verbose::OK("MOUNT", mount_path);
                     }
-                } else {
-                    UART::Write("[MountManager] FAT32::Mount failed!\n");
                 }
             }
         }
-        
-        UART::Write("[MountManager] Mounted ");
-        UART::WriteDec(mounted);
-        UART::Write(" filesystem(s).\n");
         
         return mounted;
     }

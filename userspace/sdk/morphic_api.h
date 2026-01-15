@@ -3,6 +3,7 @@
 #include "os_event.h"
 #include <stdint.h>
 #include <stddef.h>
+#include "font8x16.h"
 
 // Standard colors
 #define COLOR_WHITE 0xFFFFFFFF
@@ -64,168 +65,46 @@ namespace MorphicAPI {
             }
         }
         
-        // Embedded 5x7 Font Data
-        static uint8_t GetFontRow(char c, int row) {
-            if (row < 0 || row >= 7) return 0;
-            if (row < 0 || row >= 7) return 0;
-             // REMOVED auto-to-upper to support lowercase
-             // if (c >= 'a' && c <= 'z') c -= 32;
-             
-             // Minimal Set
-             if (c >= '0' && c <= '9') {
-                 static const uint8_t d[10][7] = {
-                    {0x1E,0x11,0x13,0x15,0x19,0x11,0x1E}, // 0
-                    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, // 1
-                    {0x1E,0x01,0x01,0x1E,0x10,0x10,0x1F}, // 2
-                    {0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E}, // 3
-                    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, // 4
-                    {0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E}, // 5
-                    {0x0E,0x10,0x10,0x1E,0x11,0x11,0x1E}, // 6
-                    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, // 7
-                    {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, // 8
-                    {0x1E,0x11,0x11,0x1F,0x01,0x01,0x0E}  // 9
-                 };
-                 return d[c - '0'][row];
-             }
-             // Ops
-             if (c == '+') { static const uint8_t r[7]={0,4,4,31,4,4,0}; return r[row]; }
-             if (c == '-') { static const uint8_t r[7]={0,0,0,31,0,0,0}; return r[row]; }
-             if (c == '*') { static const uint8_t r[7]={0,21,14,4,14,21,0}; return r[row]; }
-             if (c == '/') { static const uint8_t r[7]={1,2,4,8,16,0,0}; return r[row]; }
-             if (c == '=') { static const uint8_t r[7]={0,0,31,0,31,0,0}; return r[row]; }
-             if (c == 'C') { static const uint8_t r[7]={14,17,16,16,16,17,14}; return r[row]; } // Clear
-             
-             // Letters (A-Z)
-             if (c >= 'A' && c <= 'Z') {
-                 static const uint8_t alpha[26][7] = {
-                    {0x04,0x0A,0x11,0x11,0x1F,0x11,0x11}, // A
-                    {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, // B
-                    {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}, // C
-                    {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E}, // D
-                    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}, // E
-                    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}, // F
-                    {0x0E,0x11,0x10,0x17,0x11,0x11,0x0E}, // G
-                    {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, // H
-                    {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, // I
-                    {0x07,0x02,0x02,0x02,0x02,0x12,0x0C}, // J
-                    {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, // K
-                    {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, // L
-                    {0x11,0x1B,0x15,0x11,0x11,0x11,0x11}, // M
-                    {0x11,0x11,0x19,0x15,0x13,0x11,0x11}, // N
-                    {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, // O
-                    {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}, // P
-                    {0x0E,0x11,0x11,0x11,0x15,0x0E,0x01}, // Q
-                    {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}, // R
-                    {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}, // S
-                    {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}, // T
-                    {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, // U
-                    {0x11,0x11,0x11,0x11,0x11,0x0A,0x04}, // V
-                    {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}, // W
-                    {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}, // X
-                    {0x11,0x11,0x11,0x0A,0x04,0x04,0x04}, // Y
-                    {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F}  // Z
-                 };
-                 return alpha[c - 'A'][row];
-             }
-
-             // Letters (a-z) - Lowercase
-             if (c >= 'a' && c <= 'z') {
-                 static const uint8_t lower[26][7] = {
-                    {0x00,0x0E,0x01,0x0F,0x11,0x0F,0x00}, // a
-                    {0x10,0x10,0x16,0x19,0x11,0x1E,0x00}, // b
-                    {0x00,0x0E,0x10,0x10,0x11,0x0E,0x00}, // c
-                    {0x01,0x01,0x0D,0x13,0x11,0x0F,0x00}, // d
-                    {0x00,0x0E,0x11,0x1F,0x10,0x0E,0x00}, // e
-                    {0x06,0x09,0x1C,0x08,0x08,0x08,0x00}, // f
-                    {0x00,0x0F,0x11,0x0F,0x01,0x0E,0x00}, // g
-                    {0x10,0x10,0x16,0x19,0x11,0x11,0x00}, // h
-                    {0x00,0x04,0x00,0x04,0x04,0x04,0x00}, // i
-                    {0x02,0x00,0x02,0x02,0x12,0x0C,0x00}, // j
-                    {0x10,0x12,0x14,0x18,0x14,0x12,0x00}, // k
-                    {0x18,0x08,0x08,0x08,0x08,0x0C,0x00}, // l
-                    {0x00,0x1A,0x15,0x15,0x15,0x15,0x00}, // m
-                    {0x00,0x16,0x19,0x11,0x11,0x11,0x00}, // n
-                    {0x00,0x0E,0x11,0x11,0x11,0x0E,0x00}, // o
-                    {0x00,0x1E,0x11,0x1E,0x10,0x10,0x00}, // p
-                    {0x00,0x0D,0x13,0x0F,0x01,0x01,0x00}, // q
-                    {0x00,0x16,0x19,0x10,0x10,0x10,0x00}, // r
-                    {0x00,0x0E,0x10,0x0E,0x01,0x1E,0x00}, // s
-                    {0x08,0x1C,0x08,0x08,0x09,0x06,0x00}, // t
-                    {0x00,0x11,0x11,0x11,0x13,0x0D,0x00}, // u
-                    {0x00,0x11,0x11,0x11,0x0A,0x04,0x00}, // v
-                    {0x00,0x11,0x15,0x15,0x15,0x0A,0x00}, // w
-                    {0x00,0x11,0x0A,0x04,0x0A,0x11,0x00}, // x
-                    {0x00,0x11,0x11,0x0F,0x01,0x0E,0x00}, // y
-                    {0x00,0x1F,0x02,0x04,0x08,0x1F,0x00}  // z
-                 };
-                 return lower[c - 'a'][row];
-             }
-
-             // Extended Latin (Spanish) 
-             // Note: Characters are processed as unsigned char (0-255)
-             unsigned char uc = (unsigned char)c;
-             
-             if (uc == 0xD1) { // Ñ (N with Tilde)
-                 static const uint8_t r[7]={0x0E,0x11,0x19,0x15,0x13,0x11,0x11}; // Approx
-                 return r[row];
-             }
-             if (uc == 0xF1) { // ñ
-                 static const uint8_t r[7]={0x0D,0x16,0x19,0x11,0x11,0x11,0x00}; // Approx
-                 return r[row];
-             }
-             if (uc == 0xC1 || uc == 0xE1) { // Á / á
-                 static const uint8_t r[7]={0x02,0x04,0x0E,0x01,0x0F,0x11,0x0F}; 
-                 return r[row];
-             }
-             if (uc == 0xA1) { // ¡ (Inverted !)
-                 static const uint8_t r[7]={0x04,0x04,0x04,0x04,0x04,0x00,0x04};
-                 return r[row];
-             }
-             if (uc == 0xBF) { // ¿ (Inverted ?)
-                 static const uint8_t r[7]={0x04,0x00,0x04,0x08,0x10,0x11,0x0E};
-                 return r[row];
-             }
-
-             // Common punctuation and symbols
-             if (c == ' ') return 0;  // Space - empty
-             if (c == '.') { static const uint8_t r[7]={0,0,0,0,0,0,0x04}; return r[row]; }
-             if (c == ',') { static const uint8_t r[7]={0,0,0,0,0,0x04,0x08}; return r[row]; }
-             if (c == ':') { static const uint8_t r[7]={0,0x04,0,0,0,0x04,0}; return r[row]; }
-             if (c == ';') { static const uint8_t r[7]={0,0x04,0,0,0,0x04,0x08}; return r[row]; }
-             if (c == '!') { static const uint8_t r[7]={0x04,0x04,0x04,0x04,0,0,0x04}; return r[row]; }
-             if (c == '?') { static const uint8_t r[7]={0x0E,0x11,0x01,0x02,0x04,0,0x04}; return r[row]; }
-             if (c == '\'') { static const uint8_t r[7]={0x04,0x04,0,0,0,0,0}; return r[row]; }
-             if (c == '"') { static const uint8_t r[7]={0x0A,0x0A,0,0,0,0,0}; return r[row]; }
-             if (c == '(') { static const uint8_t r[7]={0x02,0x04,0x08,0x08,0x08,0x04,0x02}; return r[row]; }
-             if (c == ')') { static const uint8_t r[7]={0x08,0x04,0x02,0x02,0x02,0x04,0x08}; return r[row]; }
-             if (c == '[') { static const uint8_t r[7]={0x0E,0x08,0x08,0x08,0x08,0x08,0x0E}; return r[row]; }
-             if (c == ']') { static const uint8_t r[7]={0x0E,0x02,0x02,0x02,0x02,0x02,0x0E}; return r[row]; }
-             if (c == '{') { static const uint8_t r[7]={0x02,0x04,0x04,0x08,0x04,0x04,0x02}; return r[row]; }
-             if (c == '}') { static const uint8_t r[7]={0x08,0x04,0x04,0x02,0x04,0x04,0x08}; return r[row]; }
-             if (c == '<') { static const uint8_t r[7]={0x01,0x02,0x04,0x08,0x04,0x02,0x01}; return r[row]; }
-             if (c == '>') { static const uint8_t r[7]={0x10,0x08,0x04,0x02,0x04,0x08,0x10}; return r[row]; }
-             if (c == '_') { static const uint8_t r[7]={0,0,0,0,0,0,0x1F}; return r[row]; }
-             if (c == '|') { static const uint8_t r[7]={0x04,0x04,0x04,0x04,0x04,0x04,0x04}; return r[row]; }
-             if (c == '\\') { static const uint8_t r[7]={0x10,0x08,0x04,0x02,0x01,0,0}; return r[row]; }
-             if (c == '@') { static const uint8_t r[7]={0x0E,0x11,0x17,0x15,0x17,0x10,0x0E}; return r[row]; }
-             if (c == '#') { static const uint8_t r[7]={0x0A,0x1F,0x0A,0x0A,0x1F,0x0A,0}; return r[row]; }
-             if (c == '$') { static const uint8_t r[7]={0x04,0x0F,0x14,0x0E,0x05,0x1E,0x04}; return r[row]; }
-             if (c == '%') { static const uint8_t r[7]={0x19,0x1A,0x02,0x04,0x0B,0x13,0}; return r[row]; }
-             if (c == '^') { static const uint8_t r[7]={0x04,0x0A,0x11,0,0,0,0}; return r[row]; }
-             if (c == '&') { static const uint8_t r[7]={0x0C,0x12,0x0C,0x15,0x12,0x0D,0}; return r[row]; }
-             if (c == '~') { static const uint8_t r[7]={0,0,0x08,0x15,0x02,0,0}; return r[row]; }
-             if (c == '`') { static const uint8_t r[7]={0x08,0x04,0,0,0,0,0}; return r[row]; }
-
-             // Default: return empty for unknown characters (not a block)
-             return 0;
-        }
-
+        // VGA 8x16 Font Rendering - Optimized
         void DrawChar(int x, int y, char c, uint32_t color, int scale = 1) {
-            for (int r = 0; r < 7; r++) {
-                uint8_t bits = GetFontRow(c, r);
-                for (int col = 0; col < 5; col++) {
-                    if (bits & (1 << (4 - col))) {
-                        FillRect(x + col * scale, y + r * scale, scale, scale, color);
+            unsigned char uc = (unsigned char)c;
+            if (uc > 0x7F) uc = '?'; 
+            
+            const unsigned char* glyph = &font8x16[uc * 16];
+            
+            if (scale == 1) {
+                // Bounds check
+                if (x < 0 || y < 0 || (uint64_t)(x + 8) > width || (uint64_t)(y + 16) > height) {
+                     for (int r = 0; r < 16; r++) {
+                        if (y+r < 0 || (uint64_t)(y+r) >= height) continue;
+                         unsigned char row_bits = glyph[r];
+                         for (int col = 0; col < 8; col++) {
+                             if (row_bits & (0x80 >> col)) PutPixel(x + col, y + r, color);
+                         }
+                     }
+                     return;
+                }
+                // Fast path for bulk text
+                for (int r = 0; r < 16; r++) {
+                    unsigned char row_bits = glyph[r];
+                    if (!row_bits) continue;
+                    uint32_t* row_ptr = fb + (y + r) * pitch + x;
+                    if (row_bits & 0x80) row_ptr[0] = color;
+                    if (row_bits & 0x40) row_ptr[1] = color;
+                    if (row_bits & 0x20) row_ptr[2] = color;
+                    if (row_bits & 0x10) row_ptr[3] = color;
+                    if (row_bits & 0x08) row_ptr[4] = color;
+                    if (row_bits & 0x04) row_ptr[5] = color;
+                    if (row_bits & 0x02) row_ptr[6] = color;
+                    if (row_bits & 0x01) row_ptr[7] = color;
+                }
+            } else {
+                for (int r = 0; r < 16; r++) {
+                    unsigned char row_bits = glyph[r];
+                    for (int col = 0; col < 8; col++) {
+                        if (row_bits & (0x80 >> col)) {
+                            FillRect(x + col * scale, y + r * scale, scale, scale, color);
+                        }
                     }
                 }
             }
@@ -235,11 +114,12 @@ namespace MorphicAPI {
             int cx = x;
             while (*text) {
                 DrawChar(cx, y, *text, color, scale);
-                cx += 6 * scale; // 5 + 1 spacing
+                cx += 9 * scale; // 8px char + 1px spacing
                 text++;
             }
         }
     };
+
 
     class Window {
     protected:

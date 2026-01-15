@@ -14,7 +14,9 @@
 #include "../mm/pmm.h"
 #include "../mm/write_combining.h"
 #include "../hal/platform.h"
+#include "../drivers/gpu/bga.h"
 #include "../arch/common/mmu.h"
+#include "../hal/arch/x86_64/pci.h"
 #include "../mm/heap.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
@@ -136,6 +138,20 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     
     Verbose::Init();
     UART::Write("[BOOT-TRACE] After Verbose::Init\n");
+    
+    // Initialize PCI Subsystem
+    HAL::PCI::Init();
+    UART::Write("[BOOT-TRACE] After PCI::Init\n");
+    
+    // Test BGA
+    BGADriver bga;
+    if (bga.Init()) {
+        UART::Write("[BOOT-TRACE] BGA INITIALIZED SUCCESSFULLY!\n");
+        Verbose::OK("KERNEL", "Triple Buffer Capable GPU Found.");
+        // TODO: Switch gGraphics to use BGA Backbuffer
+    } else {
+        UART::Write("[BOOT-TRACE] BGA Init Failed. Using UEFI.\n");
+    }
     
     // 5a. Enable Write-Combining for framebuffer acceleration
     WriteCombining::InitPAT();

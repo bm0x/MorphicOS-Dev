@@ -809,13 +809,13 @@ extern "C" int main(void* asset_ptr) {
             }
         }
 
-        if (menu_open) {
-            g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
-        }
-
         // C. Compose Kernel Layers (App Windows)
         // This draws the Calculator etc. onto our backbuffer
         sys_compose_layers();
+
+        if (menu_open) {
+            g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
+        }
 
         // Cursor must be last so it stays above taskbar/menu AND external windows.
         Compositor::DrawCursor(mouse_x, mouse_y);

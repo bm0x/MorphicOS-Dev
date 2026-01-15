@@ -51,12 +51,15 @@ KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/hal/arch/x86_64/interrupt_handlers.cpp \
                  kernel/hal/arch/x86_64/irq_dispatcher.cpp \
                  kernel/hal/arch/x86_64/platform.cpp \
+                 kernel/hal/arch/x86_64/pci.cpp \
                  kernel/hal/arch/x86_64/mmu.cpp \
                  kernel/drivers/x86/pit.cpp \
                  kernel/drivers/x86/keyboard.cpp \
                  kernel/drivers/x86/uart_8250.cpp \
                  kernel/drivers/x86/ide.cpp \
                  kernel/drivers/ramdisk.cpp \
+                 kernel/drivers/gpu/bga.cpp \
+                 kernel/fs/drivers/ntfs.cpp \
                  kernel/utils/std.cpp \
                  kernel/mm/heap.cpp \
                  kernel/mm/user_heap.cpp \
@@ -169,13 +172,20 @@ userspace/calculator.mpk: userspace/syscalls.o userspace/entry.o
 	cp $(CALCULATOR_APP_DIR)/calculator.mpk userspace/calculator.mpk
 
 TERMINAL_APP_DIR = userspace/apps/terminal
-TERMINAL_APP_DIR = userspace/apps/terminal
 userspace/terminal.mpk: userspace/syscalls.o userspace/entry.o
 	@echo "========================================"
 	@echo "  [USER] Building Terminal App..."
 	@echo "========================================"
 	$(MAKE) -C $(TERMINAL_APP_DIR)
 	cp $(TERMINAL_APP_DIR)/terminal.mpk userspace/terminal.mpk
+
+FILEMANAGER_APP_DIR = userspace/apps/filemanager
+userspace/filemanager.mpk: userspace/syscalls.o userspace/entry.o
+	@echo "========================================"
+	@echo "  [USER] Building File Manager App..."
+	@echo "========================================"
+	$(MAKE) -C $(FILEMANAGER_APP_DIR)
+	cp $(FILEMANAGER_APP_DIR)/filemanager.mpk userspace/filemanager.mpk
 
 
 kernel/fs/desktop_mpk.cpp: userspace/desktop.mpk
@@ -199,9 +209,16 @@ kernel/fs/terminal_mpk.cpp: userspace/terminal.mpk
 kernel/fs/terminal_mpk.o: kernel/fs/terminal_mpk.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+kernel/fs/filemanager_mpk.cpp: userspace/filemanager.mpk
+	@echo "  [KERNEL] Embedding File Manager MPK..."
+	python3 tools/bin2h.py userspace/filemanager.mpk kernel/fs/filemanager_mpk.cpp filemanager_mpk
+
+kernel/fs/filemanager_mpk.o: kernel/fs/filemanager_mpk.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 
 # --- Image ---
-image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk
+image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk userspace/filemanager.mpk
 	@echo "========================================"
 	@echo "  [IMAGE] Creating Disk Image..."
 	@echo "========================================"
@@ -213,10 +230,11 @@ image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspac
 	mcopy -i morphic.img build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
 	# Copy Kernel to Root
 	mcopy -i morphic.img build/morph_kernel.elf ::/
-	# Copy Desktop Package to Root
+	# Copy Apps to Root
 	mcopy -i morphic.img userspace/desktop.mpk ::/
 	mcopy -i morphic.img userspace/calculator.mpk ::/
 	mcopy -i morphic.img userspace/terminal.mpk ::/
+	mcopy -i morphic.img userspace/filemanager.mpk ::/
 
 
 clean:
@@ -229,11 +247,11 @@ clean:
 
 # --- InitRD ---
 # Create a standard TAR image containing all userspace applications
-initrd: userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk
+initrd: userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk userspace/filemanager.mpk
 	@echo "========================================"
 	@echo "  [INITRD] Packing initrd.img..."
 	@echo "========================================"
-	cd userspace && tar -cvf initrd.img desktop.mpk calculator.mpk terminal.mpk
+	cd userspace && tar -cvf initrd.img desktop.mpk calculator.mpk terminal.mpk filemanager.mpk
 
 # --- ISO ---
 ISO_ROOT = iso_root
