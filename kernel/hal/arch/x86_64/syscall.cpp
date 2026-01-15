@@ -840,6 +840,26 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         return 0;
     }
 
+    case 67: // SYS_GET_WINDOW_LIST
+    {
+        // arg1: buffer, arg2: max_count
+        return Compositor::GetWindowList((void*)arg1, (uint32_t)arg2);
+    }
+    
+    case 68: // SYS_UPDATE_WINDOW
+    {
+        // arg1: id
+        // arg2: (x << 32) | y
+        // arg3: (w << 32) | h
+        uint32_t x = (uint32_t)(arg2 >> 32);
+        uint32_t y = (uint32_t)(arg2 & 0xFFFFFFFFULL);
+        uint32_t w = (uint32_t)(arg3 >> 32);
+        uint32_t h = (uint32_t)(arg3 & 0xFFFFFFFFULL);
+        
+        Compositor::UpdateWindow(arg1, x, y, w, h);
+        return 0;
+    }
+
     default:
         return (uint64_t)-1;
     }

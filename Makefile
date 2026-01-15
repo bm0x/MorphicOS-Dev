@@ -144,8 +144,13 @@ userspace/entry.o: userspace/entry.asm
 	@echo "  [USER] Assembling Entry..."
 	$(ASM) $(ASMFLAGS) $< -o $@
 
+# GUI Library
+userspace/sdk/gui/libmorphic_gui.a:
+	@echo "  [GUI] Building GUI Library..."
+	$(MAKE) -C userspace/sdk/gui
+
 # Delegate desktop build to its own Makefile (SDK Standard)
-userspace/desktop.mpk: userspace/syscalls.o userspace/entry.o
+userspace/desktop.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/libmorphic_gui.a
 	@echo "========================================"
 	@echo "  [USER] Building Desktop App..."
 	@echo "========================================"
@@ -216,6 +221,8 @@ clean:
 	rm -f $(KERNEL_OBJECTS) $(ASM_OBJECTS) boot/main.o build/EFI/BOOT/BOOTX64.EFI build/morph_kernel.elf morphic.img morphic_os.iso kernel/fs/*_mpk.cpp kernel/fs/*_mpk.o userspace/*.mpk userspace/initrd.img
 	# Dynamic Cleanup of Apps
 	rm -f userspace/apps/*/*.mpk userspace/apps/*/*.bin userspace/apps/*/*.o
+	# Cleanup SDK GUI
+	rm -f userspace/sdk/gui/*.o userspace/sdk/gui/*.a
 	$(MAKE) -C $(DESKTOP_APP_DIR) clean
 
 # --- InitRD ---

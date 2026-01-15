@@ -1,4 +1,6 @@
 #include "compositor.h"
+#include "../morphic_syscalls.h"
+
 
 // Static member storage
 uint32_t* Compositor::frontBuffer = nullptr;
@@ -38,6 +40,8 @@ bool Compositor::Initialize() {
     // The Kernel Compositor handles the "Real" backbuffering.
     // Apps draw "directly" to their Window Layer (which is offscreen).
     backBuffer = frontBuffer;
+    
+    sys_debug_print("[Compositor] Init: Using Mapped Buffer\n");
     
     // Legacy support: Don't allocate separate backbuffer.
     // sys_alloc_backbuffer is not needed for Windowed Apps.
@@ -424,7 +428,9 @@ void Compositor::RenderMenu(bool menuOpen) {
     }
 }
 
-void Compositor::RenderTaskbar(Window* windows, int windowCount, bool menuOpen, const MorphicDateTime& dt) {
+void Compositor::RenderTaskbar(Window* windows, int windowCount, 
+                             void* extWindows, int extWindowCount,
+                             bool menuOpen, const MorphicDateTime& dt) {
     (void)menuOpen;
     const int taskH = 40;
     const int y = height - taskH;
@@ -453,8 +459,33 @@ void Compositor::RenderTaskbar(Window* windows, int windowCount, bool menuOpen, 
             FillRectClipped(iconX + 6, y + 26, 12, 2, 0xFFEAEAEA);
         }
 
-        iconX += 30;
+        iconX += 30; // 24 + 6 pad
     }
+
+    // External Window Icons (Calculator, etc.)
+    if (extWindows && extWindowCount > 0) {
+        WindowInfo* ext = (WindowInfo*)extWindows;
+        for (int i = 0; i < extWindowCount; i++) {
+            if (ext[i].flags == 0) continue; // Skip visible flag check? Or trust kernel?
+            // flags=1 means visible
+
+            // Draw Icon (Generic)
+            uint32_t c = 0xFF408040; // Greenish for external apps
+            if (ext[i].title[0] == 'C') c = 0xFF40AA40; // Calculator Green
+            if (ext[i].title[0] == 'T') c = 0xFF4040AA; // Terminal Blue
+
+            uint32_t base = 0xFF1A1A1A;
+            FillRectClipped(iconX, y + 8, 24, 24, base);
+            // Inner color box
+            FillRectClipped(iconX + 6, y + 14, 12, 12, c);
+            
+            DrawRectClipped(iconX, y + 8, 24, 24, 0xFF3E3E3E);
+            
+            iconX += 30;
+        }
+    }
+
+
 
     // Clock at right
     // If RTC is valid, use it. Otherwise use 00:00:00 01/01

@@ -323,6 +323,11 @@ namespace Compositor {
                 UART::WriteDec(layer->width);
                 UART::Write("x");
                 UART::WriteDec(layer->height);
+                // Debug: Check first pixel value
+                if (layer->buffer) {
+                    UART::Write(" px0=");
+                    UART::WriteHex(layer->buffer[0]);
+                }
                 UART::Write("\n");
                 logged = true;
             }
@@ -337,17 +342,34 @@ namespace Compositor {
             // Validate screen position
             if (layer->x >= pitch || layer->y >= screenH) continue;
             
-            // TEMPORARY: Skip layer rendering to isolate crash
-            // Just draw a colored rectangle to show layer position
-            uint32_t testColor = 0xFF00FF00; // Green
-            for (uint32_t ty = 0; ty < 50 && (layer->y + ty) < screenH; ty++) {
-                for (uint32_t tx = 0; tx < 50 && (layer->x + tx) < pitch; tx++) {
-                    backbuf[(layer->y + ty) * pitch + (layer->x + tx)] = testColor;
+            // One-time trace to confirm rendering execution
+            static bool renderLogged = false;
+            if (!renderLogged) {
+                UART::Write("[ComposeAppWindowsOnly] RENDERING: backbuf=");
+                UART::WriteHex((uint64_t)backbuf);
+                UART::Write(" pitch=");
+                UART::WriteDec(pitch);
+                UART::Write(" screenH=");
+                UART::WriteDec(screenH);
+                UART::Write("\n");
+                renderLogged = true;
+            }
+            
+            if (layer->has_alpha) {
+                BlitTransparent(backbuf, pitch, layer->buffer, 
+                               layer->width, layer->height, layer->x, layer->y);
+            } else {
+                // Opaque blit with bounds checking
+                for (uint32_t y = 0; y < layer->height && (layer->y + y) < screenH; y++) {
+                    for (uint32_t x = 0; x < layer->width && (layer->x + x) < pitch; x++) {
+                        backbuf[(layer->y + y) * pitch + (layer->x + x)] = 
+                            layer->buffer[y * layer->width + x];
+                    }
                 }
             }
             
-            // TEMPORARY: Skip DrawWindowDecoration to test
-            // DrawWindowDecoration(layer);
+            // Draw window decorations
+            DrawWindowDecoration(layer);
         }
         
         ReleaseLock();
@@ -638,17 +660,53 @@ namespace Compositor {
     void UpdateWindow(uint64_t window_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
         Window* win = GetWindow(window_id);
         if (win && win->layer) {
-            // Convert to Screen Coords
-            uint32_t screenX = win->layer->x + x;
-            uint32_t screenY = win->layer->y + y;
+            // Update Position
+            SetLayerPosition(win->layer, x, y);
             
-            MarkDirty(screenX, screenY, w, h);
+            // TODO: Resize not fully implemented yet (buffer realloc needed)
+            // For now, allow size update if buffer matches or simple crop
+            
+            MarkDirty(x - BORDER_WIDTH, y - TITLE_BAR_HEIGHT, 
+                      win->width + 2*BORDER_WIDTH, win->height + TITLE_BAR_HEIGHT + BORDER_WIDTH);
             win->layer->dirty = true;
-            
-            // Immediate composition
-            Compose();
-            Flip();
         }
+    }
+
+    // Must match userspace definition
+    struct WindowInfo {
+        uint64_t id;
+        uint32_t x, y, w, h;
+        uint32_t flags;
+        char title[32];
+    };
+
+    uint32_t GetWindowList(void* user_buf, uint32_t max_count) {
+        if (!user_buf) return 0;
+        WindowInfo* infos = (WindowInfo*)user_buf;
+        uint32_t count = 0;
+        
+        for (int i = 0; i < 16 && count < max_count; i++) {
+            if (windows[i].id != 0 && windows[i].layer) {
+                infos[count].id = windows[i].id;
+                infos[count].x = windows[i].layer->x;
+                infos[count].y = windows[i].layer->y;
+                infos[count].w = windows[i].width;
+                infos[count].h = windows[i].height;
+                infos[count].flags = (windows[i].layer->visible ? 1 : 0);
+                
+                // Copy title
+                const char* name = windows[i].layer->name;
+                int j = 0;
+                while (j < 31 && name[j]) {
+                    infos[count].title[j] = name[j];
+                    j++;
+                }
+                infos[count].title[j] = 0;
+                
+                count++;
+            }
+        }
+        return count;
     }
     
     void DestroyWindow(uint64_t window_id) {

@@ -51,6 +51,20 @@ global sys_video_flip
 global sys_video_flip_rect
 global sys_input_poll
 
+global sys_get_window_list
+sys_get_window_list:
+    ; arg1: buffer, arg2: max_count
+    mov rax, 67
+    syscall
+    ret
+    
+global sys_update_window
+sys_update_window:
+    ; arg1: id, arg2: packed_pos, arg3: packed_size
+    mov rax, 68
+    syscall
+    ret
+
 ; Syscall IDs must match kernel handler
 %define SYS_VIDEO_MAP  50
 %define SYS_VIDEO_FLIP 51

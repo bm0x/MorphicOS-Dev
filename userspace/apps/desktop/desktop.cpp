@@ -2,20 +2,10 @@
 #include "compositor.h"
 #include "system_info.h"
 #include "launcher.h"
+#include "morphic_syscalls.h"
 
 // Syscall stubs not covered by compositor.h
-extern "C" {
-    uint64_t sys_get_time_ms(); 
-    void  sys_sleep(uint32_t ms);
-    int   sys_get_event(OSEvent* ev); // Returns 1 if event, 0 if none
-    int   sys_get_rtc_datetime(MorphicDateTime* out);
-    int   sys_get_system_info(MorphicSystemInfo* out);
-    int   sys_spawn(const char* path);
-    void  sys_register_compositor();  
-    void  sys_debug_print(const char* msg);
-    void  sys_compose_layers(); // Overlay spawned app windows
-
-}
+// Syscall stubs are now in morphic_syscalls.h
 
 // ... colors ...
 
@@ -127,7 +117,7 @@ static uint32_t GetClockSeconds() {
     return (uint32_t)(sys_get_time_ms() / 1000ULL);
 }
 
-static void UppercaseInplace(char* s) {
+void UppercaseInplace(char* s) {
     if (!s) return;
     for (; *s; s++) {
         if (*s >= 'a' && *s <= 'z') *s = (char)(*s - ('a' - 'A'));
@@ -137,6 +127,16 @@ static void UppercaseInplace(char* s) {
                    (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'));
         if (!ok) *s = ' ';
     }
+}
+
+// External Windows (Calculator, Terminal, etc.) retrieved from Kernel
+const int MAX_EXT_WINDOWS = 32;
+WindowInfo externalWindows[MAX_EXT_WINDOWS];
+uint32_t externalWindowCount = 0;
+uint64_t drag_target_external_id = 0;
+
+void FetchExternalWindows() {
+    externalWindowCount = sys_get_window_list(externalWindows, MAX_EXT_WINDOWS);
 }
 
 void HandleEvent(const OSEvent& ev) {
@@ -156,8 +156,13 @@ void HandleEvent(const OSEvent& ev) {
         left_down = (ev.buttons & 1);
         if (!left_down) {
             drag_target_idx = -1;
+            drag_target_external_id = 0; // Fix: Reset external drag too
         } else {
             // Start drag immediately on click-down (no movement required).
+            // Reset drag state to ensure we don't drag old targets if missed
+            drag_target_idx = -1;
+            drag_target_external_id = 0;
+
             const int click_x = (int)(mouse_target_x16 >> 16);
             const int click_y = (int)(mouse_target_y16 >> 16);
 
@@ -204,8 +209,27 @@ void HandleEvent(const OSEvent& ev) {
                 return;
             }
 
-            // Window interactions (topmost first)
+            // check External Windows (Topmost)
             const int titleH = 26;
+            const int border = 1;
+            for (int i = 0; i < externalWindowCount; i++) {
+                 WindowInfo& w = externalWindows[i];
+                 if (!w.flags) continue; // Only visible
+                 
+                 // Hit Test Title Bar for Drag
+                 // x, y from kernel are screen coords
+                 if (click_x >= (int)w.x && click_x < (int)(w.x + w.w) &&
+                     click_y >= (int)w.y - titleH && click_y < (int)(w.y)) {
+                     
+                     drag_target_external_id = w.id;
+                     drag_offset_x = click_x - w.x;
+                     drag_offset_y = click_y - w.y;
+                     return;
+                 }
+            }
+
+            // Window interactions (topmost first)
+            // titleH already defined above
             const int btnSize = 14;
             const int pad = 6;
             for (int i = window_count - 1; i >= 0; i--) {
@@ -334,6 +358,31 @@ static void UpdateMousePerFrame() {
         if (drag_target_idx != -1) {
             windows[drag_target_idx].x = mouse_x - drag_offset_x;
             windows[drag_target_idx].y = mouse_y - drag_offset_y;
+        } else if (drag_target_external_id != 0) {
+            // Drag External Window
+            // We need to find the window to get current dims (we assume size doesn't change during drag for now)
+            int targetX = mouse_x - drag_offset_x;
+            int targetY = mouse_y - drag_offset_y;
+            
+            // Find in cache to get W/H
+            uint32_t w = 300, h = 200; // Default fallback
+            for(uint32_t i=0; i<externalWindowCount; i++) {
+                if (externalWindows[i].id == drag_target_external_id) {
+                    w = externalWindows[i].w;
+                    h = externalWindows[i].h;
+                    // Update local cache too so it feels responsive
+                    externalWindows[i].x = targetX;
+                    externalWindows[i].y = targetY;
+                    break;
+                }
+            }
+
+            // Send to Kernel
+            // packed_pos = (x << 32) | y
+            // packed_size = (w << 32) | h
+            uint64_t packed_pos = ((uint64_t)(uint32_t)targetX << 32) | (uint32_t)targetY;
+            uint64_t packed_size = ((uint64_t)w << 32) | (uint32_t)h;
+            sys_update_window(drag_target_external_id, packed_pos, packed_size);
         }
     }
 }
@@ -416,6 +465,9 @@ extern "C" int main(void* asset_ptr) {
         DirtyRect dirty;
         DirtyInit(dirty);
         
+        // Update External Windows List
+        FetchExternalWindows();
+        
         // A. Input
         PollInput();
 
@@ -425,6 +477,17 @@ extern "C" int main(void* asset_ptr) {
         // Force a full redraw at startup (ensures the desktop paints 100%).
         if (first_frame) {
             DirtyAdd(dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+        }
+
+        // Add External Windows to Dirty (so they get composed/swapped)
+        // Ideally we only add them if they moved, but for now add them all to ensure visibility
+        // Optimization: Check against prev_ext_windows
+        for(uint32_t i=0; i<externalWindowCount; i++) {
+            WindowInfo& w = externalWindows[i];
+            if (w.flags) {
+                // Add window area (plus shadows/borders if any)
+                DirtyAdd(dirty, w.x - 2, w.y - 26, w.w + 4, w.h + 30);
+            }
         }
 
         // Cursor dirty (old + new)
@@ -487,12 +550,13 @@ extern "C" int main(void* asset_ptr) {
         // Full render within clip
         // Background is drawn inside RenderScene
         Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
-        Compositor::RenderTaskbar(windows, window_count, menu_open, g_rtc);
+        Compositor::RenderTaskbar(windows, window_count, 
+                                externalWindows, externalWindowCount, 
+                                menu_open, g_rtc);
         
-        // TEMPORARY: Disabled for crash testing
         // Overlay spawned app windows (Calculator, Terminal, etc.) from kernel compositor
         // These are APP_WINDOW layers created via SYS_CREATE_WINDOW
-        // sys_compose_layers();
+        sys_compose_layers();
 
         // System window content (text-based, lightweight) - HIDE if launcher open
         if (!menu_open) {
@@ -649,12 +713,17 @@ extern "C" int main(void* asset_ptr) {
             g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
         }
 
-        // Cursor must be last so it stays above taskbar/menu.
+        // C. Compose Kernel Layers (App Windows)
+        // This draws the Calculator etc. onto our backbuffer
+        sys_compose_layers();
+
+        // Cursor must be last so it stays above taskbar/menu AND external windows.
         Compositor::DrawCursor(mouse_x, mouse_y);
         Compositor::ClearClip();
 
         // D. Swap only dirty region
         const bool vsynced = Compositor::SwapBuffersRect(dirty.x, dirty.y, dirty.w, dirty.h);
+        // TEMPORARY GLOBAL FLUSH REMOVED - using dirty tracking + kernel composition
         
         // E. Sync
         // If present already waited for VSync, don't add extra sleep (avoids 1-frame lag).

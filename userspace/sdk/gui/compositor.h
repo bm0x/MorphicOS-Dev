@@ -52,7 +52,9 @@ public:
     static void RenderScene(Window* windows, int windowCount, int mouseX, int mouseY);
 
     // Minimal UI helpers
-    static void RenderTaskbar(Window* windows, int windowCount, bool menuOpen, const MorphicDateTime& dt);
+    static void RenderTaskbar(Window* windows, int windowCount, 
+                              void* extWindows, int extWindowCount,
+                              bool menuOpen, const MorphicDateTime& dt);
     static void RenderMenu(bool menuOpen);
 
     // Minimal text rendering (tiny pixel font)

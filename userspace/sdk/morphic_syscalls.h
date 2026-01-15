@@ -28,6 +28,18 @@ void     sys_post_message(uint64_t targetPid, void* event);
 // Compositor: Overlay APP_WINDOW layers on backbuffer (for Desktop use)
 void     sys_compose_layers();
 
+struct WindowInfo {
+    uint64_t id;
+    uint32_t x, y, w, h;
+    uint32_t flags;
+    char title[32];
+};
+
+uint32_t sys_get_window_list(void* buffer, uint32_t max_count);
+// packed_pos = (x << 32) | y
+// packed_size = (w << 32) | h
+uint64_t sys_update_window(uint64_t id, uint64_t packed_pos, uint64_t packed_size);
+
 #ifdef __cplusplus
 }
 #endif
