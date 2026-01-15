@@ -4,9 +4,9 @@
 #include "../../mm/heap.h"
 #include "../../utils/std.h"
 #include "../../mm/pmm.h"
-#include "../../mm/pmm.h"
 #include "../../arch/common/mmu.h"
 #include "font_renderer.h"
+#include "../serial/uart.h"
 
 namespace Compositor {
     static volatile int lock = 0;
@@ -283,33 +283,71 @@ namespace Compositor {
     // Called by Desktop after it draws its scene, to integrate spawned app windows
     void ComposeAppWindowsOnly() {
         AcquireLock();
+        
         uint32_t* backbuf = Graphics::GetBackbuffer();
+        if (!backbuf) {
+            UART::Write("[ComposeAppWindowsOnly] ERROR: No backbuffer!\n");
+            ReleaseLock();
+            return;
+        }
+        
         uint32_t pitch = Graphics::GetWidth();
+        uint32_t screenH = Graphics::GetHeight();
         
         // Sort layers by z_order
         SortLayers();
         
+        // Count APP_WINDOW layers for diagnostics (one-time log)
+        static bool logged = false;
+        int appWindowCount = 0;
+        
         // Only render APP_WINDOW layers (created by spawned apps via syscalls)
         for (uint32_t i = 0; i < layerCount; i++) {
             Layer* layer = layers[i];
-            if (!layer || !layer->visible || !layer->buffer) continue;
-            if (layer->type != LayerType::APP_WINDOW) continue; // ONLY app windows
+            if (!layer) continue;
+            if (layer->type != LayerType::APP_WINDOW) continue;
             
-            if (layer->has_alpha) {
-                BlitTransparent(backbuf, pitch, layer->buffer, 
-                               layer->width, layer->height, layer->x, layer->y);
-            } else {
-                // Opaque blit
-                for (uint32_t y = 0; y < layer->height && (layer->y + y) < Graphics::GetHeight(); y++) {
-                    for (uint32_t x = 0; x < layer->width && (layer->x + x) < Graphics::GetWidth(); x++) {
-                        backbuf[(layer->y + y) * pitch + (layer->x + x)] = 
-                            layer->buffer[y * layer->width + x];
-                    }
+            appWindowCount++;
+            
+            // Log once when we first detect an APP_WINDOW
+            if (!logged) {
+                UART::Write("[ComposeAppWindowsOnly] Found APP_WINDOW: visible=");
+                UART::WriteDec(layer->visible ? 1 : 0);
+                UART::Write(" buffer=");
+                UART::WriteHex((uint64_t)layer->buffer);
+                UART::Write(" pos=");
+                UART::WriteDec(layer->x);
+                UART::Write(",");
+                UART::WriteDec(layer->y);
+                UART::Write(" size=");
+                UART::WriteDec(layer->width);
+                UART::Write("x");
+                UART::WriteDec(layer->height);
+                UART::Write("\n");
+                logged = true;
+            }
+            
+            if (!layer->visible) continue;
+            if (!layer->buffer) continue;
+            
+            // Validate layer dimensions
+            if (layer->width == 0 || layer->height == 0) continue;
+            if (layer->width > 4096 || layer->height > 4096) continue;
+            
+            // Validate screen position
+            if (layer->x >= pitch || layer->y >= screenH) continue;
+            
+            // TEMPORARY: Skip layer rendering to isolate crash
+            // Just draw a colored rectangle to show layer position
+            uint32_t testColor = 0xFF00FF00; // Green
+            for (uint32_t ty = 0; ty < 50 && (layer->y + ty) < screenH; ty++) {
+                for (uint32_t tx = 0; tx < 50 && (layer->x + tx) < pitch; tx++) {
+                    backbuf[(layer->y + ty) * pitch + (layer->x + tx)] = testColor;
                 }
             }
             
-            // Draw window decorations
-            DrawWindowDecoration(layer);
+            // TEMPORARY: Skip DrawWindowDecoration to test
+            // DrawWindowDecoration(layer);
         }
         
         ReleaseLock();

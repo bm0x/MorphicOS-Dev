@@ -266,10 +266,11 @@ namespace Syscall
         wrmsr(MSR_STAR, star);
         wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
         // IMPORTANT:
-        // Do NOT mask IF for the whole duration of a syscall.
-        // Our syscalls include busy-waits that depend on timer IRQs (e.g. SYS_SLEEP uses PIT_GetTicks()).
-        // If IF is masked on entry, IRQ0 won't fire while inside the syscall and SYS_SLEEP will hang forever.
-        wrmsr(MSR_SFMASK, 0x0);
+        // MASK IF during syscall to prevent timer interrupts from causing context switch
+        // while kernel stack is in use. This prevents stack corruption when scheduler
+        // updates TSS.RSP0 mid-syscall.
+        // Syscalls that need interrupts (like SYS_SLEEP) must manually enable them.
+        wrmsr(MSR_SFMASK, 0x200); // Mask IF (bit 9)
 
         EarlyTerm::Print("[Syscall] SYSCALL/SYSRET configured (Base 0x10/0x08).\\n");
     }
@@ -346,6 +347,18 @@ namespace Syscall
 // Syscall handler - called from assembly
 extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3)
 {
+    // Trace syscalls from Calculator (task 2+) to identify crash
+    static uint64_t callCount = 0;
+    uint64_t taskId = Scheduler::GetCurrentTaskId();
+    if (taskId >= 2 && callCount < 50) {
+        UART::Write("[Syscall] task=");
+        UART::WriteDec(taskId);
+        UART::Write(" num=");
+        UART::WriteDec(num);
+        UART::Write("\n");
+        callCount++;
+    }
+    
     switch (num)
     {
     case SYS_EXIT:
@@ -550,41 +563,49 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case 50: // SYS_VIDEO_MAP
     {
-        // OLD: Map Direct Framebuffer.
-        // NEW: Create a Fullscreen Window managed by Compositor.
-        // This ensures the app draws to a backbuffer, and Compositor handles display.
+        UART::Write("[SYS_VIDEO_MAP] Entry - caller task: ");
+        UART::WriteDec(Scheduler::GetCurrentTaskId());
+        UART::Write("\n");
+        
+        // For Desktop (compositor), we need to share the SAME backbuffer as the kernel.
+        // This ensures Desktop's drawing and ComposeAppWindowsOnly() operate on the same memory.
+        //
+        // We map the kernel's Graphics::GetBackbuffer() directly to userspace.
+        // This avoids the "two buffer" problem where Desktop draws to one buffer
+        // and kernel overlay draws to another.
         
         uint32_t width = Graphics::GetWidth();
         uint32_t height = Graphics::GetHeight();
         
-        // Create Window (Layer)
-        // Check "Compositor::CreateWindow" exposed in header? Yes.
-        Compositor::Window* win = Compositor::CreateWindow(width, height, 0);
-        
-        if (!win) {
-             UART::Write("[Syscall] SYS_VIDEO_MAP: Failed to create window\n");
-             return 0;
+        // Get kernel's backbuffer physical address
+        uint32_t* kernelBackbuf = Graphics::GetBackbuffer();
+        if (!kernelBackbuf) {
+            UART::Write("[Syscall] SYS_VIDEO_MAP: No kernel backbuffer!\n");
+            return 0;
         }
         
-        UART::Write("[Syscall] Window Created ID: ");
-        UART::WriteDec(win->id);
-        UART::Write("\n");
+        // The kernel backbuffer is in identity-mapped kernel space
+        // We need to map it to userspace
+        uint64_t user_video_virt = 0x600100000000ULL;
+        uint64_t size = (uint64_t)width * height * 4;
+        uint64_t pages = (size + 4095) / 4096;
         
-        // Unique per-window: Base + (WindowID * 16MB)
-        uint64_t user_video_virt = 0x600100000000ULL + (win->id * 0x1000000ULL);
-        uint64_t pages = ((uint64_t)width * height * 4 + 4095) / 4096;
-        
-        // Map Window Buffer (Physical) to User Virtual
+        // Map each page of kernel backbuffer to userspace
         for (uint64_t i = 0; i < pages; i++) {
-             MMU::MapPage(user_video_virt + i * 4096, 
-                          win->phys_addr + i * 4096, 
-                          PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT); // Cacheable RAM
+            uint64_t phys_addr = (uint64_t)kernelBackbuf + i * 4096;
+            MMU::MapPage(user_video_virt + i * 4096, 
+                         phys_addr, 
+                         PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
         }
         
         // Flush TLB
         uint64_t cr3;
         __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
         __asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
+        
+        UART::Write("[Syscall] SYS_VIDEO_MAP: Mapped kernel backbuffer to user @ ");
+        UART::WriteHex(user_video_virt);
+        UART::Write("\n");
         
         return user_video_virt;
     }
@@ -648,9 +669,9 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
         uint32_t* src = (uint32_t*)arg1;
 
-        // Best-effort VSync wait (disabled for VNC/QEMU stability)
-        // bool vsynced = WaitVBlankTimeoutMs(5); 
-        bool vsynced = true; // Pretend we synced
+        // VSync wait with short timeout for smooth rendering
+        // 2ms timeout prevents hanging in VNC while still reducing tearing
+        bool vsynced = WaitVBlankTimeoutMs(2);
 
         // Copy only the rectangle.
         for (uint32_t row = 0; row < h; row++)
@@ -671,6 +692,14 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case 62: // SYS_CREATE_WINDOW (width, height, flags)
     {
+        UART::Write("[SYS_CREATE_WINDOW] Entry - caller task: ");
+        UART::WriteDec(Scheduler::GetCurrentTaskId());
+        UART::Write(", w=");
+        UART::WriteDec(arg1);
+        UART::Write(", h=");
+        UART::WriteDec(arg2);
+        UART::Write("\n");
+        
         uint32_t w = (uint32_t)arg1;
         uint32_t h = (uint32_t)arg2;
         uint32_t flags = (uint32_t)arg3;

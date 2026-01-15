@@ -140,6 +140,14 @@ bool EarlyTerm::IsEnabled() {
     return enabled;
 }
 
+void EarlyTerm::ForceEnable() {
+    // Force re-enable for panic situations
+    // This bypasses the disabled state and draws directly to framebuffer
+    enabled = true;
+    cursorX = 0;
+    cursorY = 0;
+}
+
 void EarlyTerm::PrintDec(uint64_t value) {
     if (value == 0) {
         PutChar('0');

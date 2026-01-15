@@ -489,9 +489,10 @@ extern "C" int main(void* asset_ptr) {
         Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
         Compositor::RenderTaskbar(windows, window_count, menu_open, g_rtc);
         
+        // TEMPORARY: Disabled for crash testing
         // Overlay spawned app windows (Calculator, Terminal, etc.) from kernel compositor
         // These are APP_WINDOW layers created via SYS_CREATE_WINDOW
-        sys_compose_layers();
+        // sys_compose_layers();
 
         // System window content (text-based, lightweight) - HIDE if launcher open
         if (!menu_open) {

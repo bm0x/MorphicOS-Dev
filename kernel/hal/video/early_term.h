@@ -18,6 +18,8 @@ public:
     // Disable terminal output (used when Desktop takes over)
     static void Disable();
     static bool IsEnabled();
+    // Force re-enable for panic situations (bypasses disabled state)
+    static void ForceEnable();
     
     // Public for Verbose Engine color access
     static uint32_t colorFG;
