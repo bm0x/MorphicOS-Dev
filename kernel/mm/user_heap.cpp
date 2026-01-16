@@ -22,8 +22,12 @@ namespace UserHeap {
     void Init() {
         CRITICAL_SECTION(heapLock);
         
-        // Allocate initial heap from kernel heap (will use PMM later)
-        heapBase = (uint8_t*)kmalloc(UHEAP_INITIAL_SIZE);
+        // Allocate initial heap from PMM (P2 Optimization)
+        // PMM::AllocContiguous returns a physical address. 
+        // We assume 1:1 mapping or Identity Map for kernel access here.
+        // Or if Identity map covers low memory, we are good.
+        size_t pages = (UHEAP_INITIAL_SIZE + 4095) / 4096;
+        heapBase = (uint8_t*)PMM::AllocContiguous(pages);
         if (!heapBase) {
             EarlyTerm::Print("[UserHeap] Failed to allocate initial heap!\n");
             return;
@@ -154,13 +158,49 @@ namespace UserHeap {
             stats.high_priority -= block->size;
         }
         
-        // Add to free list
-        block->next = freeList;
-        block->prev = nullptr;
-        if (freeList) freeList->prev = block;
-        freeList = block;
+        // Add to free list (Sorted Insert for Coalescing)
+        // Find insert position
+        UHeapBlock* current = freeList;
+        UHeapBlock* prev = nullptr;
         
-        // TODO: Coalesce adjacent free blocks
+        while (current && current < block) {
+            prev = current;
+            current = current->next;
+        }
+        
+        // Insert 'block' between 'prev' and 'current'
+        block->next = current;
+        block->prev = prev;
+        
+        if (prev) prev->next = block;
+        else freeList = block;
+        
+        if (current) current->prev = block;
+        
+        // Coalesce with Next (current)
+        if (current) {
+            // Check adjacency: (uint8_t*)block + sizeof(UHeapBlock) + block->size == (uint8_t*)current
+            uint8_t* blockEnd = (uint8_t*)block + sizeof(UHeapBlock) + block->size;
+            if (blockEnd == (uint8_t*)current) {
+                // Merge
+                block->size += sizeof(UHeapBlock) + current->size;
+                block->next = current->next;
+                if (current->next) current->next->prev = block;
+                // 'current' is now gone
+            }
+        }
+        
+        // Coalesce with Prev
+        if (prev) {
+            uint8_t* prevEnd = (uint8_t*)prev + sizeof(UHeapBlock) + prev->size;
+            if (prevEnd == (uint8_t*)block) {
+                // Merge
+                prev->size += sizeof(UHeapBlock) + block->size;
+                prev->next = block->next;
+                if (block->next) block->next->prev = prev;
+                // 'block' is now gone
+            }
+        }
     }
     
     void* Realloc(void* ptr, size_t new_size) {

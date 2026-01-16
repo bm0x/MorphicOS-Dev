@@ -173,6 +173,32 @@ namespace Compositor {
     Layer* GetOverlayLayer() { return overlayLayer; }
     
     void MarkDirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+        // P2: Intelligent Dirty Rect Merging
+        for (uint32_t i = 0; i < dirtyCount; i++) {
+             DirtyRect* rect = &dirtyRects[i];
+             if (!rect->valid) continue;
+             
+             // Check intersection or proximity (simple AABB)
+             bool intersects = !(x > rect->x + rect->w || 
+                                 x + w < rect->x || 
+                                 y > rect->y + rect->h || 
+                                 y + h < rect->y);
+                                 
+             if (intersects) {
+                 // Union rects
+                 uint32_t minX = (x < rect->x) ? x : rect->x;
+                 uint32_t minY = (y < rect->y) ? y : rect->y;
+                 uint32_t maxX = (x + w > rect->x + rect->w) ? x + w : rect->x + rect->w;
+                 uint32_t maxY = (y + h > rect->y + rect->h) ? y + h : rect->y + rect->h;
+                 
+                 rect->x = minX;
+                 rect->y = minY;
+                 rect->w = maxX - minX;
+                 rect->h = maxY - minY;
+                 return; // Merged
+             }
+        }
+
         if (dirtyCount >= MAX_DIRTY_RECTS) {
             // Full screen dirty
             dirtyRects[0] = {0, 0, Graphics::GetWidth(), Graphics::GetHeight(), true};
@@ -269,19 +295,22 @@ namespace Compositor {
         }
     }
     
-    // Sort layers by z_order
+    // Sort layers by z_order (Insertion Sort - O(n) for mostly sorted)
     static void SortLayers() {
-        for (uint32_t i = 0; i < layerCount; i++) {
-            for (uint32_t j = i + 1; j < layerCount; j++) {
-                if (layers[j]->z_order < layers[i]->z_order) {
-                    Layer* tmp = layers[i];
-                    layers[i] = layers[j];
-                    layers[j] = tmp;
-                }
+        for (uint32_t i = 1; i < layerCount; i++) {
+            Layer* key = layers[i];
+            int j = i - 1;
+            while (j >= 0 && layers[j]->z_order > key->z_order) {
+                layers[j + 1] = layers[j];
+                j = j - 1;
             }
+            layers[j + 1] = key;
         }
     }
     
+    // Declare SIMD blit locally if not in header
+    extern "C" void blit_fast_32(void* dest, void* src, size_t count);
+
     void Compose() {
         AcquireLock();
         uint32_t* backbuf = Graphics::GetBackbuffer();
@@ -299,19 +328,22 @@ namespace Compositor {
             Layer* layer = layers[i];
             if (!layer || !layer->visible || !layer->buffer) continue;
             
-            // In userspace mode, only render APP_WINDOW layers (syscall-created)
+            // In userspaceMode, only render APP_WINDOW layers (syscall-created)
             if (userspaceMode && layer->type != LayerType::APP_WINDOW) continue;
             
             if (layer->has_alpha) {
                 BlitTransparent(backbuf, pitch, layer->buffer, 
                                layer->width, layer->height, layer->x, layer->y);
             } else {
-                // Opaque blit
+                // Opaque blit - Optimized with blit_fast_32
+                // Calculate valid width to avoid out of bounds
+                uint32_t safeWidth = layer->width;
+                if (layer->x + safeWidth > Graphics::GetWidth()) safeWidth = Graphics::GetWidth() - layer->x;
+                
                 for (uint32_t y = 0; y < layer->height && (layer->y + y) < Graphics::GetHeight(); y++) {
-                    for (uint32_t x = 0; x < layer->width && (layer->x + x) < Graphics::GetWidth(); x++) {
-                        backbuf[(layer->y + y) * pitch + (layer->x + x)] = 
-                            layer->buffer[y * layer->width + x];
-                    }
+                    blit_fast_32(&backbuf[(layer->y + y) * pitch + layer->x], 
+                                 &layer->buffer[y * layer->width], 
+                                 safeWidth);
                 }
             }
             

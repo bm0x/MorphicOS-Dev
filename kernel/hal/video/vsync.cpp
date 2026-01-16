@@ -3,6 +3,7 @@
 
 #include "graphics.h"
 #include "../arch/x86_64/io.h"
+#include "../../process/scheduler.h"
 
 namespace VSync {
     
@@ -68,9 +69,11 @@ namespace VSync {
         while (!(IO::inb(VGA_STATUS_PORT) & VSYNC_BIT)) {
             counter++;
             if (counter > SAFETY_TIMEOUT) {
-                 hardwareVSyncAvailable = false;
+                 // P1: Fallback to timer when HW VSync fails (Software VSync ~60 FPS)
+                 Scheduler::Sleep(16);
                  return;
             }
+            __asm__ volatile("pause");
         }
     }
     

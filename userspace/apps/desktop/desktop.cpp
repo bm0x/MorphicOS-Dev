@@ -645,8 +645,9 @@ extern "C" int main(void* asset_ptr) {
         
         // D. Swap / Present Logic (Moved to end of frame)
         // ... checking external windows ...
-
-
+        // Yield to prevent CPU starvation (Bestial Optimization)
+        sys_yield();
+        
         // System window content (text-based, lightweight) - HIDE if launcher open
         if (!menu_open) {
             for (int i = 0; i < window_count; i++) {

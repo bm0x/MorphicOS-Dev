@@ -45,10 +45,10 @@ bool BGADriver::Init() {
         return false;
     }
 
-    // Map 128MB of VRAM for "Extreme Stability" and 4K support
+    // Map 256MB of VRAM for "Bestial Stability" and 4K triple buffering
     // 1080p triple buffer = ~24MB, 4K triple buffer = ~100MB
     bool mapped = MMU::MapRange(BGA_VIRT_BASE, this->phys_addr, 
-                                128 * 1024 * 1024, 
+                                256 * 1024 * 1024, 
                                 PAGE_PRESENT | PAGE_WRITABLE | PAGE_NOCACHE | PAGE_GLOBAL);
                                 
     if (!mapped) {
@@ -143,7 +143,19 @@ void BGADriver::SetDisplayToBuffer1() {
 }
 
 void BGADriver::SwapBuffers() {
-    // SIMPLIFIED: VSync wait only - no buffer copy
-    // Drawing happens directly to Buffer 1 which is always displayed
+    // P1: Hardware Page Flip Implementation
+    // Toggle between Buffer A (0) and Buffer B (1) using Y_OFFSET
     WaitVSync();
+    
+    if (this->currentBufferIndex == 1) {
+        // We just drew to Buffer 1. Show it.
+        WriteRegister(VBE_DISPI_INDEX_Y_OFFSET, height); // Offset = height
+        this->displayBuffer = 1;
+        this->currentBufferIndex = 0; // Next frame draw to 0
+    } else {
+        // We just drew to Buffer 0. Show it.
+        WriteRegister(VBE_DISPI_INDEX_Y_OFFSET, 0); // Offset = 0
+        this->displayBuffer = 0;
+        this->currentBufferIndex = 1; // Next frame draw to 1
+    }
 }

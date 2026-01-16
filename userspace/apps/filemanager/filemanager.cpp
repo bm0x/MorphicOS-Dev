@@ -297,26 +297,35 @@ void FileManagerApp::DrawTextViewer(MorphicAPI::Graphics& g) {
     // Content Area
     int contentX = boxX + 10;
     int contentY = boxY + 40;
+    int maxWidth = boxW - 20;
+    int charsPerLine = maxWidth / 8;  // 8px per char
+    if (charsPerLine > 70) charsPerLine = 70;  // Limit line length
     
-    // Simple text wrapping rendering
+    // Render line-by-line (MUCH faster than char-by-char)
     const char* p = textViewerContent;
-    int cx = contentX;
     int cy = contentY;
+    char lineBuffer[72];  // Max 70 chars + null
+    int lineIdx = 0;
     
-    while (*p && cy < boxY + boxH - 10) {
-        if (*p == '\n') {
-            cx = contentX;
-            cy += 16;
-        } else {
-            char buf[2] = {*p, 0};
-            g.DrawText(cx, cy, buf, COL_TEXT, 1);
-            cx += 8; // Fixed width font assumption
-            if (cx > boxX + boxW - 20) {
-                cx = contentX;
-                cy += 16;
+    while (*p && cy < boxY + boxH - 20) {
+        if (*p == '\n' || lineIdx >= charsPerLine) {
+            // Render current line
+            lineBuffer[lineIdx] = 0;
+            if (lineIdx > 0) {
+                g.DrawText(contentX, cy, lineBuffer, COL_TEXT, 1);
             }
+            cy += 16;
+            lineIdx = 0;
+            if (*p == '\n') p++;
+        } else {
+            lineBuffer[lineIdx++] = *p;
+            p++;
         }
-        p++;
+    }
+    // Render remaining line
+    if (lineIdx > 0) {
+        lineBuffer[lineIdx] = 0;
+        g.DrawText(contentX, cy, lineBuffer, COL_TEXT, 1);
     }
 }
 

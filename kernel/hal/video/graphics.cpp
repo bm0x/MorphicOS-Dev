@@ -188,24 +188,12 @@ namespace Graphics {
     }
     
     // Pure blending logic (static helper)
+    // Pure blending logic (static helper)
     // Formula: ((FG * Alpha) + (BG * (255 - Alpha))) >> 8
     uint32_t BlendPixelRaw(uint32_t bg, uint32_t fg) {
-        uint32_t alpha = (fg >> 24) & 0xFF;
-        if (alpha == 0) return bg;
-        if (alpha == 255) return fg;
-        
-        uint32_t invA = 255 - alpha;
-        
-        uint32_t rb_fg = fg & 0x00FF00FF;
-        uint32_t g_fg  = fg & 0x0000FF00;
-        
-        uint32_t rb_bg = bg & 0x00FF00FF;
-        uint32_t g_bg  = bg & 0x0000FF00;
-        
-        uint32_t rb = (rb_fg * alpha + rb_bg * invA) >> 8;
-        uint32_t g  = (g_fg * alpha + g_bg * invA) >> 8;
-        
-        return (rb & 0x00FF00FF) | (g & 0x0000FF00) | 0xFF000000;
+        // Optimized O(1) LUT Blending (P0 Task)
+        // Note: Alpha::Blend takes (fg, bg)
+        return Alpha::Blend(fg, bg);
     }
 
 

@@ -113,16 +113,16 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     BootScreen::Init();
     BootScreen::Update(10, "Initializing Memory Manager...");
     
-    // 3. Initialize Heap
+    // 3. Initialize Heap (Bestial Configuration)
     size_t freeRAM = PMM::GetFreeMemory();
     size_t heapSize = (freeRAM * 3) / 4;  
-    // Boost minimum heap to 64MB for stability
-    if (heapSize < 64 * 1024 * 1024) heapSize = 64 * 1024 * 1024;
+    // Boost minimum heap to 128MB for extreme stability
+    if (heapSize < 128 * 1024 * 1024) heapSize = 128 * 1024 * 1024;
     
     void* heapBase = PMM::AllocContiguous(heapSize / 4096);
     if (!heapBase) {
-        // Retry logic...
-         heapSize = 128 * 1024 * 1024;
+        // Retry logic with safe fallback (256MB)
+         heapSize = 256 * 1024 * 1024;
          heapBase = PMM::AllocContiguous(heapSize / 4096);
     }
     

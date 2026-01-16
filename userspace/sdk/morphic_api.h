@@ -17,16 +17,58 @@ namespace MorphicAPI {
     class Helpers {
     public:
         // Basic memory copy/set since we might lack stdlib
+        // Optimized memset - uses 64-bit words when possible
         static void* memset(void* dest, int c, size_t n) {
             uint8_t* p = (uint8_t*)dest;
-            while(n--) *p++ = (uint8_t)c;
+            // Fill byte pattern
+            uint8_t byte = (uint8_t)c;
+            // Fast path for aligned large fills
+            if (n >= 8 && ((uintptr_t)p & 7) == 0) {
+                uint64_t pattern = byte;
+                pattern |= pattern << 8;
+                pattern |= pattern << 16;
+                pattern |= pattern << 32;
+                uint64_t* p64 = (uint64_t*)p;
+                size_t count64 = n / 8;
+                for (size_t i = 0; i < count64; i++) p64[i] = pattern;
+                p += count64 * 8;
+                n -= count64 * 8;
+            }
+            while(n--) *p++ = byte;
             return dest;
         }
         
+        // Optimized 32-bit fill for framebuffers
+        static void memset32(uint32_t* dest, uint32_t value, size_t count) {
+            // Unrolled loop for speed
+            size_t i = 0;
+            for (; i + 4 <= count; i += 4) {
+                dest[i] = value;
+                dest[i+1] = value;
+                dest[i+2] = value;
+                dest[i+3] = value;
+            }
+            for (; i < count; i++) dest[i] = value;
+        }
+        
+        // Optimized memcpy - uses 64-bit words when possible
         static void* memcpy(void* dest, const void* src, size_t n) {
-            uint8_t* d = (uint8_t*)dest;
-            const uint8_t* s = (const uint8_t*)src;
-            while(n--) *d++ = *s++;
+            // Fast path for aligned copies
+            if (n >= 8 && ((uintptr_t)dest & 7) == 0 && ((uintptr_t)src & 7) == 0) {
+                uint64_t* d64 = (uint64_t*)dest;
+                const uint64_t* s64 = (const uint64_t*)src;
+                size_t count64 = n / 8;
+                for (size_t i = 0; i < count64; i++) d64[i] = s64[i];
+                
+                uint8_t* d = (uint8_t*)dest + count64 * 8;
+                const uint8_t* s = (const uint8_t*)src + count64 * 8;
+                n -= count64 * 8;
+                while(n--) *d++ = *s++;
+            } else {
+                uint8_t* d = (uint8_t*)dest;
+                const uint8_t* s = (const uint8_t*)src;
+                while(n--) *d++ = *s++;
+            }
             return dest;
         }
         
@@ -47,9 +89,7 @@ namespace MorphicAPI {
             : fb(framebuffer), width(w), height(h), pitch(p) {}
 
         void Clear(uint32_t color) {
-            for (uint64_t i = 0; i < width * height; i++) {
-                fb[i] = color;
-            }
+            Helpers::memset32(fb, color, width * height);
         }
 
         void PutPixel(int x, int y, uint32_t color) {
@@ -58,10 +98,16 @@ namespace MorphicAPI {
         }
 
         void FillRect(int x, int y, int w, int h, uint32_t color) {
+            // Clipping
+            if (x < 0) { w += x; x = 0; }
+            if (y < 0) { h += y; y = 0; }
+            if (x + w > (int)width) w = (int)width - x;
+            if (y + h > (int)height) h = (int)height - y;
+            if (w <= 0 || h <= 0) return;
+            
+            // Row-based fill (much faster than pixel-by-pixel)
             for (int j = 0; j < h; j++) {
-                for (int i = 0; i < w; i++) {
-                    PutPixel(x + i, y + j, color);
-                }
+                Helpers::memset32(fb + (y + j) * pitch + x, color, w);
             }
         }
         
@@ -246,33 +292,32 @@ namespace MorphicAPI {
 
                     // Commit Frame: Copy scratch to kernel buffer
                     if (backbuffer != kernelBuffer) {
-                        Helpers::memcpy(kernelBuffer, backbuffer, width * height * 4);
+                        // Copy in 64-bit chunks for speed
+                        uint64_t* src = (uint64_t*)backbuffer;
+                        uint64_t* dst = (uint64_t*)kernelBuffer;
+                        size_t count = (width * height * 4) / 8;
+                        for (size_t i = 0; i < count; i++) dst[i] = src[i];
                     }
 
                     // Flip/Notify Kernel
                     sys_video_flip(kernelBuffer);
                     needsRedraw = false;
-                } else {
-                    // Smart Sleep: If no events and no redraw needed, yield efficiently.
-                    // Ideally we should block until event, but sys_wait_event not exposed yet?
-                    // sys_yield is non-blocking (just timeslice).
-                    // This is still polling but lighter.
+                    
+                    // Frame pacing: After rendering, yield to prevent CPU hogging
                     sys_yield();
+                } else {
+                    // No redraw needed - sleep longer to save CPU
+                    // Use sleep instead of just yield for better power efficiency
+                    sys_sleep(16);  // ~60 FPS max, saves CPU when idle
                 }
-                
-                // Yield CPU time to other tasks - improves input responsiveness
-                // sys_yield(); // Handled in if/else
-            }
-        }
+            }  // while (running)
+        }  // Run()
         
         virtual void OnKeyDown(char c) { Invalidate(); }
         virtual void OnMouseDown(int x, int y, int btn) { Invalidate(); }
-        virtual void OnMouseMove(int x, int y) { /* Invalidate(); */ 
-            // Only invalidate on drag or hover? 
-            // Setting Invalidate here makes it always redraw on mouse move (High FPS).
-            // For "Bestial Optimization", maybe only if hover logic exists.
-            // But base implementation doesn't know. Let's default to YES for responsiveness.
-            Invalidate(); 
+        virtual void OnMouseMove(int x, int y) {
+            // DO NOT invalidate on every mouse move - causes excessive redraws
+            // Apps that need hover effects should override and call Invalidate() themselves
         }
     };
 

@@ -39,7 +39,7 @@ namespace KHeap {
     void* Allocate(size_t size) {
         CRITICAL_SECTION(heapLock);
         
-        // Align size to 16 bytes?
+        // Align size to 16 bytes
         size = (size + 15) & ~15;
         
         if (size == 0) return nullptr;
