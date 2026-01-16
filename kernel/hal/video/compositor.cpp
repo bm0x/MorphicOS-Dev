@@ -206,28 +206,64 @@ namespace Compositor {
     
     void BlitTransparent(uint32_t* dest, uint32_t dest_pitch,
                          uint32_t* src, uint32_t src_w, uint32_t src_h,
-                         uint32_t dx, uint32_t dy) {
-        for (uint32_t y = 0; y < src_h; y++) {
-            for (uint32_t x = 0; x < src_w; x++) {
-                uint32_t pixel = src[y * src_w + x];
+                         int32_t dx, int32_t dy) {
+        
+        int32_t screenW = dest_pitch;
+        int32_t screenH = Graphics::GetHeight(); // Assuming global height access or passed in pitch
+        // Actually pitch is width usually
+        
+        // Clipping
+        int32_t renderW = (int32_t)src_w;
+        int32_t renderH = (int32_t)src_h;
+        int32_t srcX = 0;
+        int32_t srcY = 0;
+        
+        // Left
+        if (dx < 0) {
+            renderW += dx;
+            srcX = -dx;
+            dx = 0;
+        }
+        // Top
+        if (dy < 0) {
+            renderH += dy;
+            srcY = -dy;
+            dy = 0;
+        }
+        // Right
+        if (dx + renderW > screenW) {
+            renderW = screenW - dx;
+        }
+        // Bottom
+        if (dy + renderH > screenH) {
+            renderH = screenH - dy;
+        }
+        
+        if (renderW <= 0 || renderH <= 0) return;
+        
+        // Render Loop
+        for (int32_t y = 0; y < renderH; y++) {
+            uint32_t* dstRow = &dest[(dy + y) * dest_pitch + dx];
+            uint32_t* srcRow = &src[(srcY + y) * src_w + srcX];
+            
+            for (int32_t x = 0; x < renderW; x++) {
+                uint32_t pixel = srcRow[x];
                 uint8_t alpha = (pixel >> 24) & 0xFF;
                 
                 if (alpha == 0) continue;
                 
-                uint32_t destIdx = (dy + y) * dest_pitch + (dx + x);
-                
                 if (alpha == 255) {
-                    dest[destIdx] = pixel;
+                    dstRow[x] = pixel;
                 } else {
                     // Alpha blend
-                    uint32_t bg = dest[destIdx];
+                    uint32_t bg = dstRow[x];
                     uint8_t invA = 255 - alpha;
                     
                     uint8_t r = ((pixel & 0xFF) * alpha + (bg & 0xFF) * invA) / 255;
                     uint8_t g = (((pixel >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * invA) / 255;
                     uint8_t b = (((pixel >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * invA) / 255;
                     
-                    dest[destIdx] = 0xFF000000 | (b << 16) | (g << 8) | r;
+                    dstRow[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
                 }
             }
         }
@@ -290,19 +326,19 @@ namespace Compositor {
         ReleaseLock();
     }
     
-    // Overlay only APP_WINDOW layers onto backbuffer (does NOT clear)
+    // Overlay only APP_WINDOW layers onto backbuffer AND draw Cursor on top
     // Called by Desktop after it draws its scene, to integrate spawned app windows
-    void ComposeAppWindowsOnly() {
+    void ComposeAppWindowsOnly(int mouseX, int mouseY) {
         AcquireLock();
         
         uint32_t* backbuf = Graphics::GetBackbuffer();
         if (!backbuf) {
-            UART::Write("[ComposeAppWindowsOnly] ERROR: No backbuffer!\n");
             ReleaseLock();
             return;
         }
         
         uint32_t pitch = Graphics::GetWidth();
+        // ... (existing locals)
         uint32_t screenH = Graphics::GetHeight();
         
         // Sort layers by z_order
@@ -418,6 +454,10 @@ namespace Compositor {
             // Draw window decorations (Title bar, buttons)
             DrawWindowDecoration(layer);
         }
+
+        // Cursor Drawing Logic Removed: Handled by userspace (Desktop) post-composition or pre-composition.
+        // This ensures the Desktop, which owns the mouse concept, controls its rendering.
+        // if (cursorLayer) { ... }
         
         ReleaseLock();
     }

@@ -45,10 +45,10 @@ bool BGADriver::Init() {
         return false;
     }
 
-    // Map 64MB of VRAM for future 4K support and extra buffers
+    // Map 128MB of VRAM for "Extreme Stability" and 4K support
     // 1080p triple buffer = ~24MB, 4K triple buffer = ~100MB
     bool mapped = MMU::MapRange(BGA_VIRT_BASE, this->phys_addr, 
-                                64 * 1024 * 1024, 
+                                128 * 1024 * 1024, 
                                 PAGE_PRESENT | PAGE_WRITABLE | PAGE_NOCACHE | PAGE_GLOBAL);
                                 
     if (!mapped) {
@@ -57,7 +57,7 @@ bool BGADriver::Init() {
     }
     
     this->framebuffer = (uint32_t*)BGA_VIRT_BASE;
-    Verbose::OK("BGA", "Initialized with 64MB VRAM mapped.");
+    Verbose::OK("BGA", "Initialized with 128MB VRAM mapped.");
     return true;
 }
 

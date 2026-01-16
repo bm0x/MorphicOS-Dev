@@ -209,35 +209,86 @@ void Compositor::DrawCursorClipped(int x, int y) {
     }
 }
 
-bool Compositor::SwapBuffers() {
-    if (!backBuffer || !frontBuffer) return false;
-
-    // Double Buffering: Copy Scratch -> Kernel Buffer
-    if (backBuffer != frontBuffer) {
-        // Fast 32-bit copy
-        uint64_t count = width * height;
-        for (uint64_t i = 0; i < count; i++) {
-            frontBuffer[i] = backBuffer[i];
+// Draw directly to Front Buffer (Shared Kernel Buffer)
+// Use this AFTER sys_compose_layers to draw cursor ON TOP of everything
+void Compositor::DrawCursorToFront(int x, int y) {
+    if (!frontBuffer) return;
+    
+    // Disable clip checks against local clip rects, but check screen bounds
+    for (int cy = 0; cy < cursor_h; cy++) {
+        for (int cx = 0; cx < cursor_w; cx++) {
+            int px = x + cx;
+            int py = y + cy;
+            
+            if (px < 0 || px >= width || py < 0 || py >= height) continue;
+            
+            uint8_t code = cursor_bitmap[cy * cursor_w + cx];
+            uint32_t color = 0;
+            
+            if (code == 1) color = 0xFFFFFFFF; // White
+            else if (code == 2) color = 0xFF000000; // Black
+            else continue; // Transparent
+            
+            frontBuffer[py * width + px] = color;
         }
     }
+}
 
-    // Present via kernel: optimized blit + best-effort VSync wait.
-    // This is substantially faster than copying pixel-by-pixel in userspace.
-    return sys_video_flip(frontBuffer) != 0;
+bool Compositor::SwapBuffers() {
+    Flush();
+    return Present();
 }
 
 bool Compositor::SwapBuffersRect(int x, int y, int w, int h) {
-    if (!backBuffer || !frontBuffer) return false;
-    if (w <= 0 || h <= 0) return false;
+    FlushRect(x, y, w, h);
+    
+    // We must still Present() to flip the buffer if using double/triple buffering
+    // However, sys_video_flip_rect acts as a Present() for that rect?
+    // In our new Kernel "Safe RAM Backbuffer" mode:
+    // sys_video_flip calls Graphics::Flip() -> Full Copy RAM->VRAM.
+    // sys_video_flip_rect calls Graphics::FlipRect() -> Partial Copy RAM->VRAM.
+    
+    // So yes, sys_video_flip_rect IS the Present() for rects.
+    if (!frontBuffer) return false;
+    uint64_t xy = ((uint64_t)(uint32_t)x << 32) | (uint32_t)y;
+    uint64_t wh = ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
+    return sys_video_flip_rect(frontBuffer, xy, wh) != 0;
+}
+
+void Compositor::Flush() {
+    if (!backBuffer || !frontBuffer) return;
+    if (backBuffer == frontBuffer) return;
+
+    // Fast 32-bit copy Scratch -> Kernel Shared
+    uint64_t count = width * height;
+    for (uint64_t i = 0; i < count; i++) {
+        frontBuffer[i] = backBuffer[i];
+    }
+}
+
+void Compositor::FlushRect(int x, int y, int w, int h) {
+    if (!backBuffer || !frontBuffer) return;
+    if (backBuffer == frontBuffer) return;
+
+    // Bounds check
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > width) w = width - x;
     if (y + h > height) h = height - y;
-    if (w <= 0 || h <= 0) return false;
+    if (w <= 0 || h <= 0) return;
 
-    uint64_t xy = ((uint64_t)(uint32_t)x << 32) | (uint32_t)y;
-    uint64_t wh = ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
-    return sys_video_flip_rect(backBuffer, xy, wh) != 0;
+    for (int row = 0; row < h; row++) {
+        uint32_t* src = &backBuffer[(y + row) * width + x];
+        uint32_t* dst = &frontBuffer[(y + row) * width + x];
+        for (int col = 0; col < w; col++) {
+            dst[col] = src[col];
+        }
+    }
+}
+
+bool Compositor::Present() {
+    if (!frontBuffer) return false;
+    return sys_video_flip(frontBuffer) != 0;
 }
 
 static void DrawSevenSegSegment(uint32_t* buf, int bw, int bh, bool clipEnabled, int clipX, int clipY, int clipW, int clipH,

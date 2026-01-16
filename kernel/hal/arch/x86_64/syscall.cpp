@@ -723,7 +723,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
     }
     
     case 66: // SYS_COMPOSE_LAYERS
-        Compositor::ComposeAppWindowsOnly();
+        Compositor::ComposeAppWindowsOnly(0, 0); // Args ignored
         return 0;
 
     case 67: // SYS_GET_WINDOW_LIST (buffer, max)

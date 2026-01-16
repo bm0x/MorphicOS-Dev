@@ -643,20 +643,9 @@ extern "C" int main(void* asset_ptr) {
                                 externalWindows, externalWindowCount, 
                                 menu_open, g_rtc);
         
-        // Render Keymap Indicator
-        {
-            int w = Compositor::GetWidth();
-            int h = Compositor::GetHeight();
-            int ky = h - 40 + 12;
-            int kx = w - 130; // Left of clock
-            Compositor::DrawText(kx, ky, GetKeymapName(currentKeymapIndex), 0xFFCCCCCC, 1);
-            // Small border or underline?
-            // Compositor::DrawRect(kx-2, ky-2, 20, 16, 0xFF444444);
-        }
-        
-        // Overlay spawned app windows (Calculator, Terminal, etc.) from kernel compositor
-        // These are APP_WINDOW layers created via SYS_CREATE_WINDOW
-        sys_compose_layers();
+        // D. Swap / Present Logic (Moved to end of frame)
+        // ... checking external windows ...
+
 
         // System window content (text-based, lightweight) - HIDE if launcher open
         if (!menu_open) {
@@ -809,20 +798,34 @@ extern "C" int main(void* asset_ptr) {
             }
         }
 
-        // C. Compose Kernel Layers (App Windows)
-        // This draws the Calculator etc. onto our backbuffer
-        sys_compose_layers();
-
         if (menu_open) {
             g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
         }
 
-        // Cursor must be last so it stays above taskbar/menu AND external windows.
-        Compositor::DrawCursor(mouse_x, mouse_y);
+        // Removed Pre-Compose Cursor drawing
+        // Compositor::DrawCursor(mouse_x, mouse_y);
         Compositor::ClearClip();
 
-        // D. Swap only dirty region
-        const bool vsynced = Compositor::SwapBuffersRect(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
+        // FINAL PIPELINE STEP:
+        // 1. Flush Desktop Scratch -> Kernel RAM Buffer
+        // This puts the Wallpaper + Icons + Taskbar into the shared buffer
+        if (g_dirty.valid) {
+            Compositor::FlushRect(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
+        } else {
+             Compositor::Flush();
+        }
+
+        // 2. Compose Apps (Kernel Overlay) 
+        // Draws independent app windows (Terminal, Calc) ON TOP of the shared buffer
+        sys_compose_layers();
+
+        // 3. Draw Cursor (Userspace Post-Compose)
+        // Draw directly to the Shared Buffer so it appears ON TOP of the Apps
+        Compositor::DrawCursorToFront(mouse_x, mouse_y);
+
+        // 4. Present (Flip)
+        // Copies the fully composed Kernel RAM Buffer to Video RAM (Screen) synchronously with VSync.
+        const bool vsynced = Compositor::Present();
         // TEMPORARY GLOBAL FLUSH REMOVED - using dirty tracking + kernel composition
         
         // E. Sync

@@ -29,9 +29,15 @@ public:
     // Presents only a dirty rectangle (major perf win).
     static bool SwapBuffersRect(int x, int y, int w, int h);
     
+    // Fine-grained control for Desktop Composition
+    static void Flush();   // Copy Scratch -> Shared Buffer
+    static void FlushRect(int x, int y, int w, int h); // Partial Flush
+    static bool Present(); // Flip Shared Buffer -> Screen
+    
     // Drawing Primitives
     static void DrawRect(int x, int y, int w, int h, uint32_t color);
     static void DrawCursor(int x, int y);
+    static void DrawCursorToFront(int x, int y); // Direct to Shared Buffer (On Top)
     
     // Getters
     static int GetWidth() { return width; }

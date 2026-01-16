@@ -28,14 +28,14 @@ namespace Compositor {
     
     // Composition
     void Compose();           // Render all layers to backbuffer
-    void ComposeAppWindowsOnly(); // Overlay APP_WINDOW layers only (for Desktop)
+    void ComposeAppWindowsOnly(int mouseX, int mouseY); // Overlay APP_WINDOW layers + Cursor
     void ComposeRegion(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
     void Flip();              // Swap backbuffer to screen
     
-    // Alpha blending blit
+    // Alpha blending blit with clipping
     void BlitTransparent(uint32_t* dest, uint32_t dest_pitch,
                          uint32_t* src, uint32_t src_w, uint32_t src_h,
-                         uint32_t x, uint32_t y);
+                         int32_t x, int32_t y);
     
     // Debug overlay
     void ToggleDebugOverlay();
