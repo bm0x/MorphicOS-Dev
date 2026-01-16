@@ -1,40 +1,24 @@
 #pragma once
 // Alpha Blending Look-Up Table for Morphic OS Compositor
 // Pre-computed alpha blending for O(1) transparency operations
+//
+// Variables are declared extern here and defined in alpha_lut.cpp
 
 #include <stdint.h>
-#include "../../mm/heap.h"
 
 namespace Alpha {
-    // Dynamic LUT: allocated on heap to avoid BSS bloat/corruption
-    static uint8_t* lut = nullptr;
-    static bool initialized = false;
+    // Extern declarations - defined in one .cpp file
+    extern uint8_t* lut;
+    extern bool initialized;
     
-    // Initialize the lookup table (call once at startup)
-    inline void InitLUT() {
-        if (initialized) return;
-        
-        // Allocate 64KB for LUT (256 * 256)
-        // We use kmalloc directly to avoid heap dependencies if possible, 
-        // but here we are inside Graphics which uses heap.
-        lut = (uint8_t*)kmalloc(256 * 256 * sizeof(uint8_t));
-        
-        if (!lut) return; // Alloc failed
-        
-        for (int a = 0; a < 256; a++) {
-            for (int c = 0; c < 256; c++) {
-                // accessing as 1D array: lut[a * 256 + c]
-                lut[a * 256 + c] = (uint8_t)((a * c) >> 8);
-            }
-        }
-        initialized = true;
-    }
+    // Initialize the lookup table (call once at startup in Graphics::Init)
+    void InitLUT();
     
     // Fast alpha blend using LUT
     // fg = foreground color (ARGB), bg = background color (ARGB)
     // Returns blended color
     inline uint32_t Blend(uint32_t fg, uint32_t bg) {
-        if (!initialized || !lut) return fg; // Fallback
+        if (!initialized || !lut) return fg; // Fallback if not initialized
         
         uint8_t a = (fg >> 24) & 0xFF;
         

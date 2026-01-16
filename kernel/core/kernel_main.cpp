@@ -199,21 +199,31 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     UART::Write("[BOOT-TRACE] After MountManager ScanAndMount\n");
     
     // Interrupts
+    UART::Write("[BOOT-TRACE] About to call BootScreen::Update(90)...\n");
     BootScreen::Update(90, "Enabling Interrupts...");
+    UART::Write("[BOOT-TRACE] About to EnableInterrupts...\n");
     HAL::Platform::EnableInterrupts();
+    UART::Write("[BOOT-TRACE] About to unmask IRQs...\n");
     // Unmask IRQs...
     __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0xF8), "Nd"((uint16_t)0x21));
     __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0xEF), "Nd"((uint16_t)0xA1));
+    UART::Write("[BOOT-TRACE] IRQs unmasked, about to init Scheduler...\n");
     
     // Scheduler
     BootScreen::Update(95, "Starting Scheduler...");
+    UART::Write("[BOOT-TRACE] About to call Scheduler::Init()...\n");
     Scheduler::Init();
+    UART::Write("[BOOT-TRACE] Scheduler::Init() complete!\n");
 
+    UART::Write("[BOOT-TRACE] About to call BootScreen::Update(100)...\n");
     BootScreen::Update(100, "System Ready. Launching Desktop...");
+    UART::Write("[BOOT-TRACE] BootScreen::Update(100) done, entering delay loop...\n");
     // Artificial delay to see the 100% (optional)
     for(volatile int i=0; i<5000000; i++); 
+    UART::Write("[BOOT-TRACE] Delay done, calling BootScreen::Finish()...\n");
     
     BootScreen::Finish(); 
+    UART::Write("[BOOT-TRACE] BootScreen::Finish() done\n");
 
     EarlyTerm::Print("--------------------------------------------------\n");
     EarlyTerm::Print("Morphic OS Kernel (v0.6)\n");

@@ -1,6 +1,7 @@
 #include "compositor.h"
 #include "graphics.h"
 #include "early_term.h"
+#include "alpha_lut.h"
 #include "../../mm/heap.h"
 #include "../../utils/std.h"
 #include "../../mm/pmm.h"
@@ -267,7 +268,7 @@ namespace Compositor {
         
         if (renderW <= 0 || renderH <= 0) return;
         
-        // Render Loop
+        // Render Loop - Optimized with Alpha LUT
         for (int32_t y = 0; y < renderH; y++) {
             uint32_t* dstRow = &dest[(dy + y) * dest_pitch + dx];
             uint32_t* srcRow = &src[(srcY + y) * src_w + srcX];
@@ -281,20 +282,16 @@ namespace Compositor {
                 if (alpha == 255) {
                     dstRow[x] = pixel;
                 } else {
-                    // Alpha blend
-                    uint32_t bg = dstRow[x];
-                    uint8_t invA = 255 - alpha;
-                    
-                    uint8_t r = ((pixel & 0xFF) * alpha + (bg & 0xFF) * invA) / 255;
-                    uint8_t g = (((pixel >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * invA) / 255;
-                    uint8_t b = (((pixel >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * invA) / 255;
-                    
-                    dstRow[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
+                    // Use O(1) LUT-based alpha blending (no division)
+                    dstRow[x] = Alpha::Blend(pixel, dstRow[x]);
                 }
             }
         }
     }
     
+    // Declare SIMD blit functions (64-bit optimized)
+    extern "C" void blit_fast_64(void* dest, void* src, size_t qwords);
+
     // Sort layers by z_order (Insertion Sort - O(n) for mostly sorted)
     static void SortLayers() {
         for (uint32_t i = 1; i < layerCount; i++) {
@@ -473,12 +470,16 @@ namespace Compositor {
                 
                 if (copyW <= 0 || copyH <= 0) continue;
                 
-                // Blit visible portion
+                // Blit visible portion - SIMD Optimized (64-bit when aligned)
                 for (int32_t y = 0; y < copyH; y++) {
                     uint32_t* dst = &backbuf[(dstY + y) * pitch + dstX];
                     uint32_t* src = &layer->buffer[(srcOffsetY + y) * layer->width + srcOffsetX];
-                    for (int32_t x = 0; x < copyW; x++) {
-                        dst[x] = src[x];
+                    
+                    // Use 64-bit blit if width is even and pointers are 8-byte aligned
+                    if ((copyW & 1) == 0 && ((uintptr_t)dst & 7) == 0 && ((uintptr_t)src & 7) == 0) {
+                        blit_fast_64(dst, src, copyW / 2);  // 64-bit = 2 pixels per op
+                    } else {
+                        blit_fast_32(dst, src, copyW);      // 32-bit fallback
                     }
                 }
             }

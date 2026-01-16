@@ -10,7 +10,22 @@ extern "C" uint64_t kernel_stack_top; // Boot stack symbol
 namespace Scheduler {
     Task* currentTask = nullptr;
     Task* tasksHead = nullptr;
+    Task* idleTask = nullptr;  // Special idle task
     uint64_t nextTaskId = 1;
+    
+    // Idle Task Entry Point - runs when no other tasks are ready
+    // Uses HLT to reduce CPU power consumption and heat
+    static void IdleTaskEntry() {
+        while (true) {
+            // Enable interrupts and halt until next interrupt
+            // This saves power and reduces CPU heat
+            __asm__ volatile(
+                "sti\n\t"   // Enable interrupts
+                "hlt\n\t"   // Halt until interrupt
+                : : : "memory"
+            );
+        }
+    }
     
     // Structure of the stack pushed by ISR and Common Stub
     // In x64 Long Mode, CPU ALWAYS pushes SS and RSP (even for same-privilege)
@@ -32,6 +47,10 @@ namespace Scheduler {
     } __attribute__((packed));
 
     void Init() {
+        // CRITICAL: Disable interrupts during scheduler initialization
+        // to prevent timer IRQ from calling Schedule() before we're ready
+        __asm__ volatile("cli");
+        
         Task* mainTask = (Task*)kmalloc(sizeof(Task));
         if (!mainTask) {
             EarlyTerm::Print("[Scheduler] FATAL: Cannot allocate main task!\n");
@@ -56,6 +75,16 @@ namespace Scheduler {
         tasksHead = mainTask;
         
         EarlyTerm::Print("[Scheduler] Initialized. Main Task ID: 0\n");
+        
+        // Create the Idle Task - runs when all other tasks are sleeping
+        // This prevents 100% CPU usage when system is idle
+        CreateTask(IdleTaskEntry);
+        idleTask = tasksHead->next;  // The task we just created
+        idleTask->state = TaskState::READY;
+        EarlyTerm::Print("[Scheduler] Idle Task created for power saving\n");
+        
+        // Re-enable interrupts now that scheduler is fully initialized
+        __asm__ volatile("sti");
     }
 
     // External tick getter from PIT (1ms resolution)
@@ -75,6 +104,11 @@ namespace Scheduler {
         newTask->id = nextTaskId++;
         newTask->wake_up_time = 0;
         
+        // Use current CR3 for kernel tasks
+        uint64_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        newTask->cr3 = cr3;
+        
         // Allocate Stack (16KB)
         uint64_t* stackBase = (uint64_t*)kmalloc(16384);
         if (!stackBase) {
@@ -82,28 +116,32 @@ namespace Scheduler {
             kfree(newTask);
             return;
         }
+        kmemset(stackBase, 0, 16384);  // Zero the stack for safety
         
-        uint64_t* stackTop = (uint64_t*)((uint64_t)stackBase + 16384);
+        // Stack layout (grows downward):
+        // [stackBase + 16384] = absolute top
+        // [stackBase + 16384 - sizeof(StackFrame)] = StackFrame for iretq
+        // The task's RSP after iretq should point above StackFrame
         
-        // Setup Stack Frame for "iretq"
-        stackTop = (uint64_t*)((uint64_t)stackTop - sizeof(StackFrame));
+        uint64_t stackTop = (uint64_t)stackBase + 16384;
         
-        StackFrame* frame = (StackFrame*)stackTop;
+        // Reserve space for StackFrame at the very top
+        uint64_t* framePtr = (uint64_t*)(stackTop - sizeof(StackFrame));
+        
+        StackFrame* frame = (StackFrame*)framePtr;
         kmemset(frame, 0, sizeof(StackFrame));
         
         frame->rip = (uint64_t)entry_point;
         frame->cs = 0x08; // Kernel Code Segment
         frame->rflags = 0x202; // IF=1, Reserved=1
         
-        // CRITICAL for x64: Set RSP and SS for iretq
-        // After iretq, CPU will load RSP from here (task's own stack top)
-        frame->rsp = (uint64_t)stackBase + 16384; // Top of allocated stack
+        // After iretq, RSP will be loaded from here
+        // Point to the area BELOW the StackFrame (where task can push)
+        frame->rsp = (uint64_t)framePtr;  // Task uses space below the frame
         frame->ss = 0x10; // Kernel Data Segment
         
-        frame->ss = 0x10; // Kernel Data Segment
-        
-        newTask->stack_pointer = (uint64_t*)stackTop;
-        newTask->kernel_stack_top = (uint64_t)stackBase + 4096; // Store original top for TSS
+        newTask->stack_pointer = (uint64_t*)framePtr;
+        newTask->kernel_stack_top = stackTop;  // TSS needs the actual top
         newTask->state = TaskState::READY;
         
         // Insert into circular list after current head
@@ -212,43 +250,14 @@ namespace Scheduler {
                  if (now >= currentTask->wake_up_time) {
                      currentTask->state = TaskState::RUNNING;
                  } else {
-                     // ALL TASKS SLEEPING.
-                     // Enable interrupts and Halt CPU until next tick.
-                     // We pretend to switch to current task, but we must be careful not to return to code execution
-                     // because code would immediately loop back to Sleep logic or similar.
-                     // The safe bet is to return current_rsp, return to the "int 0x20" or IRQ handler, 
-                     // and the CPU stays in the loop of the idle task?
-                     // If we don't have an IDLE task, we simulate one:
-                     // We return, but we need to ensure we don't execute 'user' code that thinks it's awake.
-                     
-                     // NOTE: A proper OS has an Idle Task. We don't.
-                     // HACK: Busy loop with HLT inside the scheduler?
-                     // No, that blocks IRQs if called from ISR unless we STI.
-                     
-                     // Let's just create an IDLE task in Init or handle it here.
-                     // Simplest: Enable Interrupts, HLT, then check again.
-                     // BUT we are in an ISR context (IRQ0). We shouldn't block here.
-                     // We must return a valid stack.
-                     
-                     // If we return *current* stack, the task wraps up ISR and goes back to...
-                     // The instruction after Yield(). Which loops?
-                     
-                     // If we are the ONLY task and we sleep...
-                     // We need an IDLE task.
-                     
-                     // For now, let's just create a dummy IDLE task in Init() so this loop always finds SOMETHING.
-                     // But we didn't add that to plan.
-                     // Fallback: If all sleeping, just return current but don't mark it ready?
-                     // No, user code will run.
-                     
-                     // Quick fix: Just busy wait here with interrupts enabled?
-                     // Dangerous stack depth.
-                     
-                     // Let's assume there is always task 0 (Shell/Kernel) which rarely sleeps?
-                     // Shell: wait for key.
-                     
-                     // NOTE: Our Scheduler::Init creates MainTask (id 0).
-                     // If MainTask sleeps, we die.
+                     // ALL TASKS SLEEPING - Switch to Idle Task
+                     // The Idle Task uses HLT instruction to save CPU power
+                     // It will be preempted when next timer interrupt fires
+                     if (idleTask && idleTask != currentTask) {
+                         next = idleTask;
+                         next->state = TaskState::RUNNING;
+                     }
+                     // If idleTask unavailable, current task continues (rare)
                  }
              }
         }
