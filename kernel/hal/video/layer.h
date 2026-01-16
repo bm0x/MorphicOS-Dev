@@ -30,6 +30,7 @@ struct Layer {
     bool visible;
     bool dirty;            // Needs redraw
     bool has_alpha;        // Use alpha blending
+    bool frame_ready;      // Frame complete - safe to compose (prevents mid-draw flicker)
     
     Layer* next;           // Linked list for layer stack
 };

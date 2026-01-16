@@ -50,6 +50,9 @@ public:
     // Double Buffering Support
     void WaitVSync();                    // Wait for vertical retrace
     uint32_t* GetVRAMBuffer();           // Get VRAM buffer for kernel copy target
+    uint32_t* GetDisplayBuffer();        // Get display buffer (Buffer 0)
+    void CopyBufferToDisplay();          // Copy back buffer → display buffer
+    void SetDisplayToBuffer1();          // Switch display to show Buffer 1
     
     // Internal
     void WriteRegister(uint16_t index, uint16_t value);

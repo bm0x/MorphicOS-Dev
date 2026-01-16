@@ -37,11 +37,23 @@ bool Compositor::Initialize() {
     if (!frontBuffer) return false;
     
     // 3. Use Window Buffer for Drawing
-    // The Kernel Compositor handles the "Real" backbuffering.
-    // Apps draw "directly" to their Window Layer (which is offscreen).
-    backBuffer = frontBuffer;
+    // DEFAULT: Alloc scratch buffer for double buffering (prevents flickering)
+    // frontBuffer = Kernel/Screen mapped
+    // backBuffer  = Scratch RAM
     
-    backBuffer = frontBuffer;
+    // Allocate 4K buffer (max size)
+    const uint64_t MAX_PIXELS = 3840 * 2160;
+    const uint64_t BUF_SIZE = MAX_PIXELS * 4;
+    
+    // Use syscall to alloc pages
+    uint64_t addr = sys_alloc_backbuffer(BUF_SIZE);
+    
+    if (addr && (uint64_t)width * height <= MAX_PIXELS) {
+        backBuffer = (uint32_t*)addr;
+    } else {
+        // Fallback
+        backBuffer = frontBuffer;
+    }
     
     sys_debug_print("[Compositor] Init: v2.0 (Fixes Applied)\n");
     
@@ -200,9 +212,18 @@ void Compositor::DrawCursorClipped(int x, int y) {
 bool Compositor::SwapBuffers() {
     if (!backBuffer || !frontBuffer) return false;
 
+    // Double Buffering: Copy Scratch -> Kernel Buffer
+    if (backBuffer != frontBuffer) {
+        // Fast 32-bit copy
+        uint64_t count = width * height;
+        for (uint64_t i = 0; i < count; i++) {
+            frontBuffer[i] = backBuffer[i];
+        }
+    }
+
     // Present via kernel: optimized blit + best-effort VSync wait.
     // This is substantially faster than copying pixel-by-pixel in userspace.
-    return sys_video_flip(backBuffer) != 0;
+    return sys_video_flip(frontBuffer) != 0;
 }
 
 bool Compositor::SwapBuffersRect(int x, int y, int w, int h) {

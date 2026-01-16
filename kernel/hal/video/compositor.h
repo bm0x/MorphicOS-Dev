@@ -23,6 +23,7 @@ namespace Compositor {
     // Dirty rectangle tracking
     void MarkDirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
     void MarkLayerDirty(Layer* layer);
+    void MarkLayerReady(void* buffer); // Signal that a layer's buffer is ready (frame complete)
     void ClearDirtyRects();
     
     // Composition

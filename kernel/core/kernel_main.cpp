@@ -143,15 +143,9 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     HAL::PCI::Init();
     UART::Write("[BOOT-TRACE] After PCI::Init\n");
     
-    // Test BGA
-    BGADriver bga;
-    if (bga.Init()) {
-        UART::Write("[BOOT-TRACE] BGA INITIALIZED SUCCESSFULLY!\n");
-        Verbose::OK("KERNEL", "Triple Buffer Capable GPU Found.");
-        // TODO: Switch gGraphics to use BGA Backbuffer
-    } else {
-        UART::Write("[BOOT-TRACE] BGA Init Failed. Using UEFI.\n");
-    }
+    // NOTE: BGA is already initialized in Graphics::Init() above
+    // Do NOT create another BGADriver instance here - it would corrupt the hardware state
+    UART::Write("[BOOT-TRACE] BGA handled by Graphics::Init\n");
     
     // 5a. Enable Write-Combining for framebuffer acceleration
     WriteCombining::InitPAT();

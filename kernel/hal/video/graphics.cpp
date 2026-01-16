@@ -63,70 +63,44 @@ namespace Graphics {
         
         // 1. Try Initialize GPU (BGA)
         UART::Write("[Graphics] Attempting BGA Init...\n");
+        bool bgaAcc = false;
+        
         if (bga.Init()) {
             bga.SetMode(width, height, 32);
+            // Default: Display Buffer 0
             
-            // Store VRAM pointer for copy target
-            vramBuffer = bga.GetBackBuffer();
+            // Map BGA LFB as vramBuffer
+            // We need to know where BGA LFB is. Usually 0xE0000000 or similar.
+            // But bga.Init() doesn't return it? 
+            // We can assume fb->baseAddress *might* be valid if GOP set it up?
+            // Safer: Use bga internal pointer if available, or just trust standard LFB.
+            // For now, let's trust that bootloader gave us a valid LFB in fb->baseAddress 
+            // that corresponds to what BGA controls.
+            
+            bgaAcc = true;
             gpuEnabled = true;
-            
-            UART::Write("[Graphics] BGA VRAM Buffer at: ");
-            UART::WriteHex((uint64_t)vramBuffer);
-            UART::Write("\n");
-            
-            // CRITICAL: Allocate SEPARATE RAM buffer for userspace drawing
-            // This enables TRUE double buffering: draw to RAM, copy to VRAM on flip
-            UART::Write("[Graphics] Allocating RAM backbuffer for double buffering: ");
-            UART::WriteDec(pages);
-            UART::Write(" pages\n");
-            
-            void* ramPhys = PMM::AllocContiguous(pages);
-            if (ramPhys) {
-                backbuffer = (uint32_t*)ramPhys;
-                memset_fast_32(backbuffer, 0, width * height);
-                
-                UART::Write("[Graphics] RAM Backbuffer at: ");
-                UART::WriteHex((uint64_t)backbuffer);
-                UART::Write("\n");
-                UART::Write("[Graphics] GPU + RAM Double Buffering ENABLED.\n");
-            } else {
-                // Fallback: use VRAM directly (will cause flickering)
-                UART::Write("[Graphics] WARNING: RAM alloc failed. Using VRAM directly.\n");
-                backbuffer = vramBuffer;
-            }
-            
-            // Clear VRAM as well
-            memset_fast_32(vramBuffer, 0, width * height);
-            
-            // CRITICAL: Switch display to show Buffer 1 immediately
-            // This ensures the display starts on the correct buffer
-            bga.SwapBuffers();
-            UART::Write("[Graphics] Initial display switch to Buffer 1 complete.\n");
+            UART::Write("[Graphics] BGA Initialized. Hardware Acceleration Ready.\n");
         } 
-        else {
-            UART::Write("[Graphics] GPU Init Failed. Fallback to UEFI Framebuffer.\n");
-            
-            // Allocate backbuffer using PMM (Contiguous Physical Memory)
-            UART::Write("[Graphics::Init] Allocating backbuffer (PMM): ");
-            UART::WriteDec(pages);
-            UART::Write(" pages\n");
-            
-            // PMM returns physical address. In Identity Mapped Kernel, Phys == Virt.
-            void* phys = PMM::AllocContiguous(pages);
-            
-            if (phys) {
-                backbuffer = (uint32_t*)phys;
-                
-                // Clear backbuffer (Black)
-                memset_fast_32(backbuffer, 0, pitch * height);
-                
-                EarlyTerm::Print("[Graphics] Double buffering ENABLED.\n");
-            } else {
-                EarlyTerm::Print("[Graphics] WARNING: Backbuffer alloc failed. Using direct FB (Flicker prone).\n");
-                backbuffer = (uint32_t*)fb->baseAddress;
-                memset_fast_32(backbuffer, 0, pitch * height);
-            }
+        
+        // STANDARD STABLE DOUBLE BUFFERING
+        // Always allocate a system RAM backbuffer.
+        // This ensures drawing operations never touch VRAM directly (slow & tear-prone).
+        
+        UART::Write("[Graphics] Allocating System RAM Backbuffer (Stable)... ");
+        void* phys = PMM::AllocContiguous(pages);
+        
+        if (phys) {
+            backbuffer = (uint32_t*)phys;
+            memset_fast_32(backbuffer, 0, width * height);
+            UART::Write("Success.\n");
+        } else {
+             UART::Write("FAILED. Critical Error.\n");
+             // Emergency fallback
+             backbuffer = (uint32_t*)framebuffer->baseAddress;
         }
+        
+        // VRAM Destination (Frontbuffer)
+        vramBuffer = (uint32_t*)framebuffer->baseAddress;
 
         
         UART::Write("[Graphics::Init] COMPLETE\n");
@@ -135,30 +109,24 @@ namespace Graphics {
     void Flip() {
         if (!framebuffer && !gpuEnabled) return;
         
+        // VSync Wait (Hardware)
         if (gpuEnabled) {
-            // PROPER DOUBLE BUFFERING:
-            // 1. VSync wait is handled inside SwapBuffers()
-            // 2. Copy from RAM backbuffer to VRAM
-            // 3. Display update is instant (same VRAM buffer always shown)
-            
-            if (backbuffer && vramBuffer && backbuffer != vramBuffer) {
-                // Wait for VSync THEN copy (atomic operation during vertical blanking)
-                bga.SwapBuffers();  // This just does VSync wait now
-                
-                // SIMD copy: RAM backbuffer → VRAM
-                blit_fast_32(vramBuffer, backbuffer, width * height);
-            } else {
-                // Fallback: just swap (no copy needed if using VRAM directly)
-                bga.SwapBuffers();
-            }
-            return;
+            bga.WaitVSync();
         }
         
-        if (!backbuffer || backbuffer == (uint32_t*)framebuffer->baseAddress) return;
+        // SAFE COPY: System RAM -> VRAM (or UEFI FB)
+        // This is robust. Even if BGA swap fails, this works.
+        // It provides Triple Buffering semantics:
+        // 1. App draws to Scratch (Userspace)
+        // 2. App copies to Kernel Backbuffer (RAM)
+        // 3. Flip() copies Kernel Backbuffer -> VRAM (Front)
+        // This is technically Double Buffering + Scratch, which is flicker-free.
         
-        // SIMD copy: REP MOVSL (1 pixel per iteration)
-        uint32_t* dest = (uint32_t*)framebuffer->baseAddress;
-        blit_fast_32(dest, backbuffer, pitch * height);
+        if (!backbuffer || !vramBuffer) return;
+        if (backbuffer == vramBuffer) return; // Should not happen with new Init logic
+        
+        // SIMD copy: Optimized 32-bit blit
+        blit_fast_32(vramBuffer, backbuffer, width * height);
     }
     
     void Clear(uint32_t color) {

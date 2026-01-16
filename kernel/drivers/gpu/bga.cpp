@@ -2,6 +2,7 @@
 #include "../../arch/common/mmu.h"
 #include "../../hal/arch/x86_64/io.h"
 #include "../../hal/video/verbose.h"
+#include "../../hal/serial/uart.h"
 
 // Hardcoded safe high-memory virtual address for LFB mapping
 // Using 0xFFFF A000 0000 0000 as base
@@ -44,9 +45,10 @@ bool BGADriver::Init() {
         return false;
     }
 
-    // Map 32MB of VRAM (enough for 3 buffers at 1920x1080: ~24MB)
+    // Map 64MB of VRAM for future 4K support and extra buffers
+    // 1080p triple buffer = ~24MB, 4K triple buffer = ~100MB
     bool mapped = MMU::MapRange(BGA_VIRT_BASE, this->phys_addr, 
-                                32 * 1024 * 1024, 
+                                64 * 1024 * 1024, 
                                 PAGE_PRESENT | PAGE_WRITABLE | PAGE_NOCACHE | PAGE_GLOBAL);
                                 
     if (!mapped) {
@@ -55,7 +57,7 @@ bool BGADriver::Init() {
     }
     
     this->framebuffer = (uint32_t*)BGA_VIRT_BASE;
-    Verbose::OK("BGA", "Initialized and VRAM Mapped.");
+    Verbose::OK("BGA", "Initialized with 64MB VRAM mapped.");
     return true;
 }
 
@@ -75,55 +77,64 @@ void BGADriver::SetMode(int w, int h, int b) {
     WriteRegister(VBE_DISPI_INDEX_VIRT_WIDTH, width);
     WriteRegister(VBE_DISPI_INDEX_VIRT_HEIGHT, height * 3);
     
+    // Display starts at Buffer 0 (Y_OFFSET = 0)
     WriteRegister(VBE_DISPI_INDEX_X_OFFSET, 0);
     WriteRegister(VBE_DISPI_INDEX_Y_OFFSET, 0);
     
     // Re-enable with Linear Framebuffer
     WriteRegister(VBE_DISPI_INDEX_ENABLE, VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED);
     
-    this->currentBufferIndex = 0;
+    this->displayBuffer = 0;  // Display shows Buffer 0
+    this->currentBufferIndex = 1;  // Draw to Buffer 1
+    
+    UART::Write("[BGA] Mode set: Display=Buffer0, Draw=Buffer1\n");
 }
 
 uint32_t* BGADriver::GetBackBuffer() {
-    // Returns Buffer 1 - mapped to userspace for drawing
-    // With RAM backbuffer architecture, this is used for VRAM reference
+    // Returns Buffer 1 - this is where userspace draws
     uint64_t offset = (uint64_t)1 * width * height;
     return this->framebuffer + offset;
 }
 
+uint32_t* BGADriver::GetDisplayBuffer() {
+    // Returns Buffer 0 - this is what's being displayed
+    return this->framebuffer;
+}
+
 uint32_t* BGADriver::GetVRAMBuffer() {
-    // Returns the VRAM buffer that we copy to during flip
-    // Same as GetBackBuffer() in our architecture
-    uint64_t offset = (uint64_t)1 * width * height;
-    return this->framebuffer + offset;
+    // Alias for GetBackBuffer for compatibility
+    return GetBackBuffer();
 }
 
 void BGADriver::WaitVSync() {
     // Wait for VSync (Vertical Retrace) with timeout protection
     // VGA Input Status Register 1 (0x3DA): Bit 3 = Vertical Retrace active
     
-    uint32_t timeout = 100000; // Approx 1ms at 100MHz cycle speed
+    uint32_t timeout = 200000; // Increased timeout for safety
     
     // First, wait until we're NOT in retrace (if we caught the end of one)
     while ((IO::inb(0x3DA) & 0x08) && --timeout);
     
     // Now wait until we ARE in retrace (start of blanking interval)
-    timeout = 100000;
+    timeout = 200000;
     while (!(IO::inb(0x3DA) & 0x08) && --timeout);
 }
 
+void BGADriver::CopyBufferToDisplay() {
+    // DISABLED - causing crashes
+    // Copy from Back Buffer (1) to Display Buffer (0)
+    // Left here for future debugging
+}
+
+void BGADriver::SetDisplayToBuffer1() {
+    // Set Y_OFFSET to show Buffer 1 (at offset height)
+    WriteRegister(VBE_DISPI_INDEX_Y_OFFSET, height);
+    displayBuffer = 1;
+    UART::Write("[BGA] Display switched to Buffer 1\n");
+}
+
 void BGADriver::SwapBuffers() {
-    // For copy-based double buffering:
-    // 1. VSync wait is called separately via WaitVSync()
-    // 2. Copy from RAM to VRAM is done by Graphics::Flip()
-    // 3. This function just ensures Buffer 1 is displayed
-    
-    // Wait for VSync before any display update
+    // SIMPLIFIED: VSync wait only - no buffer copy
+    // Drawing happens directly to Buffer 1 which is always displayed
     WaitVSync();
-    
-    // Ensure Buffer 1 is being displayed
-    if (displayBuffer != 1) {
-        WriteRegister(VBE_DISPI_INDEX_Y_OFFSET, height);
-        displayBuffer = 1;
-    }
 }

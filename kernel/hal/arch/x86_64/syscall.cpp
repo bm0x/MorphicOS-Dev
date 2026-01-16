@@ -631,11 +631,24 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case 51: // SYS_VIDEO_FLIP
     {
-        // For Phase 5 Triple Buffering: 
-        // We trigger the actual hardware flip here.
-        // In the future, we should probably only allow this for the Compositor process.
+        uint64_t buffer = arg1;
         
-        Graphics::Flip();
+        // 1. Check if this is the Main Desktop Backbuffer (mapped at 0x600100000000)
+        // If so, perform actual screen flip (Hardware VSync Swap)
+        const uint64_t DESKTOP_BUFFER_VIRT = 0x600100000000ULL;
+        
+        if (buffer == DESKTOP_BUFFER_VIRT) {
+            Graphics::Flip();
+        } 
+        else {
+            // 2. App Window Flip
+            // Translate User Virtual Address -> Physical Address
+            // (Compositor stores layer->buffer as Physical Address for App Windows)
+            uint64_t phys = MMU::GetPhysical(buffer);
+            if (phys) {
+                Compositor::MarkLayerReady((void*)phys);
+            }
+        }
         return 0;
     }
 

@@ -187,6 +187,16 @@ namespace Compositor {
         MarkDirty(layer->x, layer->y, layer->width, layer->height);
     }
     
+    void MarkLayerReady(void* buffer) {
+        // Find layer owning this buffer
+        for (uint32_t i = 0; i < layerCount; i++) {
+            if (layers[i] && layers[i]->buffer == buffer) {
+                layers[i]->frame_ready = true;
+                return;
+            }
+        }
+    }
+    
     void ClearDirtyRects() {
         for (uint32_t i = 0; i < MAX_DIRTY_RECTS; i++) {
             dirtyRects[i].valid = false;
@@ -334,6 +344,8 @@ namespace Compositor {
             }
             
             if (!layer->visible) continue;
+            // Only draw if the app has signaled that the frame is ready (prevents black/garbage initial frame)
+            if (!layer->frame_ready) continue;
             // if (!layer->buffer) continue; // Checked above
 
             // FORCE REDRAW: Ignore dirty flag for app windows in this composition mode
