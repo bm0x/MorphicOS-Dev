@@ -21,6 +21,16 @@ extern "C" {
 class Compositor {
 public:
     static bool Initialize();
+    static void Shutdown();
+    
+    // Rendering Targets
+    enum class RenderTarget {
+        BACK_BUFFER,
+        FRONT_BUFFER
+    };
+    static void SetRenderTarget(RenderTarget target);
+    
+    // Buffer Management
     static void Clear(uint32_t color);
     // Presents the backbuffer to the framebuffer.
     // Returns true if the kernel reports a VSync-aligned present (best-effort).
@@ -71,8 +81,9 @@ public:
     static void ClearClip();
     
 private:
-    static uint32_t* frontBuffer; // VRAM
-    static uint32_t* backBuffer;  // RAM
+    static uint32_t* frontBuffer; // VRAM (Shared Kernel Buffer)
+    static uint32_t* backBuffer;  // RAM (Scratch Buffer)
+    static uint32_t* currentBuffer; // Active Target Pointer
     static int width;
     static int height;
     static int bpp; // Assumed 32

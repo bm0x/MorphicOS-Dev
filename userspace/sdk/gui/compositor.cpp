@@ -5,9 +5,10 @@
 // Static member storage
 uint32_t* Compositor::frontBuffer = nullptr;
 uint32_t* Compositor::backBuffer = nullptr;
+uint32_t* Compositor::currentBuffer = nullptr; // Active Target
 int Compositor::width = 0;
 int Compositor::height = 0;
-int Compositor::bpp = 32; // Assuming 32
+int Compositor::bpp = 32;
 
 bool Compositor::clipEnabled = false;
 int Compositor::clipX = 0;
@@ -15,6 +16,7 @@ int Compositor::clipY = 0;
 int Compositor::clipW = 0;
 int Compositor::clipH = 0;
 
+// Helpers
 static inline int i_max(int a, int b) { return a > b ? a : b; }
 static inline int i_min(int a, int b) { return a < b ? a : b; }
 
@@ -24,74 +26,34 @@ static inline char ToUpperAscii(char c) {
 }
 
 bool Compositor::Initialize() {
-    // 1. Get Screen Geometry
     uint64_t info = sys_get_screen_info();
     width = (info >> 32) & 0xFFFFFFFF;
     height = info & 0xFFFFFFFF;
     
     if (width == 0 || height == 0) return false;
     
-    // 2. Map Window Buffer (Kernel Managed)
-    // sys_video_map now returns the Window Buffer (Virtual Address)
     frontBuffer = (uint32_t*)sys_video_map();
     if (!frontBuffer) return false;
     
-    // 3. Use Window Buffer for Drawing
-    // DEFAULT: Alloc scratch buffer for double buffering (prevents flickering)
-    // frontBuffer = Kernel/Screen mapped
-    // backBuffer  = Scratch RAM
-    
-    // Allocate 4K buffer (max size)
+    // Alloc scratch buffer
     const uint64_t MAX_PIXELS = 3840 * 2160;
     const uint64_t BUF_SIZE = MAX_PIXELS * 4;
-    
-    // Use syscall to alloc pages
     uint64_t addr = sys_alloc_backbuffer(BUF_SIZE);
     
     if (addr && (uint64_t)width * height <= MAX_PIXELS) {
         backBuffer = (uint32_t*)addr;
     } else {
-        // Fallback
         backBuffer = frontBuffer;
     }
     
+    currentBuffer = backBuffer;
     sys_debug_print("[Compositor] Init: v2.0 (Fixes Applied)\n");
-    
-    sys_debug_print("[Compositor] Init: Mapped Buffer. Width: ");
-    char num[32];
-    int len = 0;
-    uint32_t val = width;
-    do { num[len++] = '0'+(val%10); val/=10; } while(val);
-    for(int i=0; i<len/2; i++) { char t=num[i]; num[i]=num[len-1-i]; num[len-1-i]=t; }
-    num[len] = 0;
-    sys_debug_print(num);
-    sys_debug_print(" Height: ");
-    
-    len = 0; val = height;
-    do { num[len++] = '0'+(val%10); val/=10; } while(val);
-    for(int i=0; i<len/2; i++) { char t=num[i]; num[i]=num[len-1-i]; num[len-1-i]=t; }
-    num[len] = '\n'; num[len+1] = 0;
-    sys_debug_print(num);
-    
-    // Sanity Check
-    if (width > 4096 || height > 2160) {
-        sys_debug_print("[Compositor] ERROR: Invalid Dimensions!\n");
-        return false;
-    }
-    
-    // Legacy support: Don't allocate separate backbuffer.
-    // sys_alloc_backbuffer is not needed for Windowed Apps.
-    
     return true;
 }
 
-void Compositor::Clear(uint32_t color) {
-    if (!backBuffer) return;
-    
-    uint64_t total_pixels = (uint64_t)width * height;
-    for (uint64_t i = 0; i < total_pixels; i++) {
-        backBuffer[i] = color;
-    }
+void Compositor::SetRenderTarget(RenderTarget target) {
+    if (target == RenderTarget::BACK_BUFFER) currentBuffer = backBuffer;
+    else if (target == RenderTarget::FRONT_BUFFER) currentBuffer = frontBuffer;
 }
 
 void Compositor::SetClip(int x, int y, int w, int h) {
@@ -112,8 +74,10 @@ bool Compositor::IntersectsClip(int x, int y, int w, int h) {
     return !(x2 <= clipX || x >= cx2 || y2 <= clipY || y >= cy2);
 }
 
+// ... 
+
 void Compositor::FillRectClipped(int x, int y, int w, int h, uint32_t color) {
-    if (!backBuffer) return;
+    if (!currentBuffer) return; // Use Active Target
     if (w <= 0 || h <= 0) return;
 
     // Clip to screen
@@ -140,7 +104,7 @@ void Compositor::FillRectClipped(int x, int y, int w, int h, uint32_t color) {
              continue;
         }
 
-        uint32_t* row = &backBuffer[offset];
+        uint32_t* row = &currentBuffer[offset];
         for (int i = 0; i < w; i++) row[i] = color;
     }
 }
@@ -200,12 +164,22 @@ void Compositor::DrawCursorClipped(int x, int y) {
             uint8_t code = cursor_bitmap[cy * cursor_w + cx];
             uint32_t color = 0;
             
+// ... (In DrawCursorClipped)
             if (code == 1) color = 0xFFFFFFFF; // White
             else if (code == 2) color = 0xFF000000; // Black
             else continue; // Transparent
             
-            backBuffer[py * width + px] = color;
+            if (currentBuffer) currentBuffer[py * width + px] = color;
         }
+    }
+}
+
+void Compositor::Clear(uint32_t color) {
+    if (!currentBuffer) return;
+    
+    uint64_t total_pixels = (uint64_t)width * height;
+    for (uint64_t i = 0; i < total_pixels; i++) {
+        currentBuffer[i] = color;
     }
 }
 

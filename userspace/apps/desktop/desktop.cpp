@@ -798,17 +798,20 @@ extern "C" int main(void* asset_ptr) {
             }
         }
 
+        // Removed initial launcher draw. It is now Post-Compose.
+        /* 
         if (menu_open) {
             g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
         }
+        */
 
         // Removed Pre-Compose Cursor drawing
-        // Compositor::DrawCursor(mouse_x, mouse_y);
         Compositor::ClearClip();
 
         // FINAL PIPELINE STEP:
         // 1. Flush Desktop Scratch -> Kernel RAM Buffer
         // This puts the Wallpaper + Icons + Taskbar into the shared buffer
+        // Note: Default Target is BACK_BUFFER, used by RenderScene/RenderTaskbar
         if (g_dirty.valid) {
             Compositor::FlushRect(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
         } else {
@@ -816,12 +819,23 @@ extern "C" int main(void* asset_ptr) {
         }
 
         // 2. Compose Apps (Kernel Overlay) 
-        // Draws independent app windows (Terminal, Calc) ON TOP of the shared buffer
+        // Kernel draws apps ON TOP of the shared buffer
         sys_compose_layers();
 
-        // 3. Draw Cursor (Userspace Post-Compose)
-        // Draw directly to the Shared Buffer so it appears ON TOP of the Apps
-        Compositor::DrawCursorToFront(mouse_x, mouse_y);
+        // 3. Post-Compose Overlay (Launcher + Cursor)
+        // Switch to FRONT BUFFER (Direct Shared Access)
+        Compositor::SetRenderTarget(Compositor::RenderTarget::FRONT_BUFFER);
+        
+        // 3a. Draw Launcher (if open) - Now On Top of Apps
+        if (menu_open) {
+             g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
+        }
+        
+        // 3b. Draw Cursor (On Top of Everything)
+        Compositor::DrawCursor(mouse_x, mouse_y);
+        
+        // Restore Target for next frame logic (Desktop rendering)
+        Compositor::SetRenderTarget(Compositor::RenderTarget::BACK_BUFFER);
 
         // 4. Present (Flip)
         // Copies the fully composed Kernel RAM Buffer to Video RAM (Screen) synchronously with VSync.

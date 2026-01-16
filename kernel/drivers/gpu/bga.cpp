@@ -106,18 +106,27 @@ uint32_t* BGADriver::GetVRAMBuffer() {
     return GetBackBuffer();
 }
 
+// Include Scheduler
+#include "../../process/scheduler.h"
+
 void BGADriver::WaitVSync() {
     // Wait for VSync (Vertical Retrace) with timeout protection
     // VGA Input Status Register 1 (0x3DA): Bit 3 = Vertical Retrace active
     
-    uint32_t timeout = 200000; // Increased timeout for safety
+    // 1. Wait until we are NOT in retrace (if currently in one)
+    // This part is short (max 1ms usually)
+    uint32_t timeout = 200000;
+    while ((IO::inb(0x3DA) & 0x08) && --timeout) {
+        asm volatile("pause");
+    }
     
-    // First, wait until we're NOT in retrace (if we caught the end of one)
-    while ((IO::inb(0x3DA) & 0x08) && --timeout);
-    
-    // Now wait until we ARE in retrace (start of blanking interval)
-    timeout = 200000;
-    while (!(IO::inb(0x3DA) & 0x08) && --timeout);
+    // 2. Wait until we ARE in retrace (Start of VBlank)
+    // This can take up to 16ms. CRITICAL to yield here.
+    timeout = 100000; // Adjusted for yield latency
+    while (!(IO::inb(0x3DA) & 0x08) && --timeout) {
+        // Yield to let other apps run processing logic
+        Scheduler::Yield(); 
+    }
 }
 
 void BGADriver::CopyBufferToDisplay() {
