@@ -587,17 +587,26 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
             return 0;
         }
         
-        // The kernel backbuffer is in identity-mapped kernel space
-        // We need to map it to userspace
         uint64_t user_video_virt = 0x600100000000ULL;
         uint64_t size = (uint64_t)width * height * 4;
         uint64_t pages = (size + 4095) / 4096;
         
-        // Map each page of kernel backbuffer to userspace
+        // Resolve virtual kernel address to physical address
+        // Works for both PMM (Identity) and BGA (Mapped High Mem)
+        // because both are physically contiguous.
+        
+        uint64_t k_virt_base = (uint64_t)kernelBackbuf;
+        uint64_t k_phys_base = MMU::GetPhysical(k_virt_base);
+        
+        if (k_phys_base == 0) {
+            UART::Write("[Syscall] SYS_VIDEO_MAP: Failed to resolve physical address!\n");
+            return 0;
+        }
+        
+        // Map contiguous physical range to userspace
         for (uint64_t i = 0; i < pages; i++) {
-            uint64_t phys_addr = (uint64_t)kernelBackbuf + i * 4096;
             MMU::MapPage(user_video_virt + i * 4096, 
-                         phys_addr, 
+                         k_phys_base + i * 4096, 
                          PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
         }
         
@@ -615,23 +624,11 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case 51: // SYS_VIDEO_FLIP
     {
-        // Apps draw to their window buffer. Desktop is the compositor.
-        // Apps should NOT trigger full Compose+Flip as that overwrites Desktop's scene.
-        // Instead, we just mark the screen dirty so Desktop's next frame picks up changes.
-        //
-        // NOTE: Desktop's main loop calls its own SwapBuffersRect which handles
-        // reading all window layers and presenting them.
+        // For Phase 5 Triple Buffering: 
+        // We trigger the actual hardware flip here.
+        // In the future, we should probably only allow this for the Compositor process.
         
-        uint32_t w = Graphics::GetWidth();
-        uint32_t h = Graphics::GetHeight();
-        
-        // Mark entire screen dirty (Desktop will see this)
-        Compositor::MarkDirty(0, 0, w, h);
-        
-        // DO NOT call Compose+Flip here - Desktop handles that
-        // Compositor::Compose();
-        // Compositor::Flip();
-        
+        Graphics::Flip();
         return 0;
     }
 

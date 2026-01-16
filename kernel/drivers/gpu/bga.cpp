@@ -44,9 +44,9 @@ bool BGADriver::Init() {
         return false;
     }
 
-    // Map 16MB of VRAM (enough for 3 buffers at high res)
+    // Map 32MB of VRAM (enough for 3 buffers at 1920x1080: ~24MB)
     bool mapped = MMU::MapRange(BGA_VIRT_BASE, this->phys_addr, 
-                                16 * 1024 * 1024, 
+                                32 * 1024 * 1024, 
                                 PAGE_PRESENT | PAGE_WRITABLE | PAGE_NOCACHE | PAGE_GLOBAL);
                                 
     if (!mapped) {
@@ -85,26 +85,28 @@ void BGADriver::SetMode(int w, int h, int b) {
 }
 
 uint32_t* BGADriver::GetBackBuffer() {
-    // Return the virtual address of the NEXT buffer (hidden)
-    uint32_t drawingIdx = (currentBufferIndex + 1) % 3;
-    uint64_t offset = (uint64_t)drawingIdx * width * height; // Offset in 32-bit words if typed pointer? 
-    // Wait. Framebuffer is uint32_t*.
-    // offset calculation:
-    // If width=1024, height=768. 
-    // Buffer 0 starts at index 0.
-    // Buffer 1 starts at index 1024*768.
-    // Correct.
+    // Userspace compositor mode: always return Buffer 1
+    // This is the buffer that gets mapped to userspace
+    uint64_t offset = (uint64_t)1 * width * height;
     return this->framebuffer + offset;
 }
 
 void BGADriver::SwapBuffers() {
-    // Switch visible frame to the one we just drew
-    currentBufferIndex = (currentBufferIndex + 1) % 3;
+    // Wait for VSync (Vertical Retrace) to prevent tearing
+    // VGA Input Status Register 1 (0x3DA): Bit 3 = Vertical Retrace active
     
-    // Hardware Flip via Y Offset
-    uint16_t y_offset = currentBufferIndex * height;
-    WriteRegister(VBE_DISPI_INDEX_Y_OFFSET, y_offset);
+    // First, wait until we're NOT in retrace (if we caught the end of one)
+    while (IO::inb(0x3DA) & 0x08);
+    // Now wait until we ARE in retrace (start of blanking interval)
+    while (!(IO::inb(0x3DA) & 0x08));
     
-    // Note: In a real driver we would wait for Vertical Retrace here
-    // to prevent tearing during the flip. But BGA virtual hardware is instant.
+    // Always show Buffer 1 (the one userspace is drawing to)
+    // First call switches from Buffer 0 to Buffer 1
+    // Subsequent calls just re-affirm Buffer 1 (no-op for hardware)
+    if (displayBuffer != 1) {
+        WriteRegister(VBE_DISPI_INDEX_Y_OFFSET, height);
+        displayBuffer = 1;
+    }
+    // With VSync wait, we reduce tearing by ensuring the display
+    // only refreshes during the vertical blanking interval
 }

@@ -5,6 +5,7 @@
 #include "early_term.h"
 #include "alpha_lut.h"
 #include "../../mm/pmm.h"
+#include "../../drivers/gpu/bga.h"
 
 // SIMD optimized memory operations (from blit_fast.S)
 extern "C" {
@@ -19,8 +20,6 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
-
-
 namespace Graphics {
 
     static FramebufferInfo* framebuffer = nullptr;
@@ -28,6 +27,10 @@ namespace Graphics {
     static uint32_t width = 0;
     static uint32_t height = 0;
     static uint32_t pitch = 0;
+    
+    // GPU Driver Instance
+    static BGADriver bga;
+    static bool gpuEnabled = false;
     
     void Init(FramebufferInfo* fb) {
         UART::Write("[Graphics::Init] START\n");
@@ -53,28 +56,45 @@ namespace Graphics {
         Alpha::InitLUT();
         UART::Write("[Graphics::Init] Alpha::InitLUT done\n");
         
-        // Allocate backbuffer using PMM (Contiguous Physical Memory)
-        uint32_t bufferSize = pitch * height * sizeof(uint32_t);
-        uint32_t pages = (bufferSize + 4095) / 4096;
-        
-        UART::Write("[Graphics::Init] Allocating backbuffer (PMM): ");
-        UART::WriteDec(pages);
-        UART::Write(" pages\n");
-        
-        // PMM returns physical address. In Identity Mapped Kernel, Phys == Virt.
-        void* phys = PMM::AllocContiguous(pages);
-        
-        if (phys) {
-            backbuffer = (uint32_t*)phys;
+        // 1. Try Initialize GPU (BGA)
+        UART::Write("[Graphics] Attempting BGA Init...\n");
+        if (bga.Init()) {
+            bga.SetMode(width, height, 32);
+            backbuffer = bga.GetBackBuffer();
+            gpuEnabled = true;
+            UART::Write("[Graphics] GPU Acceleration ENABLED (Triple Buffering).\n");
             
-            // Clear backbuffer (Black)
-            memset_fast_32(backbuffer, 0, pitch * height);
+            // Clear all buffers initially to avoid garbage
+            // We need to cycle through them or just clear the current one
+            // Simple clear of current backbuffer:
+            memset_fast_32(backbuffer, 0, width * height);
+        } 
+        else {
+            UART::Write("[Graphics] GPU Init Failed. Fallback to UEFI Framebuffer.\n");
             
-            EarlyTerm::Print("[Graphics] Double buffering ENABLED.\n");
-        } else {
-            EarlyTerm::Print("[Graphics] WARNING: Backbuffer alloc failed. Using direct FB (Flicker prone).\n");
-            backbuffer = (uint32_t*)fb->baseAddress;
-            memset_fast_32(backbuffer, 0, pitch * height);
+            // Allocate backbuffer using PMM (Contiguous Physical Memory)
+            uint32_t bufferSize = pitch * height * sizeof(uint32_t);
+            uint32_t pages = (bufferSize + 4095) / 4096;
+            
+            UART::Write("[Graphics::Init] Allocating backbuffer (PMM): ");
+            UART::WriteDec(pages);
+            UART::Write(" pages\n");
+            
+            // PMM returns physical address. In Identity Mapped Kernel, Phys == Virt.
+            void* phys = PMM::AllocContiguous(pages);
+            
+            if (phys) {
+                backbuffer = (uint32_t*)phys;
+                
+                // Clear backbuffer (Black)
+                memset_fast_32(backbuffer, 0, pitch * height);
+                
+                EarlyTerm::Print("[Graphics] Double buffering ENABLED.\n");
+            } else {
+                EarlyTerm::Print("[Graphics] WARNING: Backbuffer alloc failed. Using direct FB (Flicker prone).\n");
+                backbuffer = (uint32_t*)fb->baseAddress;
+                memset_fast_32(backbuffer, 0, pitch * height);
+            }
         }
 
         
@@ -82,8 +102,17 @@ namespace Graphics {
     }
     
     void Flip() {
-        if (!framebuffer || !backbuffer) return;
-        if (backbuffer == (uint32_t*)framebuffer->baseAddress) return;
+        if (!framebuffer && !gpuEnabled) return;
+        
+        if (gpuEnabled) {
+            bga.SwapBuffers();
+            // NOTE: Do NOT update backbuffer pointer!
+            // Userspace has a static mapping to the original backbuffer (Buffer 1).
+            // Changing this pointer would break the userspace → kernel → display chain.
+            return;
+        }
+        
+        if (!backbuffer || backbuffer == (uint32_t*)framebuffer->baseAddress) return;
         
         // SIMD copy: REP MOVSL (1 pixel per iteration)
         uint32_t* dest = (uint32_t*)framebuffer->baseAddress;

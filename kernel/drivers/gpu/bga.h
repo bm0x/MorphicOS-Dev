@@ -35,10 +35,11 @@ private:
     uint32_t width, height, bpp;
     uint32_t* framebuffer; // Virtual address
     uint32_t currentBufferIndex;
+    uint32_t displayBuffer;   // Which buffer is currently being displayed (0 or 1)
     uint64_t phys_addr;
     
 public:
-    BGADriver() : framebuffer(nullptr), currentBufferIndex(0), phys_addr(0) {}
+    BGADriver() : framebuffer(nullptr), currentBufferIndex(0), displayBuffer(0), phys_addr(0) {}
     
     bool Init() override;
     void SetMode(int w, int h, int b) override;

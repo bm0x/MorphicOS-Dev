@@ -8,6 +8,16 @@ extern "C" {
         // We can't print easily here without dependency, so just hang
         while(1);
     }
+    
+    // Global constructor/destructor support
+    void *__dso_handle;
+    
+    int __cxa_atexit(void (*destructor) (void *), void *arg, void *dso) {
+        (void)destructor;
+        (void)arg;
+        (void)dso;
+        return 0; // Success
+    }
 
     // Static Object Initialization Guards (for local statics)
     int __cxa_guard_acquire(uint64_t *guard) {
