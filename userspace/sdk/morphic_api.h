@@ -193,6 +193,13 @@ namespace MorphicAPI {
         virtual void OnUpdate() = 0;
         virtual void OnRender(Graphics& g) = 0;
         
+        // Flag to trigger redraw
+        bool needsRedraw;
+
+        void Invalidate() {
+            needsRedraw = true;
+        }
+
         void Run() {
             if (!Init()) {
                  sys_debug_print("Failed to init window\n");
@@ -200,11 +207,22 @@ namespace MorphicAPI {
             }
 
             Graphics g(backbuffer, width, height, width); // Pitch = width (linear)
+            
+            // Initial draw
+            needsRedraw = true;
 
             while (running) {
                 // Process all pending events first (responsive input)
                 OSEvent ev;
-                while (sys_get_event(&ev)) {
+                bool hadEvent = false;
+                
+                // Burst process events
+                int maxEvents = 20; 
+                while (sys_get_event(&ev) && maxEvents--) {
+                    hadEvent = true;
+                    // Trigger redraw on any input
+                    needsRedraw = true;
+                    
                     if (ev.type == OSEvent::KEY_PRESS) {
                         if (ev.ascii == 27) { // ESC
                              running = false; 
@@ -219,25 +237,43 @@ namespace MorphicAPI {
                     }
                 }
 
-                OnUpdate();
-                OnRender(g);
+                OnUpdate(); // Animation logic might set needsRedraw
+                // Ideally OnUpdate only runs if needed or on timer? 
+                // For now, run update every frame, but Render only on dirty.
+                
+                if (needsRedraw) {
+                    OnRender(g);
 
-                // Commit Frame: Copy scratch to kernel buffer
-                if (backbuffer != kernelBuffer) {
-                    Helpers::memcpy(kernelBuffer, backbuffer, width * height * 4);
+                    // Commit Frame: Copy scratch to kernel buffer
+                    if (backbuffer != kernelBuffer) {
+                        Helpers::memcpy(kernelBuffer, backbuffer, width * height * 4);
+                    }
+
+                    // Flip/Notify Kernel
+                    sys_video_flip(kernelBuffer);
+                    needsRedraw = false;
+                } else {
+                    // Smart Sleep: If no events and no redraw needed, yield efficiently.
+                    // Ideally we should block until event, but sys_wait_event not exposed yet?
+                    // sys_yield is non-blocking (just timeslice).
+                    // This is still polling but lighter.
+                    sys_yield();
                 }
-
-                // Flip/Notify Kernel
-                sys_video_flip(kernelBuffer);
                 
                 // Yield CPU time to other tasks - improves input responsiveness
-                sys_yield();
+                // sys_yield(); // Handled in if/else
             }
         }
         
-        virtual void OnKeyDown(char c) {}
-        virtual void OnMouseDown(int x, int y, int btn) {}
-        virtual void OnMouseMove(int x, int y) {}
+        virtual void OnKeyDown(char c) { Invalidate(); }
+        virtual void OnMouseDown(int x, int y, int btn) { Invalidate(); }
+        virtual void OnMouseMove(int x, int y) { /* Invalidate(); */ 
+            // Only invalidate on drag or hover? 
+            // Setting Invalidate here makes it always redraw on mouse move (High FPS).
+            // For "Bestial Optimization", maybe only if hover logic exists.
+            // But base implementation doesn't know. Let's default to YES for responsiveness.
+            Invalidate(); 
+        }
     };
 
 }
