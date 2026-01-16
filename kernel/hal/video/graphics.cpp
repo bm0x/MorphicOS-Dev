@@ -23,7 +23,8 @@ static inline uint8_t inb(uint16_t port) {
 namespace Graphics {
 
     static FramebufferInfo* framebuffer = nullptr;
-    static uint32_t* backbuffer = nullptr;
+    static uint32_t* backbuffer = nullptr;     // RAM buffer (userspace draws here)
+    static uint32_t* vramBuffer = nullptr;     // VRAM buffer (display target)
     static uint32_t width = 0;
     static uint32_t height = 0;
     static uint32_t pitch = 0;
@@ -56,26 +57,56 @@ namespace Graphics {
         Alpha::InitLUT();
         UART::Write("[Graphics::Init] Alpha::InitLUT done\n");
         
+        // Calculate buffer requirements
+        uint32_t bufferSize = width * height * sizeof(uint32_t);
+        uint32_t pages = (bufferSize + 4095) / 4096;
+        
         // 1. Try Initialize GPU (BGA)
         UART::Write("[Graphics] Attempting BGA Init...\n");
         if (bga.Init()) {
             bga.SetMode(width, height, 32);
-            backbuffer = bga.GetBackBuffer();
-            gpuEnabled = true;
-            UART::Write("[Graphics] GPU Acceleration ENABLED (Triple Buffering).\n");
             
-            // Clear all buffers initially to avoid garbage
-            // We need to cycle through them or just clear the current one
-            // Simple clear of current backbuffer:
-            memset_fast_32(backbuffer, 0, width * height);
+            // Store VRAM pointer for copy target
+            vramBuffer = bga.GetBackBuffer();
+            gpuEnabled = true;
+            
+            UART::Write("[Graphics] BGA VRAM Buffer at: ");
+            UART::WriteHex((uint64_t)vramBuffer);
+            UART::Write("\n");
+            
+            // CRITICAL: Allocate SEPARATE RAM buffer for userspace drawing
+            // This enables TRUE double buffering: draw to RAM, copy to VRAM on flip
+            UART::Write("[Graphics] Allocating RAM backbuffer for double buffering: ");
+            UART::WriteDec(pages);
+            UART::Write(" pages\n");
+            
+            void* ramPhys = PMM::AllocContiguous(pages);
+            if (ramPhys) {
+                backbuffer = (uint32_t*)ramPhys;
+                memset_fast_32(backbuffer, 0, width * height);
+                
+                UART::Write("[Graphics] RAM Backbuffer at: ");
+                UART::WriteHex((uint64_t)backbuffer);
+                UART::Write("\n");
+                UART::Write("[Graphics] GPU + RAM Double Buffering ENABLED.\n");
+            } else {
+                // Fallback: use VRAM directly (will cause flickering)
+                UART::Write("[Graphics] WARNING: RAM alloc failed. Using VRAM directly.\n");
+                backbuffer = vramBuffer;
+            }
+            
+            // Clear VRAM as well
+            memset_fast_32(vramBuffer, 0, width * height);
+            
+            // CRITICAL: Switch display to show Buffer 1 immediately
+            // This ensures the display starts on the correct buffer
+            bga.SwapBuffers();
+            UART::Write("[Graphics] Initial display switch to Buffer 1 complete.\n");
         } 
         else {
             UART::Write("[Graphics] GPU Init Failed. Fallback to UEFI Framebuffer.\n");
             
             // Allocate backbuffer using PMM (Contiguous Physical Memory)
-            uint32_t bufferSize = pitch * height * sizeof(uint32_t);
-            uint32_t pages = (bufferSize + 4095) / 4096;
-            
             UART::Write("[Graphics::Init] Allocating backbuffer (PMM): ");
             UART::WriteDec(pages);
             UART::Write(" pages\n");
@@ -105,10 +136,21 @@ namespace Graphics {
         if (!framebuffer && !gpuEnabled) return;
         
         if (gpuEnabled) {
-            bga.SwapBuffers();
-            // NOTE: Do NOT update backbuffer pointer!
-            // Userspace has a static mapping to the original backbuffer (Buffer 1).
-            // Changing this pointer would break the userspace → kernel → display chain.
+            // PROPER DOUBLE BUFFERING:
+            // 1. VSync wait is handled inside SwapBuffers()
+            // 2. Copy from RAM backbuffer to VRAM
+            // 3. Display update is instant (same VRAM buffer always shown)
+            
+            if (backbuffer && vramBuffer && backbuffer != vramBuffer) {
+                // Wait for VSync THEN copy (atomic operation during vertical blanking)
+                bga.SwapBuffers();  // This just does VSync wait now
+                
+                // SIMD copy: RAM backbuffer → VRAM
+                blit_fast_32(vramBuffer, backbuffer, width * height);
+            } else {
+                // Fallback: just swap (no copy needed if using VRAM directly)
+                bga.SwapBuffers();
+            }
             return;
         }
         

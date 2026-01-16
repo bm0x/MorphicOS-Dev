@@ -11,7 +11,7 @@ namespace Compositor {
     // Layer management
     Layer* CreateLayer(const char* name, LayerType type, uint32_t w, uint32_t h);
     void DestroyLayer(Layer* layer);
-    void SetLayerPosition(Layer* layer, uint32_t x, uint32_t y);
+    void SetLayerPosition(Layer* layer, int32_t x, int32_t y);
     void SetLayerVisible(Layer* layer, bool visible);
     void SetLayerZOrder(Layer* layer, uint16_t z);
     

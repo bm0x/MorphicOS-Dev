@@ -593,10 +593,17 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         
         // Resolve virtual kernel address to physical address
         // Works for both PMM (Identity) and BGA (Mapped High Mem)
-        // because both are physically contiguous.
         
         uint64_t k_virt_base = (uint64_t)kernelBackbuf;
         uint64_t k_phys_base = MMU::GetPhysical(k_virt_base);
+        
+        // Handle identity-mapped low memory (PMM allocates here)
+        // In identity mapping, virtual == physical for addresses < 4GB
+        if (k_phys_base == 0 && k_virt_base < 0x100000000ULL) {
+            // This is identity-mapped memory - virt == phys
+            k_phys_base = k_virt_base;
+            UART::Write("[Syscall] SYS_VIDEO_MAP: Using identity-mapped address\n");
+        }
         
         if (k_phys_base == 0) {
             UART::Write("[Syscall] SYS_VIDEO_MAP: Failed to resolve physical address!\n");

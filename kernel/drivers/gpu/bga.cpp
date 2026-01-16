@@ -85,28 +85,45 @@ void BGADriver::SetMode(int w, int h, int b) {
 }
 
 uint32_t* BGADriver::GetBackBuffer() {
-    // Userspace compositor mode: always return Buffer 1
-    // This is the buffer that gets mapped to userspace
+    // Returns Buffer 1 - mapped to userspace for drawing
+    // With RAM backbuffer architecture, this is used for VRAM reference
     uint64_t offset = (uint64_t)1 * width * height;
     return this->framebuffer + offset;
 }
 
-void BGADriver::SwapBuffers() {
-    // Wait for VSync (Vertical Retrace) to prevent tearing
+uint32_t* BGADriver::GetVRAMBuffer() {
+    // Returns the VRAM buffer that we copy to during flip
+    // Same as GetBackBuffer() in our architecture
+    uint64_t offset = (uint64_t)1 * width * height;
+    return this->framebuffer + offset;
+}
+
+void BGADriver::WaitVSync() {
+    // Wait for VSync (Vertical Retrace) with timeout protection
     // VGA Input Status Register 1 (0x3DA): Bit 3 = Vertical Retrace active
     
-    // First, wait until we're NOT in retrace (if we caught the end of one)
-    while (IO::inb(0x3DA) & 0x08);
-    // Now wait until we ARE in retrace (start of blanking interval)
-    while (!(IO::inb(0x3DA) & 0x08));
+    uint32_t timeout = 100000; // Approx 1ms at 100MHz cycle speed
     
-    // Always show Buffer 1 (the one userspace is drawing to)
-    // First call switches from Buffer 0 to Buffer 1
-    // Subsequent calls just re-affirm Buffer 1 (no-op for hardware)
+    // First, wait until we're NOT in retrace (if we caught the end of one)
+    while ((IO::inb(0x3DA) & 0x08) && --timeout);
+    
+    // Now wait until we ARE in retrace (start of blanking interval)
+    timeout = 100000;
+    while (!(IO::inb(0x3DA) & 0x08) && --timeout);
+}
+
+void BGADriver::SwapBuffers() {
+    // For copy-based double buffering:
+    // 1. VSync wait is called separately via WaitVSync()
+    // 2. Copy from RAM to VRAM is done by Graphics::Flip()
+    // 3. This function just ensures Buffer 1 is displayed
+    
+    // Wait for VSync before any display update
+    WaitVSync();
+    
+    // Ensure Buffer 1 is being displayed
     if (displayBuffer != 1) {
         WriteRegister(VBE_DISPI_INDEX_Y_OFFSET, height);
         displayBuffer = 1;
     }
-    // With VSync wait, we reduce tearing by ensuring the display
-    // only refreshes during the vertical blanking interval
 }

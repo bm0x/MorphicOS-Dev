@@ -47,6 +47,10 @@ public:
     uint32_t* GetBackBuffer() override;
     const char* GetName() override { return "Bochs Graphics Adapter"; }
     
+    // Double Buffering Support
+    void WaitVSync();                    // Wait for vertical retrace
+    uint32_t* GetVRAMBuffer();           // Get VRAM buffer for kernel copy target
+    
     // Internal
     void WriteRegister(uint16_t index, uint16_t value);
     uint16_t ReadRegister(uint16_t index);

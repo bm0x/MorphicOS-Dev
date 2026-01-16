@@ -23,7 +23,7 @@ struct Layer {
     LayerType type;
     uint16_t z_order;      // Lower = behind, higher = front
     
-    uint32_t x, y;         // Position on screen
+    int32_t x, y;          // Position on screen (SIGNED to support off-screen positions)
     uint32_t width, height;
     uint32_t* buffer;      // BGRA pixel data
     

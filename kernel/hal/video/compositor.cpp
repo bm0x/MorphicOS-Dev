@@ -149,7 +149,7 @@ namespace Compositor {
         kfree(layer);
     }
     
-    void SetLayerPosition(Layer* layer, uint32_t x, uint32_t y) {
+    void SetLayerPosition(Layer* layer, int32_t x, int32_t y) {
         if (!layer) return;
         MarkDirty(layer->x, layer->y, layer->width, layer->height);
         layer->x = x;
@@ -343,21 +343,63 @@ namespace Compositor {
             // if (layer->has_alpha) ...
             
             if (layer->has_alpha) {
-                BlitTransparent(backbuf, pitch, layer->buffer, 
-                               layer->width, layer->height, layer->x, layer->y);
+                // Alpha blit needs coordinate check too
+                // Skip if entirely off-screen
+                if (layer->x + (int32_t)layer->width <= 0 || layer->x >= (int32_t)pitch) continue;
+                if (layer->y + (int32_t)layer->height <= 0 || layer->y >= (int32_t)screenH) continue;
+                
+                // BlitTransparent needs to be updated for signed coords - for now skip off-screen
+                if (layer->x >= 0 && layer->y >= 0) {
+                    BlitTransparent(backbuf, pitch, layer->buffer, 
+                                   layer->width, layer->height, layer->x, layer->y);
+                }
             } else {
-                // Opaque blit with bounds checking
-                // Optimized loop?
-                for (uint32_t y = 0; y < layer->height && (layer->y + y) < screenH; y++) {
-                    // Simple memcpy per row if dimensions align? 
-                    // For now, robust pixel copy
-                    uint32_t* dst = &backbuf[(layer->y + y) * pitch + layer->x];
-                    uint32_t* src = &layer->buffer[y * layer->width];
-                    // Bounds check x
-                    uint32_t max_w = (layer->x + layer->width > pitch) ? (pitch - layer->x) : layer->width;
-                    
-                    // Usage of builtin or simple loop
-                     for(uint32_t x=0; x<max_w; x++) dst[x] = src[x];
+                // Opaque blit with signed coordinate support
+                // Calculate visible region
+                int32_t lx = layer->x;
+                int32_t ly = layer->y;
+                int32_t lw = (int32_t)layer->width;
+                int32_t lh = (int32_t)layer->height;
+                
+                // Skip if entirely off-screen
+                if (lx + lw <= 0 || lx >= (int32_t)pitch) continue;
+                if (ly + lh <= 0 || ly >= (int32_t)screenH) continue;
+                
+                // Calculate source and dest offsets
+                int32_t srcOffsetX = 0, srcOffsetY = 0;
+                int32_t dstX = lx, dstY = ly;
+                int32_t copyW = lw, copyH = lh;
+                
+                // Clip left edge
+                if (lx < 0) {
+                    srcOffsetX = -lx;
+                    dstX = 0;
+                    copyW += lx;
+                }
+                // Clip top edge
+                if (ly < 0) {
+                    srcOffsetY = -ly;
+                    dstY = 0;
+                    copyH += ly;
+                }
+                // Clip right edge
+                if (dstX + copyW > (int32_t)pitch) {
+                    copyW = (int32_t)pitch - dstX;
+                }
+                // Clip bottom edge
+                if (dstY + copyH > (int32_t)screenH) {
+                    copyH = (int32_t)screenH - dstY;
+                }
+                
+                if (copyW <= 0 || copyH <= 0) continue;
+                
+                // Blit visible portion
+                for (int32_t y = 0; y < copyH; y++) {
+                    uint32_t* dst = &backbuf[(dstY + y) * pitch + dstX];
+                    uint32_t* src = &layer->buffer[(srcOffsetY + y) * layer->width + srcOffsetX];
+                    for (int32_t x = 0; x < copyW; x++) {
+                        dst[x] = src[x];
+                    }
                 }
             }
             
@@ -654,8 +696,12 @@ namespace Compositor {
     void UpdateWindow(uint64_t window_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t flags) {
         Window* win = GetWindow(window_id);
         if (win && win->layer) {
-            // Update Position
-            SetLayerPosition(win->layer, x, y);
+            // Convert to signed coordinates (handle negative via MSB interpretation)
+            int32_t sx = (int32_t)x;
+            int32_t sy = (int32_t)y;
+            
+            // Update Position (signed coordinates allow off-screen placement)
+            SetLayerPosition(win->layer, sx, sy);
             
             // Handle Flags
             // Flag 0 (bit 0 off) = Hidden/Minimized
@@ -667,7 +713,7 @@ namespace Compositor {
 
             // TODO: Resize not fully implemented yet
             
-            MarkDirty(x - BORDER_WIDTH, y - TITLE_BAR_HEIGHT, 
+            MarkDirty(sx - (int32_t)BORDER_WIDTH, sy - (int32_t)TITLE_BAR_HEIGHT, 
                       win->width + 2*BORDER_WIDTH, win->height + TITLE_BAR_HEIGHT + BORDER_WIDTH);
             win->layer->dirty = true;
         }
