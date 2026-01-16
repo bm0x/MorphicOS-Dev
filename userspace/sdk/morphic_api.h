@@ -256,6 +256,11 @@ namespace MorphicAPI {
             
             // Initial draw
             needsRedraw = true;
+            
+            // Progressive idle sleep - start at 16ms, increase to 100ms when truly idle
+            uint32_t idleCounter = 0;
+            const uint32_t MAX_IDLE_SLEEP = 100;  // 100ms = 10 FPS when completely idle
+            const uint32_t MIN_IDLE_SLEEP = 16;   // 16ms = ~60 FPS when active
 
             while (running) {
                 // Process all pending events first (responsive input)
@@ -268,6 +273,7 @@ namespace MorphicAPI {
                     hadEvent = true;
                     // Trigger redraw on any input
                     needsRedraw = true;
+                    idleCounter = 0;  // Reset idle counter on any event
                     
                     if (ev.type == OSEvent::KEY_PRESS) {
                         if (ev.ascii == 27) { // ESC
@@ -284,8 +290,6 @@ namespace MorphicAPI {
                 }
 
                 OnUpdate(); // Animation logic might set needsRedraw
-                // Ideally OnUpdate only runs if needed or on timer? 
-                // For now, run update every frame, but Render only on dirty.
                 
                 if (needsRedraw) {
                     OnRender(g);
@@ -302,13 +306,19 @@ namespace MorphicAPI {
                     // Flip/Notify Kernel
                     sys_video_flip(kernelBuffer);
                     needsRedraw = false;
+                    idleCounter = 0;  // Reset idle counter on redraw
                     
-                    // Frame pacing: After rendering, yield to prevent CPU hogging
+                    // Give compositor time to process
                     sys_yield();
                 } else {
-                    // No redraw needed - sleep longer to save CPU
-                    // Use sleep instead of just yield for better power efficiency
-                    sys_sleep(16);  // ~60 FPS max, saves CPU when idle
+                    // No redraw needed - progressive sleep
+                    idleCounter++;
+                    
+                    // Calculate sleep time: start at 16ms, increase to 100ms over ~60 frames
+                    uint32_t sleepTime = MIN_IDLE_SLEEP + (idleCounter / 4);
+                    if (sleepTime > MAX_IDLE_SLEEP) sleepTime = MAX_IDLE_SLEEP;
+                    
+                    sys_sleep(sleepTime);
                 }
             }  // while (running)
         }  // Run()
