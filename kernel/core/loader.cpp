@@ -46,8 +46,14 @@ LoadedProcess PackageLoader::Load(const char* path, uint64_t base_addr) {
         result.error_code = -4; return result;
     }
     
-    // Alloc Memory (+Padding)
-    uint64_t alloc_size = header.code_size + header.assets_size + 0x200000; 
+    // Alloc Memory (+Padding for .bss section)
+    // The binary's .bss section (uninitialized data) is not included in code_size
+    // but needs virtual memory. The userspace runtime has a 2MB heap in .bss.
+    // We reserve extra space (BSS_RESERVE) to cover typical .bss sizes.
+    constexpr uint64_t BSS_RESERVE = 0x400000; // 4MB for .bss sections
+    constexpr uint64_t ASSETS_GAP  = 0x400000; // 4MB gap before assets (after .bss)
+    
+    uint64_t alloc_size = header.code_size + BSS_RESERVE + ASSETS_GAP + header.assets_size; 
     uint64_t pages_needed = (alloc_size + 0xFFF) / 0x1000;
     
     void* phys_buffer = PMM::AllocContiguous(pages_needed);
@@ -67,9 +73,10 @@ LoadedProcess PackageLoader::Load(const char* path, uint64_t base_addr) {
     // Load Code
     VFS::Read(node, header.code_off, header.code_size, code_dest_phys);
 
-    // Calc Assets Dest
-    uint8_t* assets_dest_phys = code_dest_phys + header.code_size + 4096;
-    assets_dest_phys = (uint8_t*)(((uint64_t)assets_dest_phys + 15) & ~0xFULL);
+    // Calc Assets Dest - placed AFTER code + BSS_RESERVE + alignment gap
+    // This ensures assets don't overlap with the .bss section
+    uint8_t* assets_dest_phys = code_dest_phys + header.code_size + BSS_RESERVE + ASSETS_GAP;
+    assets_dest_phys = (uint8_t*)(((uint64_t)assets_dest_phys + 0xFFF) & ~0xFFFULL); // Page align
     
     if (header.assets_size > 0) {
         VFS::Read(node, header.assets_off, header.assets_size, assets_dest_phys);
