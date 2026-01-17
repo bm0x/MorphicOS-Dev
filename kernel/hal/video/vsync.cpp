@@ -66,13 +66,26 @@ namespace VSync {
         
         counter = 0;
         // Wait for start of next retrace
+        // OPTIMIZATION: Yield to scheduler every N iterations to avoid hogging CPU
+        uint32_t yieldCounter = 0;
+        const uint32_t YIELD_INTERVAL = 1000; // Yield every 1000 iterations
+        
         while (!(IO::inb(VGA_STATUS_PORT) & VSYNC_BIT)) {
             counter++;
+            yieldCounter++;
+            
             if (counter > SAFETY_TIMEOUT) {
                  // P1: Fallback to timer when HW VSync fails (Software VSync ~60 FPS)
                  Scheduler::Sleep(16);
                  return;
             }
+            
+            // Yield periodically to allow other tasks to run
+            if (yieldCounter >= YIELD_INTERVAL) {
+                Scheduler::Yield();
+                yieldCounter = 0;
+            }
+            
             __asm__ volatile("pause");
         }
     }

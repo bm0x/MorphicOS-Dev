@@ -121,11 +121,22 @@ void BGADriver::WaitVSync() {
     }
     
     // 2. Wait until we ARE in retrace (Start of VBlank)
-    // This can take up to 16ms. CRITICAL to yield here.
-    timeout = 100000; // Adjusted for yield latency
+    // Using a reasonable timeout and yielding only periodically to avoid
+    // excessive context switches that cause CPU starvation.
+    timeout = 100000;
+    uint32_t yieldCounter = 0;
+    const uint32_t YIELD_INTERVAL = 5000; // Yield every 5000 iterations (not every iteration!)
+    
     while (!(IO::inb(0x3DA) & 0x08) && --timeout) {
-        // Yield to let other apps run processing logic
-        Scheduler::Yield(); 
+        yieldCounter++;
+        
+        // Yield periodically to allow other tasks to run, but not too often
+        if (yieldCounter >= YIELD_INTERVAL) {
+            Scheduler::Yield(); 
+            yieldCounter = 0;
+        } else {
+            asm volatile("pause");
+        }
     }
 }
 

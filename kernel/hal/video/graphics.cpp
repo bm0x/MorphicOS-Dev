@@ -33,6 +33,132 @@ namespace Graphics {
     static BGADriver bga;
     static bool gpuEnabled = false;
     
+    // === DIRTY RECT TRACKING FOR 60 FPS ===
+    // Track up to MAX_DIRTY_RECTS regions that need updating
+    static constexpr uint32_t MAX_DIRTY_RECTS = 16;
+    
+    struct DirtyRect {
+        uint32_t x, y, w, h;
+        bool active;
+    };
+    
+    static DirtyRect dirtyRects[MAX_DIRTY_RECTS];
+    static uint32_t dirtyRectCount = 0;
+    static bool fullScreenDirty = true;  // First frame needs full copy
+    
+    // Merge overlapping/adjacent dirty rects to reduce blit count
+    static void MergeDirtyRects() {
+        if (dirtyRectCount <= 1) return;
+        
+        // Simple merge: combine all into single bounding box if > 4 rects
+        // This trades precision for fewer iterations
+        if (dirtyRectCount > 4) {
+            uint32_t minX = width, minY = height, maxX = 0, maxY = 0;
+            for (uint32_t i = 0; i < dirtyRectCount; i++) {
+                if (!dirtyRects[i].active) continue;
+                if (dirtyRects[i].x < minX) minX = dirtyRects[i].x;
+                if (dirtyRects[i].y < minY) minY = dirtyRects[i].y;
+                if (dirtyRects[i].x + dirtyRects[i].w > maxX) maxX = dirtyRects[i].x + dirtyRects[i].w;
+                if (dirtyRects[i].y + dirtyRects[i].h > maxY) maxY = dirtyRects[i].y + dirtyRects[i].h;
+            }
+            dirtyRects[0] = {minX, minY, maxX - minX, maxY - minY, true};
+            dirtyRectCount = 1;
+        }
+    }
+    
+    void MarkDirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+        // Clamp to screen bounds
+        if (x >= width || y >= height) return;
+        if (x + w > width) w = width - x;
+        if (y + h > height) h = height - y;
+        
+        // If already full screen dirty, skip
+        if (fullScreenDirty) return;
+        
+        // Check if this rect covers most of screen - just mark full dirty
+        if (w * h > (width * height * 3 / 4)) {
+            fullScreenDirty = true;
+            dirtyRectCount = 0;
+            return;
+        }
+        
+        // Find empty slot or expand existing overlapping rect
+        for (uint32_t i = 0; i < dirtyRectCount; i++) {
+            DirtyRect& r = dirtyRects[i];
+            if (!r.active) continue;
+            
+            // Check for overlap - expand if overlapping
+            bool overlapsX = !(x + w < r.x || x > r.x + r.w);
+            bool overlapsY = !(y + h < r.y || y > r.y + r.h);
+            
+            if (overlapsX && overlapsY) {
+                // Merge into existing rect
+                uint32_t newX = (x < r.x) ? x : r.x;
+                uint32_t newY = (y < r.y) ? y : r.y;
+                uint32_t newMaxX = ((x + w) > (r.x + r.w)) ? (x + w) : (r.x + r.w);
+                uint32_t newMaxY = ((y + h) > (r.y + r.h)) ? (y + h) : (r.y + r.h);
+                r.x = newX;
+                r.y = newY;
+                r.w = newMaxX - newX;
+                r.h = newMaxY - newY;
+                return;
+            }
+        }
+        
+        // Add new rect if space available
+        if (dirtyRectCount < MAX_DIRTY_RECTS) {
+            dirtyRects[dirtyRectCount++] = {x, y, w, h, true};
+        } else {
+            // No space - fall back to full screen
+            fullScreenDirty = true;
+        }
+    }
+    
+    void ClearDirtyRects() {
+        dirtyRectCount = 0;
+        fullScreenDirty = false;
+        for (uint32_t i = 0; i < MAX_DIRTY_RECTS; i++) {
+            dirtyRects[i].active = false;
+        }
+    }
+    
+    bool HasDirtyRects() {
+        return fullScreenDirty || dirtyRectCount > 0;
+    }
+    
+    void FlipDirty() {
+        if (!framebuffer || !backbuffer) return;
+        if (backbuffer == vramBuffer) return;
+        
+        // VSync Wait (Hardware) - only if GPU enabled
+        if (gpuEnabled) {
+            bga.WaitVSync();
+        }
+        
+        if (fullScreenDirty) {
+            // Full screen copy
+            blit_fast_32(vramBuffer, backbuffer, width * height);
+        } else if (dirtyRectCount > 0) {
+            // Merge rects for efficiency
+            MergeDirtyRects();
+            
+            // Copy only dirty regions
+            for (uint32_t i = 0; i < dirtyRectCount; i++) {
+                if (!dirtyRects[i].active) continue;
+                
+                DirtyRect& r = dirtyRects[i];
+                for (uint32_t row = 0; row < r.h; row++) {
+                    uint32_t offset = (r.y + row) * pitch + r.x;
+                    blit_fast_32(&vramBuffer[offset], &backbuffer[offset], r.w);
+                }
+            }
+        }
+        // else: nothing dirty, no copy needed!
+        
+        // Clear dirty state for next frame
+        ClearDirtyRects();
+    }
+    
     void Init(FramebufferInfo* fb) {
         UART::Write("[Graphics::Init] START\n");
         
@@ -114,19 +240,38 @@ namespace Graphics {
             bga.WaitVSync();
         }
         
-        // SAFE COPY: System RAM -> VRAM (or UEFI FB)
-        // This is robust. Even if BGA swap fails, this works.
-        // It provides Triple Buffering semantics:
-        // 1. App draws to Scratch (Userspace)
-        // 2. App copies to Kernel Backbuffer (RAM)
-        // 3. Flip() copies Kernel Backbuffer -> VRAM (Front)
-        // This is technically Double Buffering + Scratch, which is flicker-free.
+        // OPTIMIZED: Use dirty rect tracking if available
+        // If nothing has been explicitly marked dirty, assume full screen dirty
+        // (for backwards compatibility with code that doesn't use MarkDirty)
+        if (!HasDirtyRects()) {
+            fullScreenDirty = true;
+        }
         
         if (!backbuffer || !vramBuffer) return;
-        if (backbuffer == vramBuffer) return; // Should not happen with new Init logic
+        if (backbuffer == vramBuffer) return;
         
-        // SIMD copy: Optimized 32-bit blit
-        blit_fast_32(vramBuffer, backbuffer, width * height);
+        // Use optimized dirty rect copy
+        if (fullScreenDirty) {
+            // Full screen copy - SIMD optimized
+            blit_fast_32(vramBuffer, backbuffer, width * height);
+        } else {
+            // Merge rects for efficiency
+            MergeDirtyRects();
+            
+            // Copy only dirty regions - significant bandwidth reduction
+            for (uint32_t i = 0; i < dirtyRectCount; i++) {
+                if (!dirtyRects[i].active) continue;
+                
+                DirtyRect& r = dirtyRects[i];
+                for (uint32_t row = 0; row < r.h; row++) {
+                    uint32_t offset = (r.y + row) * pitch + r.x;
+                    blit_fast_32(&vramBuffer[offset], &backbuffer[offset], r.w);
+                }
+            }
+        }
+        
+        // Clear dirty state for next frame
+        ClearDirtyRects();
     }
     
     void Clear(uint32_t color) {

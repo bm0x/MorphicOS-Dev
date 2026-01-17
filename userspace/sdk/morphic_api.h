@@ -275,6 +275,12 @@ namespace MorphicAPI {
                     needsRedraw = true;
                     idleCounter = 0;  // Reset idle counter on any event
                     
+                    // Handle window close request from Desktop
+                    if (ev.type == OSEvent::WINDOW_DESTROYED) {
+                        running = false;
+                        break;
+                    }
+                    
                     if (ev.type == OSEvent::KEY_PRESS) {
                         if (ev.ascii == 27) { // ESC
                              running = false; 

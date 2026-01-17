@@ -18,7 +18,13 @@ namespace Graphics {
     // Double buffering
     void Flip();           // Copy entire backbuffer to framebuffer
     void FlipRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);  // Partial flip (dirty rect)
+    void FlipDirty();      // Flip only dirty regions (performance optimized)
     void Clear(uint32_t color);
+    
+    // Dirty Region Management
+    void MarkDirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h);  // Mark region as needing update
+    void ClearDirtyRects();  // Clear all dirty regions
+    bool HasDirtyRects();    // Check if any regions need update
     
     // === ATOMIC COMPOSITION ===
     void FlipWithVSync();  // V-Blank wait + atomic flip

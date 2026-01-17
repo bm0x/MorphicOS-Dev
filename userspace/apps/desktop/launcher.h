@@ -14,7 +14,10 @@ struct AppItem {
 
 class Launcher {
 public:
+    bool spawnPending;  // Prevent multiple spawns
+    
     void Init() {
+        spawnPending = false;
         // Scan /initrd/ for .mpk files dynamically
         ScanApps();
     }
@@ -165,8 +168,9 @@ public:
             int ch = iconSize;
 
             if (mx >= cx && mx < cx + cw && my >= cy && my < cy + ch) {
-                // Launch!
-                if (apps[i].mpk_path[0]) {
+                // Launch! But only if not already spawning
+                if (apps[i].mpk_path[0] && !spawnPending) {
+                    spawnPending = true;  // Prevent double-click spawns
                     sys_spawn(apps[i].mpk_path);
                     return true;
                 }

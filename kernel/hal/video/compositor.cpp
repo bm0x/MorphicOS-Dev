@@ -231,6 +231,9 @@ namespace Compositor {
         dirtyCount = 0;
     }
     
+    // Forward declare SIMD blit for opaque spans
+    extern "C" void blit_fast_32(void* dest, void* src, size_t count);
+    
     void BlitTransparent(uint32_t* dest, uint32_t dest_pitch,
                          uint32_t* src, uint32_t src_w, uint32_t src_h,
                          int32_t dx, int32_t dy) {
@@ -268,22 +271,42 @@ namespace Compositor {
         
         if (renderW <= 0 || renderH <= 0) return;
         
-        // Render Loop - Optimized with Alpha LUT
+        // Render Loop - Optimized with SIMD for opaque spans
         for (int32_t y = 0; y < renderH; y++) {
             uint32_t* dstRow = &dest[(dy + y) * dest_pitch + dx];
             uint32_t* srcRow = &src[(srcY + y) * src_w + srcX];
             
-            for (int32_t x = 0; x < renderW; x++) {
+            int32_t x = 0;
+            while (x < renderW) {
                 uint32_t pixel = srcRow[x];
                 uint8_t alpha = (pixel >> 24) & 0xFF;
                 
-                if (alpha == 0) continue;
+                if (alpha == 0) {
+                    // Skip transparent pixels
+                    x++;
+                    continue;
+                }
                 
                 if (alpha == 255) {
-                    dstRow[x] = pixel;
+                    // OPTIMIZATION: Find consecutive fully opaque pixels and SIMD copy
+                    int32_t opaqueStart = x;
+                    while (x < renderW && ((srcRow[x] >> 24) & 0xFF) == 255) {
+                        x++;
+                    }
+                    int32_t opaqueCount = x - opaqueStart;
+                    
+                    // Use SIMD for spans of 4+ pixels, otherwise manual copy
+                    if (opaqueCount >= 4) {
+                        blit_fast_32(&dstRow[opaqueStart], &srcRow[opaqueStart], opaqueCount);
+                    } else {
+                        for (int32_t i = 0; i < opaqueCount; i++) {
+                            dstRow[opaqueStart + i] = srcRow[opaqueStart + i];
+                        }
+                    }
                 } else {
-                    // Use O(1) LUT-based alpha blending (no division)
+                    // Partial alpha - use LUT blend
                     dstRow[x] = Alpha::Blend(pixel, dstRow[x]);
+                    x++;
                 }
             }
         }
@@ -413,10 +436,11 @@ namespace Compositor {
             if (!layer->frame_ready) continue;
             // if (!layer->buffer) continue; // Checked above
 
-            // FORCE REDRAW: Ignore dirty flag for app windows in this composition mode
-            // because the underlay (desktop) might have cleared the background.
-            // Also, we must draw every frame if the desktop is redrawing underneath.
-            
+            // PERFORMANCE: Mark layer region as dirty for optimized flip
+            if (layer->x >= 0 && layer->y >= 0) {
+                Graphics::MarkDirty(layer->x, layer->y, layer->width, layer->height);
+            }
+
             // if (layer->has_alpha) ...
             
             if (layer->has_alpha) {

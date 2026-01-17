@@ -639,6 +639,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         
         if (buffer == DESKTOP_BUFFER_VIRT) {
             Graphics::Flip();
+            return 1; // Return 1 to indicate VSync was performed
         } 
         else {
             // 2. App Window Flip

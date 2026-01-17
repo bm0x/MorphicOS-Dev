@@ -178,73 +178,76 @@ void HandleEvent(const OSEvent& ev) {
 
     if (ev.type == OSEvent::MOUSE_CLICK) {
         // Kernel sends current button state on transitions.
+        const bool was_down = left_down;
         left_down = (ev.buttons & 1);
+        
+        // Only process on button DOWN transition (not release)
         if (!left_down) {
             drag_target_idx = -1;
-            drag_target_external_id = 0; // Fix: Reset external drag too
-        } else {
-            // Start drag immediately on click-down (no movement required).
-            // Reset drag state to ensure we don't drag old targets if missed
-            drag_target_idx = -1;
             drag_target_external_id = 0;
+            return;
+        }
+        
+        // Calculate click position from smooth mouse
+        const int click_x = (int)(mouse_target_x16 >> 16);
+        const int click_y = (int)(mouse_target_y16 >> 16);
+        
+        // Reset drag state
+        drag_target_idx = -1;
+        drag_target_external_id = 0;
 
-            const int click_x = (int)(mouse_target_x16 >> 16);
-            const int click_y = (int)(mouse_target_y16 >> 16);
+        // ========================================
+        // PRIORITY 1: Launcher (captures ALL clicks when open)
+        // ========================================
+        if (menu_open) {
+            sys_debug_print("[Desktop] Click while launcher open - closing\n");
+            g_launcher.HandleClick(click_x, click_y);
+            menu_open = false;
+            g_launcher.spawnPending = false;
+            ui_dirty = true;
+            return;
+        }
 
-            // Check Calculator Buttons if top window is Calculator
-
-
-            // Taskbar interactions
-            const int taskH = 40;
-            const int taskY = Compositor::GetHeight() - taskH;
-            if (click_y >= taskY) {
-                // Keymap Toggle (Right side, left of clock)
-                // Clock is ~180px wide? Let's say click area is [Width-220, Width-180]
-                int width = Compositor::GetWidth();
-                if (HitRect(click_x, click_y, width - 130, taskY + 10, 40, 30)) {
-                    CycleKeymap();
-                    return;
-                }
-
-                // Menu button
-                active_pid = 0; // Clear focus
-                if (HitRect(click_x, click_y, 10, taskY + 8, 28, 24)) {
-                    menu_open = !menu_open;
-                    ui_dirty = true;
-                    return;
-                }
-
-                // Window icons
-                int iconX = 48;
-                for (int i = 0; i < window_count; i++) {
-                    if (HitRect(click_x, click_y, iconX, taskY + 8, 24, 24)) {
-                        // Toggle minimize/restore and bring to front
-                        windows[i].minimized = !windows[i].minimized;
-                        ui_dirty = true;
-                        if (!windows[i].minimized) {
-                            BringToFront(i);
-                        }
-                        return;
-                    }
-                    iconX += 30;
-                }
+        // ========================================
+        // PRIORITY 2: Taskbar
+        // ========================================
+        const int taskH = 40;
+        const int taskY = Compositor::GetHeight() - taskH;
+        if (click_y >= taskY) {
+            int width = Compositor::GetWidth();
+            
+            // Keymap Toggle
+            if (HitRect(click_x, click_y, width - 130, taskY + 10, 40, 30)) {
+                CycleKeymap();
                 return;
             }
 
-            // Link to Launcher
-            if (menu_open) {
-                if (g_launcher.HandleClick(click_x, click_y)) {
-                    menu_open = false; 
-                    ui_dirty = true;
-                } else {
-                    menu_open = false;
-                    ui_dirty = true;
-                }
+            // Menu button (toggle launcher)
+            if (HitRect(click_x, click_y, 10, taskY + 8, 28, 24)) {
+                menu_open = !menu_open;
+                ui_dirty = true;
+                active_pid = 0;
                 return;
             }
 
-            // check External Windows (Topmost)
-            const int titleH = 26;
+            // Window icons
+            int iconX = 48;
+            for (int i = 0; i < window_count; i++) {
+                if (HitRect(click_x, click_y, iconX, taskY + 8, 24, 24)) {
+                    windows[i].minimized = !windows[i].minimized;
+                    ui_dirty = true;
+                    if (!windows[i].minimized) BringToFront(i);
+                    return;
+                }
+                iconX += 30;
+            }
+            return; // Consumed by taskbar
+        }
+
+        // ========================================
+        // PRIORITY 3: External Windows (apps)
+        // ========================================
+        const int titleH = 26;
             const int border = 1;
             for (int i = 0; i < externalWindowCount; i++) {
                  WindowInfo& w = externalWindows[i];
@@ -258,10 +261,17 @@ void HandleEvent(const OSEvent& ev) {
                  int bxMax = bxClose - (btnSize + 6);
                  int bxMin = bxMax - (btnSize + 6);
 
-                 // Close Button (Hide)
-                 // Layout: W (24) | H (24) | Flags (16)
-                 // Flags: 0=Hidden, 1=Visible
+                 // Close Button - Send WINDOW_DESTROYED to app and hide window
                  if (HitRect(click_x, click_y, bxClose, by, btnSize, btnSize)) {
+                     // Send close event to the app so it can terminate
+                     OSEvent closeEv;
+                     closeEv.type = OSEvent::WINDOW_DESTROYED;
+                     closeEv.dx = 0;
+                     closeEv.dy = 0;
+                     closeEv.buttons = 0;
+                     sys_post_message(w.pid, &closeEv);
+                     
+                     // Also hide the window immediately
                      uint64_t xy = ((uint64_t)w.x << 32) | w.y;
                      uint64_t wh_flags = ((uint64_t)w.w << 40) | ((uint64_t)w.h << 16) | 0; 
                      sys_update_window(w.id, xy, wh_flags);
@@ -368,8 +378,7 @@ void HandleEvent(const OSEvent& ev) {
                     break;
                 }
             }
-        }
-        return;
+        return; // End of MOUSE_CLICK handling
     }
 
     if (ev.type == OSEvent::MOUSE_MOVE) {
