@@ -638,6 +638,10 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         const uint64_t DESKTOP_BUFFER_VIRT = 0x600100000000ULL;
         
         if (buffer == DESKTOP_BUFFER_VIRT) {
+            // Force full screen dirty to ensure complete refresh
+            // This fixes the issue where closing launcher leaves stale graphics
+            // because only app window regions were marked dirty
+            Graphics::MarkDirty(0, 0, Graphics::GetWidth(), Graphics::GetHeight());
             Graphics::Flip();
             return 1; // Return 1 to indicate VSync was performed
         } 

@@ -159,6 +159,27 @@ void CycleKeymap() {
     ui_dirty = true;
 }
 
+// Dirty Rect Tracking (moved up for use in HandleEvent)
+struct DirtyRect {
+    int x, y, w, h;
+    bool valid;
+};
+
+static void DirtyInit(DirtyRect& r) { r.valid = false; r.x = r.y = r.w = r.h = 0; }
+static void DirtyAdd(DirtyRect& r, int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (!r.valid) { r.x = x; r.y = y; r.w = w; r.h = h; r.valid = true; return; }
+    int x2 = r.x + r.w;
+    int y2 = r.y + r.h;
+    int nx = (x < r.x) ? x : r.x;
+    int ny = (y < r.y) ? y : r.y;
+    int nx2 = (x + w > x2) ? (x + w) : x2;
+    int ny2 = (y + h > y2) ? (y + h) : y2;
+    r.x = nx; r.y = ny; r.w = nx2 - nx; r.h = ny2 - ny;
+}
+
+static DirtyRect g_dirty;
+
 void HandleEvent(const OSEvent& ev) {
     // Pass keyboard events to the focused window (topmost)
     if (ev.type == OSEvent::KEY_PRESS) {
@@ -200,11 +221,25 @@ void HandleEvent(const OSEvent& ev) {
         // PRIORITY 1: Launcher (captures ALL clicks when open)
         // ========================================
         if (menu_open) {
-            sys_debug_print("[Desktop] Click while launcher open - closing\n");
-            g_launcher.HandleClick(click_x, click_y);
+            sys_debug_print("[Desktop] Click while launcher open\n");
+            
+            // CRITICAL: Close launcher FIRST before any action
+            // This ensures the UI updates even if spawn causes preemption
             menu_open = false;
-            g_launcher.spawnPending = false;
             ui_dirty = true;
+            
+            // Force full screen dirty immediately so the next render clears launcher
+            DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+            
+            // Now handle the click (may spawn app)
+            bool spawned = g_launcher.HandleClick(click_x, click_y);
+            g_launcher.spawnPending = false;
+            
+            if (spawned) {
+                sys_debug_print("[Desktop] App spawned, yielding to allow frame completion\n");
+            }
+            
+            sys_debug_print("[Desktop] Launcher closed, menu_open=false\n");
             return;
         }
 
@@ -405,25 +440,7 @@ void HandleEvent(const OSEvent& ev) {
     }
 }
 
-struct DirtyRect {
-    int x, y, w, h;
-    bool valid;
-};
-
-static void DirtyInit(DirtyRect& r) { r.valid = false; r.x = r.y = r.w = r.h = 0; }
-static void DirtyAdd(DirtyRect& r, int x, int y, int w, int h) {
-    if (w <= 0 || h <= 0) return;
-    if (!r.valid) { r.x = x; r.y = y; r.w = w; r.h = h; r.valid = true; return; }
-    int x2 = r.x + r.w;
-    int y2 = r.y + r.h;
-    int nx = (x < r.x) ? x : r.x;
-    int ny = (y < r.y) ? y : r.y;
-    int nx2 = (x + w > x2) ? (x + w) : x2;
-    int ny2 = (y + h > y2) ? (y + h) : y2;
-    r.x = nx; r.y = ny; r.w = nx2 - nx; r.h = ny2 - ny;
-}
-
-static DirtyRect g_dirty;
+// DirtyRect definitions moved up before HandleEvent
 
 static void UpdateMousePerFrame() {
     // Goal: minimal lag. We only smooth tiny jitter; real movement snaps to target.
@@ -615,6 +632,9 @@ extern "C" int main(void* asset_ptr) {
             // menu area (Launcher is full screen now)
             if (menu_open || prev_menu_open) {
                 DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+                if (menu_open != prev_menu_open) {
+                    sys_debug_print("[Desktop] Menu state changed - marking fullscreen dirty\n");
+                }
             }
         }
 
@@ -822,7 +842,12 @@ extern "C" int main(void* asset_ptr) {
         // 1. Flush Desktop Scratch -> Kernel RAM Buffer
         // This puts the Wallpaper + Icons + Taskbar into the shared buffer
         // Note: Default Target is BACK_BUFFER, used by RenderScene/RenderTaskbar
-        if (g_dirty.valid) {
+        
+        // CRITICAL: If launcher just closed, force full flush to clear launcher graphics
+        if (!menu_open && prev_menu_open) {
+            sys_debug_print("[Desktop] Launcher just closed - forcing full flush\n");
+            Compositor::Flush();  // Full screen copy to ensure launcher is erased
+        } else if (g_dirty.valid) {
             Compositor::FlushRect(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
         } else {
              Compositor::Flush();
@@ -839,6 +864,9 @@ extern "C" int main(void* asset_ptr) {
         // 3a. Draw Launcher (if open) - Now On Top of Apps
         if (menu_open) {
              g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
+        } else if (prev_menu_open) {
+            // Launcher was just closed - log for debugging
+            sys_debug_print("[Desktop] Skipping launcher draw (just closed)\n");
         }
         
         // 3b. Draw Cursor (On Top of Everything)
@@ -849,7 +877,13 @@ extern "C" int main(void* asset_ptr) {
 
         // 4. Present (Flip)
         // Copies the fully composed Kernel RAM Buffer to Video RAM (Screen) synchronously with VSync.
+        if (!menu_open && prev_menu_open) {
+            sys_debug_print("[Desktop] About to Present after launcher close\n");
+        }
         const bool vsynced = Compositor::Present();
+        if (!menu_open && prev_menu_open) {
+            sys_debug_print("[Desktop] Present complete after launcher close\n");
+        }
         // TEMPORARY GLOBAL FLUSH REMOVED - using dirty tracking + kernel composition
         
         // E. Sync
