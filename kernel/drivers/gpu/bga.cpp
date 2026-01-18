@@ -113,31 +113,33 @@ void BGADriver::WaitVSync() {
     // Wait for VSync (Vertical Retrace) with timeout protection
     // VGA Input Status Register 1 (0x3DA): Bit 3 = Vertical Retrace active
     
+    // OPTIMIZATION: Use a short timeout to prevent blocking too long
+    // At 60Hz, VBlank occurs every ~16.6ms. We shouldn't wait more than ~2ms.
+    
     // 1. Wait until we are NOT in retrace (if currently in one)
-    // This part is short (max 1ms usually)
-    uint32_t timeout = 200000;
+    // Max ~500 iterations is enough (this phase is very short)
+    uint32_t timeout = 500;
     while ((IO::inb(0x3DA) & 0x08) && --timeout) {
         asm volatile("pause");
     }
     
     // 2. Wait until we ARE in retrace (Start of VBlank)
-    // Using a reasonable timeout and yielding only periodically to avoid
-    // excessive context switches that cause CPU starvation.
-    timeout = 100000;
-    uint32_t yieldCounter = 0;
-    const uint32_t YIELD_INTERVAL = 5000; // Yield every 5000 iterations (not every iteration!)
+    // Short timeout - we don't want to block for long
+    // If we miss VSync, just continue (tearing is better than lag)
+    timeout = 20000;  // Reduced from 100000
+    uint32_t spinCount = 0;
     
     while (!(IO::inb(0x3DA) & 0x08) && --timeout) {
-        yieldCounter++;
-        
-        // Yield periodically to allow other tasks to run, but not too often
-        if (yieldCounter >= YIELD_INTERVAL) {
-            Scheduler::Yield(); 
-            yieldCounter = 0;
-        } else {
+        spinCount++;
+        // Spin without yielding - context switches are expensive
+        // The timer IRQ will preempt us if needed
+        if (spinCount > 100) {
             asm volatile("pause");
+            spinCount = 0;
         }
     }
+    // Note: Removed Scheduler::Yield() - it was causing too many context switches
+    // and introducing lag. Timer-based preemption is sufficient.
 }
 
 void BGADriver::CopyBufferToDisplay() {

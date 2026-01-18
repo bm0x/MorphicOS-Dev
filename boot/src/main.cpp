@@ -25,7 +25,7 @@ void Print(const char16_t* Str) {
 
 const char16_t* digits = u"0123456789ABCDEF";
 
-void PrintHex(UINT64 Value) {
+void PrintHex(UINTN Value) {
     CHAR16 buffer[20];
     buffer[18] = 0;
     int i = 17;
@@ -38,7 +38,7 @@ void PrintHex(UINT64 Value) {
     Print(u" ");
 }
 
-void PrintDec(UINT64 Value) {
+void PrintDec(UINTN Value) {
     CHAR16 buffer[24];
     buffer[23] = 0;
     int i = 22;
@@ -64,7 +64,7 @@ void PrintStr(const char* str) {
 
 // === BOOT PANIC ===
 // Halts the system with detailed error info
-void _BootPanic(const char* file, int line, UINT64 errCode, const char16_t* msg) {
+void _BootPanic(const char* file, int line, UINTN errCode, const char16_t* msg) {
     gST->ConOut->SetAttribute(gST->ConOut, 0x4F); // Red background, white text
     Print(u"\r\n!!! BOOT PANIC !!!\r\n");
     
@@ -82,7 +82,7 @@ void _BootPanic(const char* file, int line, UINT64 errCode, const char16_t* msg)
 }
 
 #define BOOT_PANIC(code, msg) _BootPanic(__FILE__, __LINE__, code, msg)
-#define BOOT_CHECK(status, msg) if ((status) != EFI_SUCCESS) { BOOT_PANIC((UINT64)(status), msg); }
+#define BOOT_CHECK(status, msg) if ((status) != EFI_SUCCESS) { BOOT_PANIC((UINTN)(status), msg); }
 
 int MemCmp(const void* a, const void* b, UINTN n) {
 
@@ -266,7 +266,7 @@ EFI_STATUS LoadFile(CHAR16* FileName, VOID** Buffer, UINTN* Size) {
     status = file->SetPosition(file, 0xFFFFFFFFFFFFFFFF); // Seek End
     if (status != EFI_SUCCESS) return status;
     
-    UINT64 fileSize = 0;
+    UINTN fileSize = 0;
     status = file->GetPosition(file, &fileSize);
     if (status != EFI_SUCCESS) return status;
 
@@ -313,15 +313,16 @@ EFI_STATUS LoadKernel(BootInfo* bootInfo, void** kernelEntry) {
     *kernelEntry = (void*)ehdr->e_entry;
 
     // 1. Calculate Total Memory Range
-    UINT64 minAddr = 0xFFFFFFFFFFFFFFFF;
-    UINT64 maxAddr = 0;
+    UINTN minAddr = 0xFFFFFFFFFFFFFFFF;
+    UINTN maxAddr = 0;
+    UINTN originalMinAddr = 0; // Save original for relocation calculation
     
     // First Pass: Determine Extents
     Elf64_Phdr* phdr = (Elf64_Phdr*)((UINT8*)fileBuffer + ehdr->e_phoff);
     for (int i = 0; i < ehdr->e_phnum; i++) {
         if (phdr[i].p_type == PT_LOAD) {
-            UINT64 vaddr = phdr[i].p_vaddr;
-            UINT64 memsz = phdr[i].p_memsz;
+            UINTN vaddr = phdr[i].p_vaddr;
+            UINTN memsz = phdr[i].p_memsz;
             
             if (vaddr < minAddr) minAddr = vaddr;
             if (vaddr + memsz > maxAddr) maxAddr = vaddr + memsz;
@@ -330,9 +331,11 @@ EFI_STATUS LoadKernel(BootInfo* bootInfo, void** kernelEntry) {
     
     // Align to Page Boundaries
     minAddr &= ~0xFFF;
+    originalMinAddr = minAddr; // Save before any relocation
     maxAddr = (maxAddr + 0xFFF) & ~0xFFF;
     
     UINTN totalPages = (maxAddr - minAddr) / 0x1000;
+    INTN relocationOffset = 0; // Will be non-zero if we relocate
     
     Print(u"Kernel Region: [");
     PrintHex(minAddr);
@@ -343,12 +346,32 @@ EFI_STATUS LoadKernel(BootInfo* bootInfo, void** kernelEntry) {
     Print(u"\r\n");
 
     // 2. Allocate Contiguous Block
+    // Try to allocate at the exact address first (ideal for identity mapping)
     EFI_PHYSICAL_ADDRESS allocAddr = minAddr;
     status = gBS->AllocatePages(AllocateAddress, EfiLoaderCode, totalPages, &allocAddr);
     
     if (status != EFI_SUCCESS) {
-        Print(u"Failed to allocate contiguous kernel memory block.\r\n");
-        return status;
+        // If exact address fails, try allocating below 4GB (for compatibility)
+        Print(u"Exact address unavailable, trying alternate allocation...\r\n");
+        allocAddr = 0xFFFFFFFF; // Max 4GB
+        status = gBS->AllocatePages(AllocateMaxAddress, EfiLoaderCode, totalPages, &allocAddr);
+        
+        if (status != EFI_SUCCESS) {
+            // Last resort: allocate anywhere
+            status = gBS->AllocatePages(AllocateAnyPages, EfiLoaderCode, totalPages, &allocAddr);
+            if (status != EFI_SUCCESS) {
+                Print(u"Failed to allocate contiguous kernel memory block.\r\n");
+                return status;
+            }
+        }
+        
+        Print(u"Kernel relocated to: ");
+        PrintHex(allocAddr);
+        Print(u"\r\n");
+        
+        // Calculate relocation offset for segment loading
+        relocationOffset = (INTN)allocAddr - (INTN)originalMinAddr;
+        *kernelEntry = (void*)((INTN)ehdr->e_entry + relocationOffset);
     }
     
     // 3. Zero Out Memory (BSS handling implicitly covered if we zero everything first)
@@ -361,19 +384,16 @@ EFI_STATUS LoadKernel(BootInfo* bootInfo, void** kernelEntry) {
     // 4. Load Segments
     for (int i = 0; i < ehdr->e_phnum; i++) {
         if (phdr[i].p_type == PT_LOAD) {
-            UINT64 fileOff = phdr[i].p_offset;
-            UINT64 vaddr = phdr[i].p_vaddr;
-            UINT64 filesz = phdr[i].p_filesz;
+            UINTN fileOff = phdr[i].p_offset;
+            UINTN vaddr = phdr[i].p_vaddr;
+            UINTN filesz = phdr[i].p_filesz;
             
-            // Calculate destination in our allocated block
-            // Note: vaddr is physical address here (Identity mapped static kernel)
-            // We can write directly to vaddr because Identity Map is active in UEFI
-            
-            UINT8* dest = (UINT8*)vaddr;
+            // Calculate destination - apply relocation offset if kernel was relocated
+            UINT8* dest = (UINT8*)((INTN)vaddr + relocationOffset);
             UINT8* src = (UINT8*)fileBuffer + fileOff;
             
             // Debug Info
-            // Print(u"Seg: "); PrintHex(vaddr); Print(u" Sz: "); PrintHex(filesz); Print(u"\r\n");
+            // Print(u"Seg: "); PrintHex((UINTN)dest); Print(u" Sz: "); PrintHex(filesz); Print(u"\r\n");
             
             for (UINTN j = 0; j < filesz; j++) {
                 dest[j] = src[j];
@@ -467,7 +487,7 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
         if (MemCmp(guid, &acpi2Guid, sizeof(EFI_GUID)) == 0) {
             rsdp = gST->ConfigurationTable[i].VendorTable;
             Print(u"ACPI 2.0 Found at: ");
-            PrintHex((UINT64)rsdp);
+            PrintHex((UINTN)rsdp);
             Print(u"\r\n");
             break;
         }
@@ -475,7 +495,7 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
         if (MemCmp(guid, &acpi1Guid, sizeof(EFI_GUID)) == 0 && rsdp == nullptr) {
             rsdp = gST->ConfigurationTable[i].VendorTable;
             Print(u"ACPI 1.0 Found (Fallback) at: ");
-            PrintHex((UINT64)rsdp);
+            PrintHex((UINTN)rsdp);
             Print(u"\r\n");
         }
     }
@@ -535,7 +555,7 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
     // Jump to Kernel using SysV ABI (RDI = First Argument)
     // UEFI (MS ABI) would use RCX, but our Kernel is compiled as ELF (SysV).
     
-    UINT64 entryPoint = (UINT64)kernelEntry;
+    UINTN entryPoint = (UINTN)kernelEntry;
     __asm__ volatile (
         "cli\n\t"            // Disable Interrupts
         "mov %0, %%rdi\n\t"  // Arg1 = bootInfo

@@ -136,6 +136,10 @@ uint32_t externalWindowCount = 0;
 uint64_t drag_target_external_id = 0;
 uint64_t active_pid = 0;
 
+// Track previous external window positions for dirty rect calculation
+static WindowInfo prevExternalWindows[MAX_EXT_WINDOWS];
+static uint32_t prevExternalWindowCount = 0;
+
 void FetchExternalWindows() {
     externalWindowCount = sys_get_window_list(externalWindows, MAX_EXT_WINDOWS);
 }
@@ -443,31 +447,10 @@ void HandleEvent(const OSEvent& ev) {
 // DirtyRect definitions moved up before HandleEvent
 
 static void UpdateMousePerFrame() {
-    // Goal: minimal lag. We only smooth tiny jitter; real movement snaps to target.
-    const int32_t dx16 = mouse_target_x16 - mouse_x16;
-    const int32_t dy16 = mouse_target_y16 - mouse_y16;
-
-    // If we're dragging, always snap.
-    if (left_down) {
-        mouse_x16 = mouse_target_x16;
-        mouse_y16 = mouse_target_y16;
-    } else {
-        // If we're more than ~1px away, snap to avoid trailing lag.
-        const int32_t snap_threshold16 = (1 << 16);
-        if (dx16 > snap_threshold16 || dx16 < -snap_threshold16 ||
-            dy16 > snap_threshold16 || dy16 < -snap_threshold16) {
-            mouse_x16 = mouse_target_x16;
-            mouse_y16 = mouse_target_y16;
-        } else {
-            // Smooth small sub-pixel noise: alpha = 1/2.
-            mouse_x16 += (dx16 >> 1);
-            mouse_y16 += (dy16 >> 1);
-            // Snap the last fraction to eliminate tail drift.
-            const int32_t tail16 = (1 << 14); // 1/4 px
-            if (dx16 > -tail16 && dx16 < tail16) mouse_x16 = mouse_target_x16;
-            if (dy16 > -tail16 && dy16 < tail16) mouse_y16 = mouse_target_y16;
-        }
-    }
+    // OPTIMIZATION: Removed smoothing entirely - it was causing perceived lag
+    // The mouse should always snap to target position for responsive feel
+    mouse_x16 = mouse_target_x16;
+    mouse_y16 = mouse_target_y16;
 
     const int32_t render_x16 = mouse_x16;
     const int32_t render_y16 = mouse_y16;
@@ -595,13 +578,44 @@ extern "C" int main(void* asset_ptr) {
         }
 
         // Add External Windows to Dirty (so they get composed/swapped)
-        // Ideally we only add them if they moved, but for now add them all to ensure visibility
-        // Optimization: Check against prev_ext_windows
+        // Compare current vs previous positions and mark both as dirty when changed
         for(uint32_t i=0; i<externalWindowCount; i++) {
             WindowInfo& w = externalWindows[i];
             if (w.flags) {
-                // Add window area (plus shadows/borders if any)
+                // Current position
                 DirtyAdd(g_dirty, w.x - 2, w.y - 26, w.w + 4, w.h + 30);
+                
+                // Check if this window moved from previous frame
+                bool foundPrev = false;
+                for (uint32_t j = 0; j < prevExternalWindowCount; j++) {
+                    if (prevExternalWindows[j].id == w.id) {
+                        foundPrev = true;
+                        // If position changed, also mark the OLD position as dirty
+                        if (prevExternalWindows[j].x != w.x || prevExternalWindows[j].y != w.y ||
+                            prevExternalWindows[j].w != w.w || prevExternalWindows[j].h != w.h) {
+                            DirtyAdd(g_dirty, prevExternalWindows[j].x - 2, prevExternalWindows[j].y - 26, 
+                                     prevExternalWindows[j].w + 4, prevExternalWindows[j].h + 30);
+                        }
+                        break;
+                    }
+                }
+                // New window - already marked dirty above
+            }
+        }
+        
+        // Mark closed windows as dirty (windows that existed before but not now)
+        for (uint32_t i = 0; i < prevExternalWindowCount; i++) {
+            bool stillExists = false;
+            for (uint32_t j = 0; j < externalWindowCount; j++) {
+                if (externalWindows[j].id == prevExternalWindows[i].id) {
+                    stillExists = true;
+                    break;
+                }
+            }
+            if (!stillExists && prevExternalWindows[i].flags) {
+                // Window was closed - mark its old position as dirty
+                DirtyAdd(g_dirty, prevExternalWindows[i].x - 2, prevExternalWindows[i].y - 26,
+                         prevExternalWindows[i].w + 4, prevExternalWindows[i].h + 30);
             }
         }
 
@@ -629,13 +643,9 @@ extern "C" int main(void* asset_ptr) {
         if (now_sec != prev_clock_sec || menu_open != prev_menu_open) {
             int taskH = 40;
             DirtyAdd(g_dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
-            // menu area (Launcher is full screen now)
-            if (menu_open || prev_menu_open) {
-                DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
-                if (menu_open != prev_menu_open) {
-                    sys_debug_print("[Desktop] Menu state changed - marking fullscreen dirty\n");
-                }
-            }
+            // NOTE: Launcher is fullscreen, so when it changes state we mark full dirty
+            // But this only triggers the full flush in Present(), not here
+            // The flush decision is now in the Present() call
         }
 
         // If RTC second changed, update the taskbar clock.
@@ -645,13 +655,11 @@ extern "C" int main(void* asset_ptr) {
             g_last_clock_sec = now_sec;
         }
 
-        // Any UI reorder/state change: repaint taskbar/menu.
+        // Any UI reorder/state change: repaint taskbar only
+        // Full screen dirty is now handled by PresentFullDirty() when launcher closes
         if (ui_dirty) {
             int taskH = 40;
             DirtyAdd(g_dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
-            if (menu_open || prev_menu_open) {
-                DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
-            }
         }
         
         // C. Render
@@ -673,9 +681,8 @@ extern "C" int main(void* asset_ptr) {
                                 menu_open, g_rtc);
         
         // D. Swap / Present Logic (Moved to end of frame)
-        // ... checking external windows ...
-        // Yield to prevent CPU starvation (Bestial Optimization)
-        sys_yield();
+        // NOTE: Removed sys_yield() here - it was causing unnecessary context switches
+        // and introducing lag. The scheduler's timer-based preemption is sufficient.
         
         // System window content (text-based, lightweight) - HIDE if launcher open
         if (!menu_open) {
@@ -864,9 +871,6 @@ extern "C" int main(void* asset_ptr) {
         // 3a. Draw Launcher (if open) - Now On Top of Apps
         if (menu_open) {
              g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
-        } else if (prev_menu_open) {
-            // Launcher was just closed - log for debugging
-            sys_debug_print("[Desktop] Skipping launcher draw (just closed)\n");
         }
         
         // 3b. Draw Cursor (On Top of Everything)
@@ -876,15 +880,14 @@ extern "C" int main(void* asset_ptr) {
         Compositor::SetRenderTarget(Compositor::RenderTarget::BACK_BUFFER);
 
         // 4. Present (Flip)
-        // Copies the fully composed Kernel RAM Buffer to Video RAM (Screen) synchronously with VSync.
+        // Use PresentFullDirty only when launcher just closed (to erase launcher graphics)
+        // Otherwise use normal Present (only copies dirty regions for performance)
+        bool vsynced;
         if (!menu_open && prev_menu_open) {
-            sys_debug_print("[Desktop] About to Present after launcher close\n");
+            vsynced = Compositor::PresentFullDirty();
+        } else {
+            vsynced = Compositor::Present();
         }
-        const bool vsynced = Compositor::Present();
-        if (!menu_open && prev_menu_open) {
-            sys_debug_print("[Desktop] Present complete after launcher close\n");
-        }
-        // TEMPORARY GLOBAL FLUSH REMOVED - using dirty tracking + kernel composition
         
         // E. Sync
         // If present already waited for VSync, don't add extra sleep (avoids 1-frame lag).
@@ -911,6 +914,12 @@ extern "C" int main(void* asset_ptr) {
             prev_min[i] = windows[i].minimized;
             prev_max[i] = windows[i].maximized;
         }
+        
+        // Update previous external windows state for next frame comparison
+        for (uint32_t i = 0; i < externalWindowCount && i < MAX_EXT_WINDOWS; i++) {
+            prevExternalWindows[i] = externalWindows[i];
+        }
+        prevExternalWindowCount = externalWindowCount;
     }
     return 0;
 }

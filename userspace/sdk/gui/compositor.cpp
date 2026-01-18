@@ -265,6 +265,11 @@ bool Compositor::Present() {
     return sys_video_flip(frontBuffer) != 0;
 }
 
+bool Compositor::PresentFullDirty() {
+    if (!frontBuffer) return false;
+    return sys_video_flip_flags(frontBuffer, 1) != 0;  // flag 1 = force full dirty
+}
+
 static void DrawSevenSegSegment(uint32_t* buf, int bw, int bh, bool clipEnabled, int clipX, int clipY, int clipW, int clipH,
                                 int x, int y, int w, int h, uint32_t color)
 {

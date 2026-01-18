@@ -84,6 +84,14 @@ sys_video_flip:
     ret
 
 ; arg1: rdi = backbuffer
+; arg2: rsi = flags (bit0 = force full screen dirty)
+global sys_video_flip_flags
+sys_video_flip_flags:
+    mov rax, SYS_VIDEO_FLIP
+    syscall
+    ret
+
+; arg1: rdi = backbuffer
 ; arg2: rsi = (x<<32)|y
 ; arg3: rdx = (w<<32)|h
 sys_video_flip_rect:

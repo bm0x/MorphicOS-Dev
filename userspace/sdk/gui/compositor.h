@@ -9,8 +9,10 @@ extern "C" {
     uint64_t sys_get_screen_info();
     uint64_t sys_alloc_backbuffer(uint64_t size);
     // arg1: backbuffer pointer (tightly packed width*height BGRA32)
+    // arg2: flags (bit0 = force full screen dirty)
     // returns: 1 if VSync wait succeeded (best-effort), 0 otherwise
     uint64_t sys_video_flip(void* backbuffer);
+    uint64_t sys_video_flip_flags(void* backbuffer, uint64_t flags);
 
     // arg1: backbuffer pointer
     // arg2: (x<<32) | y
@@ -43,6 +45,7 @@ public:
     static void Flush();   // Copy Scratch -> Shared Buffer
     static void FlushRect(int x, int y, int w, int h); // Partial Flush
     static bool Present(); // Flip Shared Buffer -> Screen
+    static bool PresentFullDirty(); // Force full screen copy to VRAM (use when launcher closes)
     
     // Drawing Primitives
     static void DrawRect(int x, int y, int w, int h, uint32_t color);

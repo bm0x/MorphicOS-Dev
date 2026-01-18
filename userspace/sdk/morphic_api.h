@@ -314,8 +314,8 @@ namespace MorphicAPI {
                     needsRedraw = false;
                     idleCounter = 0;  // Reset idle counter on redraw
                     
-                    // Give compositor time to process
-                    sys_yield();
+                    // NOTE: Removed sys_yield() - timer preemption is sufficient
+                    // and explicit yields cause too many context switches
                 } else {
                     // No redraw needed - progressive sleep
                     idleCounter++;

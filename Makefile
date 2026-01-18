@@ -96,7 +96,7 @@ ASM_OBJECTS = $(ASM_SOURCES:.asm=.o)
 
 # Targets
 
-all: image
+all: image iso
 
 # --- Bootloader ---
 bootloader: build/EFI/BOOT/BOOTX64.EFI
@@ -219,7 +219,7 @@ kernel/fs/filemanager_mpk.o: kernel/fs/filemanager_mpk.cpp
 
 
 # --- Image ---
-image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk userspace/filemanager.mpk
+image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk userspace/filemanager.mpk initrd
 	@echo "========================================"
 	@echo "  [IMAGE] Creating Disk Image..."
 	@echo "========================================"
@@ -231,6 +231,8 @@ image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspac
 	mcopy -i morphic.img build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
 	# Copy Kernel to Root
 	mcopy -i morphic.img build/morph_kernel.elf ::/
+	# Copy InitRD
+	mcopy -i morphic.img userspace/initrd.img ::/
 	# Copy Apps to Root
 	mcopy -i morphic.img userspace/desktop.mpk ::/
 	mcopy -i morphic.img userspace/calculator.mpk ::/

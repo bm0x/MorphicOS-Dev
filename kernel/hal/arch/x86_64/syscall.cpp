@@ -632,16 +632,17 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
     case 51: // SYS_VIDEO_FLIP
     {
         uint64_t buffer = arg1;
+        uint64_t flags = arg2; // arg2: bit0 = force full screen dirty
         
         // 1. Check if this is the Main Desktop Backbuffer (mapped at 0x600100000000)
         // If so, perform actual screen flip (Hardware VSync Swap)
         const uint64_t DESKTOP_BUFFER_VIRT = 0x600100000000ULL;
         
         if (buffer == DESKTOP_BUFFER_VIRT) {
-            // Force full screen dirty to ensure complete refresh
-            // This fixes the issue where closing launcher leaves stale graphics
-            // because only app window regions were marked dirty
-            Graphics::MarkDirty(0, 0, Graphics::GetWidth(), Graphics::GetHeight());
+            // Only force full screen dirty when explicitly requested (e.g., launcher close)
+            if (flags & 1) {
+                Graphics::MarkDirty(0, 0, Graphics::GetWidth(), Graphics::GetHeight());
+            }
             Graphics::Flip();
             return 1; // Return 1 to indicate VSync was performed
         } 
