@@ -3,8 +3,21 @@
 # - Enables KVM if available, uses host CPU, enables GL for the GTK display
 
 ISO=${1:-morphic_os.iso}
-OVMF=/usr/share/ovmf/OVMF.fd
-[ ! -f "$OVMF" ] && OVMF=/usr/share/qemu/OVMF.fd
+OVMF=""
+if [ -f "./OVMF.fd" ]; then
+    OVMF="./OVMF.fd"
+elif [ -f "/usr/share/ovmf/OVMF.fd" ]; then
+    OVMF="/usr/share/ovmf/OVMF.fd"
+elif [ -f "/usr/share/qemu/OVMF.fd" ]; then
+    OVMF="/usr/share/qemu/OVMF.fd"
+elif [ -f "/usr/share/edk2/x64/OVMF.fd" ]; then
+    OVMF="/usr/share/edk2/x64/OVMF.fd"
+elif [ -f "/usr/share/edk2-ovmf/x64/OVMF.fd" ]; then
+    OVMF="/usr/share/edk2-ovmf/x64/OVMF.fd"
+else
+    echo "Error: OVMF.fd not found. Install 'ovmf' or 'edk2-ovmf' package."
+    exit 1
+fi
 
 CPUS=${CPUS:-4}
 RAM=${RAM:-2048M}
@@ -55,6 +68,20 @@ VGA_OPTS="-vga std"
 # Build and run QEMU command (expanded safely)
 echo "Launching QEMU..."
 cd "$(dirname "$0")"
+
+# Check for GTK display support
+if ! qemu-system-x86_64 -display help 2>&1 | grep -q "gtk"; then
+    echo "========================================"
+    echo " ERROR: GTK Display backend not found!"
+    echo "========================================"
+    echo " It seems you are running in a headless environment or QEMU"
+    echo " does not support GTK."
+    echo ""
+    echo " Please use the Web Runner instead:"
+    echo "   ./run_web.sh"
+    echo "========================================"
+    exit 1
+fi
 
 exec qemu-system-x86_64 \
     -bios "$OVMF" \

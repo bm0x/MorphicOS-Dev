@@ -4,12 +4,20 @@
 
 # Configuration
 ISO=morphic_os.iso
-OVMF=/usr/share/ovmf/OVMF.fd
-
 # Find OVMF
-if [ ! -f "$OVMF" ]; then OVMF=/usr/share/qemu/OVMF.fd; fi
-if [ ! -f "$OVMF" ]; then
-    echo "Error: OVMF.fd not found. Install 'ovmf' package."
+OVMF=""
+if [ -f "./OVMF.fd" ]; then
+    OVMF="./OVMF.fd"
+elif [ -f "/usr/share/ovmf/OVMF.fd" ]; then
+    OVMF="/usr/share/ovmf/OVMF.fd"
+elif [ -f "/usr/share/qemu/OVMF.fd" ]; then
+    OVMF="/usr/share/qemu/OVMF.fd"
+elif [ -f "/usr/share/edk2/x64/OVMF.fd" ]; then
+    OVMF="/usr/share/edk2/x64/OVMF.fd"
+elif [ -f "/usr/share/edk2-ovmf/x64/OVMF.fd" ]; then
+    OVMF="/usr/share/edk2-ovmf/x64/OVMF.fd"
+else
+    echo "Error: OVMF.fd not found. Install 'ovmf' or 'edk2-ovmf' package."
     exit 1
 fi
 
@@ -56,8 +64,28 @@ fi
 
 # Start web bridge FIRST (so it's ready)
 echo "[*] Starting web VNC bridge..."
-NOVNC_DIR=/usr/share/novnc
-websockify -D --web="$NOVNC_DIR" 8080 localhost:5900 2>/dev/null
+
+# Find noVNC
+NOVNC_DIR=""
+if [ -d "/usr/share/novnc" ]; then
+    NOVNC_DIR="/usr/share/novnc"
+elif [ -d "tools/noVNC" ]; then
+    NOVNC_DIR="tools/noVNC"
+else
+    echo "Error: noVNC not found. Please run setup.sh"
+    exit 1
+fi
+
+# Find websockify
+WEBSOCKIFY_CMD="websockify"
+if [ -f "tools/websockify/run" ]; then
+    WEBSOCKIFY_CMD="./tools/websockify/run"
+elif ! command -v websockify >/dev/null; then
+    echo "Error: websockify not found. Please run setup.sh"
+    exit 1
+fi
+
+$WEBSOCKIFY_CMD -D --web="$NOVNC_DIR" 8080 localhost:5900 2>/dev/null
 
 echo ""
 echo "╔═══════════════════════════════════════════╗"
