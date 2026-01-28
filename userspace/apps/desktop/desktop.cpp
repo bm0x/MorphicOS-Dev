@@ -516,7 +516,13 @@ void PollInput() {
 
 extern "C" int main(void* asset_ptr) {
     (void)asset_ptr;
-    if (!Compositor::Initialize()) return -1;
+    sys_debug_print("[Desktop] main: before Compositor::Initialize\n");
+    bool ok = Compositor::Initialize();
+    if (!ok) {
+        sys_debug_print("[Desktop] Compositor::Initialize FAILED\n");
+        return -1;
+    }
+    sys_debug_print("[Desktop] Compositor::Initialize OK\n");
 
     // Register as Compositor to receive all input and window events
     sys_register_compositor();

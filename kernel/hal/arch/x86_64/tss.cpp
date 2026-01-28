@@ -27,6 +27,26 @@ namespace TSS {
     }
     
     void SetKernelStack(uint64_t stack) {
+        // Preserve current IF (interrupt flag) state, disable interrupts
+        uint64_t rflags = 0;
+        __asm__ volatile("pushfq; pop %0" : "=r"(rflags));
+        bool ints_enabled = (rflags & (1ULL << 9)) != 0;
+        __asm__ volatile("cli");
+
+        // Protect against concurrent updates on SMP systems using a simple spinlock.
+        // We keep interrupts disabled on this CPU to avoid deadlocks with local IRQs.
+        static volatile uint32_t tss_lock = 0;
+        while (__atomic_test_and_set(&tss_lock, __ATOMIC_ACQUIRE)) {
+            __asm__ volatile("pause");
+        }
+
+        // Perform the update (single 64-bit store)
         tss.rsp0 = stack;
+
+        // Release spinlock
+        __atomic_clear(&tss_lock, __ATOMIC_RELEASE);
+
+        // Restore IF if it was enabled before
+        if (ints_enabled) __asm__ volatile("sti");
     }
 }

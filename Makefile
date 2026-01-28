@@ -5,13 +5,22 @@ CXX = clang++
 LD = ld.lld
 ASM = nasm
 
-# Flags
-CXXFLAGS = -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mno-red-zone -mcmodel=large \
-           -mno-sse -mno-sse2 -mno-mmx -mno-80387 -I ./shared -c \
-           -DEMBED_DESKTOP
+# Build mode (release/debug)
+MODE ?= release
+
+# Base flags common to both modes
+CXXFLAGS_BASE = -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions -mno-red-zone -mcmodel=large \
+				-I ./shared -c -DEMBED_DESKTOP
+
+# Mode-specific flags
+ifeq ($(MODE),release)
+	CXXFLAGS = $(CXXFLAGS_BASE) -O2 -march=x86-64 -msse2
+else
+	CXXFLAGS = $(CXXFLAGS_BASE) -O0 -g -DDEBUG
+endif
 
 # Optional debug toggles
-MOUSE_DEBUG ?= 0
+MOUSE_DEBUG ?= 1
 ifeq ($(MOUSE_DEBUG),1)
     CXXFLAGS += -DMOUSE_DEBUG
 endif
@@ -126,9 +135,14 @@ kernel: build/morph_kernel.elf
 	$(ASM) $(ASMFLAGS) $< -o $@
 
 # Rule for GAS assembly (.S files like blit_fast.S)
+# Compile optimized with SSE2 for high-performance blits in release mode
 kernel/hal/video/blit_fast.o: kernel/hal/video/blit_fast.S
 	@echo "  [KERNEL] Assembling $<..."
-	$(CXX) -target x86_64-elf -c $< -o $@
+ifeq ($(MODE),release)
+	$(CXX) -target x86_64-elf -O2 -msse2 -c $< -o $@
+else
+	$(CXX) -target x86_64-elf -O0 -g -c $< -o $@
+endif
 
 build/morph_kernel.elf: $(ASM_OBJECTS) $(KERNEL_OBJECTS) kernel/hal/video/blit_fast.o
 	@echo "========================================"

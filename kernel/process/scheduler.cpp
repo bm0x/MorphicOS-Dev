@@ -155,7 +155,7 @@ namespace Scheduler {
         EarlyTerm::Print("\n");
     }
 
-    void CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3) {
+    void CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3, uint64_t arg1) {
         Task* newTask = (Task*)kmalloc(sizeof(Task));
         if (!newTask) return;
         kmemset(newTask, 0, sizeof(Task));
@@ -181,6 +181,10 @@ namespace Scheduler {
         frame->rflags = 0x202; // IF=1
         frame->rsp = (uint64_t)user_stack;
         frame->ss = 0x1B; // User Data (RPL 3)
+        // Set initial registers for the user task. The userspace entry expects
+        // the first argument in RDI (System V). Place arg1 into the saved RDI
+        // so that when the IRETQ/entry happens, RDI contains this value.
+        frame->rdi = arg1;
         
         newTask->stack_pointer = (uint64_t*)kstackTop;
         newTask->kernel_stack_top = (uint64_t)kstackBase + 16384; // Store original top for TSS
@@ -310,12 +314,27 @@ namespace Scheduler {
         int next = (t->eventHead + 1) % Task::EVENT_QUEUE_SIZE;
         if (next == t->eventTail) {
             // Full
+    #ifdef MOUSE_DEBUG
+            EarlyTerm::Print("[Scheduler] PushEventToTask FULL for PID: ");
+            EarlyTerm::PrintDec(taskId);
+            EarlyTerm::Print(" head="); EarlyTerm::PrintDec(t->eventHead);
+            EarlyTerm::Print(" tail="); EarlyTerm::PrintDec(t->eventTail);
+            EarlyTerm::Print("\n");
+    #endif
             if (ints) HAL::Platform::EnableInterrupts();
             return false;
         }
 
+        // Place event
         t->eventQueue[t->eventHead] = ev;
         t->eventHead = next;
+    #ifdef MOUSE_DEBUG
+        EarlyTerm::Print("[Scheduler] PushEventToTask OK for PID: ");
+        EarlyTerm::PrintDec(taskId);
+        EarlyTerm::Print(" head="); EarlyTerm::PrintDec(t->eventHead);
+        EarlyTerm::Print(" tail="); EarlyTerm::PrintDec(t->eventTail);
+        EarlyTerm::Print("\n");
+    #endif
         
         // Wake up task if sleeping? (Optional optimization)
         

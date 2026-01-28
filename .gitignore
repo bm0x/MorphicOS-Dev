@@ -27,6 +27,7 @@ Thumbs.db
 # Logs
 *.log
 *.tmp
+*.pid
 
 # Debug symbols
 *.dSYM/

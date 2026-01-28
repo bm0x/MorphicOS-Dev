@@ -1,6 +1,18 @@
 #include "compositor.h"
 #include "../morphic_syscalls.h"
 
+// Fallback direct syscall if userspace stub is not working as expected
+static inline void* sys_video_map_direct() {
+    uint64_t ret;
+    __asm__ volatile(
+        "mov $50, %%rax\n\t"
+        "syscall\n\t"
+        : "=a"(ret)
+        :
+        : "rcx", "r11", "memory");
+    return (void*)ret;
+}
+
 
 // Static member storage
 uint32_t* Compositor::frontBuffer = nullptr;
@@ -27,13 +39,63 @@ static inline char ToUpperAscii(char c) {
 
 bool Compositor::Initialize() {
     uint64_t info = sys_get_screen_info();
+    // Debug: print raw screen info value
+    auto debug_print_ptr_raw = [](const char* label, uint64_t v) {
+        char tmp[32];
+        const char* hex = "0123456789ABCDEF";
+        tmp[0] = '0'; tmp[1] = 'x';
+        for (int i = 0; i < 16; i++) {
+            int shift = (15 - i) * 4;
+            tmp[2 + i] = hex[(v >> shift) & 0xF];
+        }
+        tmp[18] = '\0';
+        sys_debug_print(label);
+        sys_debug_print(tmp);
+        sys_debug_print("\n");
+    };
+    debug_print_ptr_raw("[Compositor] sys_get_screen_info=", info);
+
     width = (info >> 32) & 0xFFFFFFFF;
     height = info & 0xFFFFFFFF;
     
     if (width == 0 || height == 0) return false;
     
+    sys_debug_print("[Compositor] about to call sys_video_map\n");
     frontBuffer = (uint32_t*)sys_video_map();
-    if (!frontBuffer) return false;
+
+    // If first attempt failed, try the direct syscall fallback and log explicitly
+    if (!frontBuffer) {
+        sys_debug_print("[Compositor] sys_video_map returned NULL, trying direct syscall fallback\n");
+        frontBuffer = (uint32_t*)sys_video_map_direct();
+    }
+
+    // Debug: print mapped addresses to kernel console (print even if NULL)
+    auto debug_print_ptr = [](const char* label, void* ptr) {
+        char buf[96];
+        uint64_t v = (uint64_t)ptr;
+        const char* hex = "0123456789ABCDEF";
+        int p = 0;
+        // copy label
+        for (int i = 0; label[i] != '\0' && p < (int)(sizeof(buf) - 32); i++) buf[p++] = label[i];
+        // append hex prefix
+        if (p < (int)(sizeof(buf) - 20)) {
+            buf[p++] = '0'; buf[p++] = 'x';
+            for (int i = 0; i < 16; i++) {
+                int shift = (15 - i) * 4;
+                buf[p++] = hex[(v >> shift) & 0xF];
+            }
+        }
+        // newline
+        if (p < (int)sizeof(buf) - 1) buf[p++] = '\n';
+        buf[p] = '\0';
+        sys_debug_print(buf);
+    };
+
+    debug_print_ptr("[Compositor] frontBuffer=", frontBuffer);
+    if (!frontBuffer) {
+        sys_debug_print("[Compositor] frontBuffer is NULL, failing init\n");
+        return false;
+    }
     
     // Alloc scratch buffer
     const uint64_t MAX_PIXELS = 3840 * 2160;
@@ -47,7 +109,28 @@ bool Compositor::Initialize() {
     }
     
     currentBuffer = backBuffer;
+    // More debug output
+    debug_print_ptr("[Compositor] backBuffer=", backBuffer);
+    debug_print_ptr("[Compositor] currentBuffer=", currentBuffer);
+
+    // Print dimensions
+    char dims[64];
+    // width and height are up to 32-bit; build simple ascii
+    // naive conversion (decimal)
+    auto utoa = [](uint32_t v, char* out) {
+        char tmp[16]; int p = 0;
+        if (v == 0) { out[0] = '0'; out[1] = '\0'; return; }
+        while (v) { tmp[p++] = '0' + (v % 10); v /= 10; }
+        for (int i = 0; i < p; i++) out[i] = tmp[p - 1 - i];
+        out[p] = '\0';
+    };
+
+    char wbuf[16]; char hbuf[16];
+    utoa((uint32_t)width, wbuf);
+    utoa((uint32_t)height, hbuf);
+    dims[0] = '\0';
     sys_debug_print("[Compositor] Init: v2.0 (Fixes Applied)\n");
+    sys_debug_print("[Compositor] Width="); sys_debug_print(wbuf); sys_debug_print(" Height="); sys_debug_print(hbuf); sys_debug_print("\n");
     return true;
 }
 

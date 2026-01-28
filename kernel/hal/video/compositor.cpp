@@ -575,9 +575,8 @@ namespace Compositor {
     }
     
     void Flip() {
-        // Use VSync to eliminate tearing
-        // Graphics::FlipWithVSync();
-        Graphics::Flip(); // Fast flip for VNC
+        // Use VSync to eliminate tearing and ensure stable 60Hz presentation
+        Graphics::FlipWithVSync();
     }
     
     void ToggleDebugOverlay() {

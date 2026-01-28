@@ -34,7 +34,8 @@ namespace Scheduler {
     void CreateTask(void (*entry_point)());
     
     // Create a new user thread with specific Page Table
-    void CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3);
+    // arg1 is loaded into RDI for the new process (first argument)
+    void CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3, uint64_t arg1 = 0);
     
     // Put current task to sleep for ms milliseconds
     void Sleep(uint64_t ms);

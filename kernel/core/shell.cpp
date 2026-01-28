@@ -464,7 +464,7 @@ namespace Shell {
         if (proc.error_code == 0) {
             uint64_t cr3;
             __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3);
+            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3, proc.arg1);
         } else {
             EarlyTerm::Print("Error: Failed to load desktop.mpk\n");
         }

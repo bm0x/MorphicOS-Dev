@@ -256,7 +256,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
         // For the Desktop (AUTO-TEST), we use the current kernel CR3 (shared space)
         uint64_t cr3;
         __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-        Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3);
+        Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3, proc.arg1);
     } else {
         UART::Write("!!! Desktop.mpk: PackageLoader::Load failed: ");
         UART::WriteDec(proc.error_code);

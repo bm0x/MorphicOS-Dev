@@ -4,8 +4,9 @@
 
 // Forward declaration of specific drivers
 namespace PIT { void OnInterrupt(); }
-namespace Keyboard { void OnInterrupt(); }
-namespace Mouse { void OnInterrupt(); }
+
+#include "../../input/input_device.h"
+
 
 struct Registers {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
@@ -30,10 +31,10 @@ extern "C" uint64_t* GenericIRQHandler(Registers* regs) {
             PIT::OnInterrupt();
             return Scheduler::Schedule((uint64_t*)regs);
         case 1: // Keyboard (IRQ1)
-            Keyboard::OnInterrupt();
+            InputManager::DispatchInterrupt(1);
             break;
         case 12: // Mouse (IRQ12)
-            Mouse::OnInterrupt();
+            InputManager::DispatchInterrupt(12);
             break;
         default:
             break;

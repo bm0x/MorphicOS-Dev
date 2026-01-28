@@ -70,9 +70,17 @@ namespace InputManager {
     void PushEvent(const OSEvent& ev) {
         // Route to Compositor if registered
         if (g_compositorPID > 0) {
-            if (!Scheduler::PushEventToTask(g_compositorPID, ev)) {
+            bool ok = Scheduler::PushEventToTask(g_compositorPID, ev);
+#ifdef MOUSE_DEBUG
+            EarlyTerm::Print("[InputManager] PushEvent -> PID: ");
+            EarlyTerm::PrintDec(g_compositorPID);
+            EarlyTerm::Print(" result=");
+            EarlyTerm::PrintDec(ok ? 1 : 0);
+            EarlyTerm::Print("\n");
+#endif
+            if (!ok) {
                 // Buffer full or task dead
-                // EarlyTerm::Print("[Input] Drop (Full)\n");
+                EarlyTerm::Print("[InputManager] Drop (Full)\n");
             }
         } else {
             // Fallback? Broadcast? 
@@ -89,8 +97,14 @@ namespace InputManager {
     // Called by IRQ dispatcher to notify all input devices
     void DispatchInterrupt(uint32_t irq) {
         // IRQ1 = Keyboard, IRQ12 = Mouse (PS/2)
+#ifdef MOUSE_DEBUG
+        EarlyTerm::Print("[InputManager] DispatchInterrupt irq="); EarlyTerm::PrintDec(irq); EarlyTerm::Print(" devCount="); EarlyTerm::PrintDec(deviceCount); EarlyTerm::Print("\n");
+#endif
         for (uint32_t i = 0; i < deviceCount; i++) {
             if (devices[i] && devices[i]->on_interrupt) {
+#ifdef MOUSE_DEBUG
+                EarlyTerm::Print("[InputManager] Calling on_interrupt for device: "); EarlyTerm::Print(devices[i]->name); EarlyTerm::Print("\n");
+#endif
                 devices[i]->on_interrupt();
             }
         }

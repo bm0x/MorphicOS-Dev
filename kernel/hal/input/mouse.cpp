@@ -229,9 +229,13 @@ namespace Mouse {
         for (int drain = 0; drain < 8; drain++) {
             uint8_t status = IO::inb(0x64);
             if (!(status & 0x01)) return;      // no data
-            if (!(status & 0x20)) return;      // not mouse data
+            // Some PS/2 controllers/emulators may not set the AUX bit reliably.
+            // Don't require 0x20 here; rely on packet resync below.
 
             uint8_t data = IO::inb(0x60);
+#ifdef MOUSE_DEBUG
+            UART::Write("[Mouse] data=0x"); UART::WriteHex(data); UART::Write("\n");
+#endif
 
             // Resync: first byte must have bit 3 set.
             if (cycle == 0 && !(data & 0x08)) {
@@ -255,6 +259,11 @@ namespace Mouse {
                 cycle = 0;
                 continue;
             }
+
+#ifdef MOUSE_DEBUG
+            // Log assembled packet bytes
+            UART::Write("[Mouse] packet="); UART::WriteHex(packet[0]); UART::Write(" "); UART::WriteHex(packet[1]); UART::Write(" "); UART::WriteHex(packet[2]); UART::Write("\n");
+#endif
             
             // [ENGINEER-FIX] 2. Signed Packet Decoding (9-bit)
             // PS/2 Bytes are uint8, but represent parts of a 9-bit signed integer.

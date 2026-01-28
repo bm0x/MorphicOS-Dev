@@ -67,4 +67,7 @@ namespace InputManager {
     
     // Get registered device count
     uint32_t GetDeviceCount();
+    
+    // Called by IRQ dispatcher to notify input manager of an IRQ (e.g., IRQ1, IRQ12)
+    void DispatchInterrupt(uint32_t irq);
 }

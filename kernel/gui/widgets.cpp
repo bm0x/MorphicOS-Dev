@@ -234,12 +234,12 @@ namespace MorphicGUI {
         }
         
         
-        // === ZERO-LATENCY RENDER FLOW (ASYNCHRONOUS) ===
-        // 1. Fast, non-blocking flip (UI might tear, but mouse is fluid)
-        Graphics::Flip();
-        
+        // === SYNCHRONIZED RENDER FLOW (V-SYNC) ===
+        // 1. Flip with VSync to present a tear-free frame at stable refresh
+        Graphics::FlipWithVSync();
+
         // 2. Atomic Scratchpad Cursor (Anti-Flicker)
-        // Eliminates flicker without waiting for V-Sync
+        // Draw cursor into framebuffer atomically after the frame is presented
         Mouse::RenderCursorAtomic();
     }
 

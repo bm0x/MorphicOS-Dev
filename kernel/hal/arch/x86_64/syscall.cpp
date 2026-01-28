@@ -350,14 +350,20 @@ namespace Syscall
 // Syscall handler - called from assembly
 extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3)
 {
-    // Trace syscalls from Calculator (task 2+) to identify crash
+    // Trace syscalls from user tasks (task id >= 2) - verbose to help debug userspace
     static uint64_t callCount = 0;
     uint64_t taskId = Scheduler::GetCurrentTaskId();
-    if (taskId >= 2 && callCount < 50) {
+    if (taskId >= 2 && callCount < 1000) {
         UART::Write("[Syscall] task=");
         UART::WriteDec(taskId);
         UART::Write(" num=");
         UART::WriteDec(num);
+        UART::Write(" args=");
+        UART::WriteHex(arg1);
+        UART::Write(",");
+        UART::WriteHex(arg2);
+        UART::Write(",");
+        UART::WriteHex(arg3);
         UART::Write("\n");
         callCount++;
     }
@@ -389,7 +395,13 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case SYS_GET_SCREEN_INFO:
         // Return packed width/height
-        return ((uint64_t)Graphics::GetWidth() << 32) | Graphics::GetHeight();
+    {
+        uint64_t v = ((uint64_t)Graphics::GetWidth() << 32) | Graphics::GetHeight();
+        UART::Write("[Syscall] SYS_GET_SCREEN_INFO -> ");
+        UART::WriteHex(v);
+        UART::Write("\n");
+        return v;
+    }
 
     case SYS_BEEP:
         // Play beep: arg1 = frequency, arg2 = duration_ms
@@ -566,7 +578,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case 50: // SYS_VIDEO_MAP
     {
-        UART::Write("[SYS_VIDEO_MAP] Entry - caller task: ");
+        UART::Write("[SyscallMapX] Entry - caller task: ");
         UART::WriteDec(Scheduler::GetCurrentTaskId());
         UART::Write("\n");
         
@@ -622,8 +634,14 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
         __asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
         
-        UART::Write("[Syscall] SYS_VIDEO_MAP: Mapped kernel backbuffer to user @ ");
+        UART::Write("[SyscallMapX] Mapped kernel backbuffer to user @ ");
         UART::WriteHex(user_video_virt);
+        UART::Write(" phys=");
+        UART::WriteHex(k_phys_base);
+        UART::Write(" size=");
+        UART::WriteHex(size);
+        UART::Write(" pages=");
+        UART::WriteDec(pages);
         UART::Write("\n");
         
         return user_video_virt;
@@ -844,7 +862,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         if (proc.error_code == 0) {
             // 5. Register Task with the NEW CR3
             // The Scheduler will switch to newCR3 when running this task
-            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, newCR3);
+            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, newCR3, proc.arg1);
             return 0; // Success
         } else {
             // Failed. Cleanup Page Table? (Memory Leak TODO: DestroyPageTable)

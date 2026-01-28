@@ -15,6 +15,7 @@ struct LoadedProcess {
     uint64_t entry_point;
     uint64_t stack_top;
     int error_code;
+    uint64_t arg1; // First argument to user entry (e.g., assets pointer)
 };
 
 class PackageLoader {

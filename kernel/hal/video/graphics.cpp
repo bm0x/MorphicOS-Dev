@@ -218,7 +218,11 @@ namespace Graphics {
         if (phys) {
             backbuffer = (uint32_t*)phys;
             memset_fast_32(backbuffer, 0, width * height);
-            UART::Write("Success.\n");
+            UART::Write("Success. backbuffer virt=");
+            UART::WriteHex((uint64_t)backbuffer);
+            UART::Write(" phys=");
+            UART::WriteHex((uint64_t)phys);
+            UART::Write("\n");
         } else {
              UART::Write("FAILED. Critical Error.\n");
              // Emergency fallback

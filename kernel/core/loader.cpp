@@ -123,7 +123,8 @@ LoadedProcess PackageLoader::Load(const char* path, uint64_t base_addr) {
     
     result.entry_point = (uint64_t)code_dest;
     result.stack_top = (uint64_t)stack;
-    // result.arg1 = (uint64_t)assets_dest; // TODO: Pass to scheduler
+    // Pass assets pointer as first argument to user entry (RDI)
+    result.arg1 = (uint64_t)assets_dest;
     result.error_code = 0;
     
     return result;

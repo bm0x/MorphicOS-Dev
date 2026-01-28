@@ -155,3 +155,15 @@ void operator delete(void* ptr) noexcept {
 void operator delete(void* ptr, size_t) noexcept {
     operator delete(ptr);  // Delegate to standard delete
 }
+
+extern "C" {
+    void user_early_trace_start() {
+        const char* msg = "[userspace] early: start\n";
+        sys_debug_print(msg);
+    }
+
+    void user_early_trace_end() {
+        const char* msg = "[userspace] early: main returned\n";
+        sys_debug_print(msg);
+    }
+}
