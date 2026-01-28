@@ -13,6 +13,9 @@ libmorphic_gui.a
 # ISO temporary directory
 iso_root/
 
+# noVNC
+tools/noVNC/
+
 # Editor/IDE
 .vscode/
 .idea/
