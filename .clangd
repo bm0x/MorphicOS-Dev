@@ -1,0 +1,14 @@
+CompileFlags:
+  Add:
+    - -I./shared
+    - -I.
+    - -I./kernel
+    - -I./userspace/sdk
+    - -target
+    - x86_64-elf
+    - -ffreestanding
+    - -fno-rtti
+    - -fno-exceptions
+    - -std=c++17
+  Remove:
+    - -mcmodel=large
