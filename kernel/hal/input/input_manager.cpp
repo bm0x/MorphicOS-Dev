@@ -1,6 +1,7 @@
 #include "input_device.h"
 #include "../video/early_term.h"
 #include "../../process/scheduler.h"
+#include "../platform.h"
 
 namespace InputManager {
     // Maximum registered input devices
@@ -8,12 +9,22 @@ namespace InputManager {
     
     static IInputDevice* devices[MAX_INPUT_DEVICES];
     static uint32_t deviceCount = 0;
+
+    // Small stash to buffer events until a compositor registers.
+    static const int STASH_SIZE = 64;
+    static OSEvent g_eventStash[STASH_SIZE];
+    static int g_stashHead = 0;
+    static int g_stashTail = 0;
+    static int g_stashCount = 0;
     
     void Init() {
         for (int i = 0; i < MAX_INPUT_DEVICES; i++) {
             devices[i] = nullptr;
         }
         deviceCount = 0;
+        g_stashHead = 0;
+        g_stashTail = 0;
+        g_stashCount = 0;
         EarlyTerm::Print("[HAL] Input Manager Initialized.\n");
     }
     
@@ -61,10 +72,32 @@ namespace InputManager {
     static uint64_t g_compositorPID = 0;
 
     void SetCompositorPID(uint64_t pid) {
+        bool ints = HAL::Platform::AreInterruptsEnabled();
+        HAL::Platform::DisableInterrupts();
         g_compositorPID = pid;
         EarlyTerm::Print("[InputManager] Compositor Registered PID: ");
         EarlyTerm::PrintDec(pid);
         EarlyTerm::Print("\n");
+
+        // Drain any stashed events into the compositor's queue.
+        if (g_stashCount > 0 && g_compositorPID > 0) {
+            EarlyTerm::Print("[InputManager] Draining stashed events to compositor: ");
+            EarlyTerm::PrintDec(g_stashCount);
+            EarlyTerm::Print("\n");
+            while (g_stashCount > 0) {
+                OSEvent ev = g_eventStash[g_stashTail];
+                g_stashTail = (g_stashTail + 1) % STASH_SIZE;
+                g_stashCount--;
+                bool ok = Scheduler::PushEventToTask(g_compositorPID, ev);
+                if (!ok) {
+                    EarlyTerm::Print("[InputManager] Failed to push stashed event\n");
+                    // If push fails (queue full), drop remaining stashed events.
+                    g_stashCount = 0;
+                    break;
+                }
+            }
+        }
+        if (ints) HAL::Platform::EnableInterrupts();
     }
     
     void PushEvent(const OSEvent& ev) {
@@ -83,9 +116,20 @@ namespace InputManager {
                 EarlyTerm::Print("[InputManager] Drop (Full)\n");
             }
         } else {
-            // Fallback? Broadcast? 
-            // For now, if no compositor, input is lost (or we could cache it).
-            // EarlyTerm::Print("[Input] Drop (No Compositor)\n");
+            // No compositor yet: stash events up to STASH_SIZE to avoid losing
+            bool ints = HAL::Platform::AreInterruptsEnabled();
+            HAL::Platform::DisableInterrupts();
+            if (g_stashCount < STASH_SIZE) {
+                g_eventStash[g_stashHead] = ev;
+                g_stashHead = (g_stashHead + 1) % STASH_SIZE;
+                g_stashCount++;
+#ifdef MOUSE_DEBUG
+                EarlyTerm::Print("[InputManager] Stashed event (no compositor) count="); EarlyTerm::PrintDec(g_stashCount); EarlyTerm::Print("\n");
+#endif
+            } else {
+                EarlyTerm::Print("[InputManager] Drop (No Compositor & Stash Full)\n");
+            }
+            if (ints) HAL::Platform::EnableInterrupts();
         }
     }
     

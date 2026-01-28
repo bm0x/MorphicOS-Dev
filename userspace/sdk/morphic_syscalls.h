@@ -69,6 +69,9 @@ struct MountEntry {
 };
 int sys_list_mounts(MountEntry* entries, int max_entries);
 
+// Direct mouse state read for quick diagnostics
+uint64_t sys_get_mouse_state();
+
 #ifdef __cplusplus
 }
 #endif

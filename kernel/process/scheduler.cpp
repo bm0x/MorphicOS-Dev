@@ -59,6 +59,9 @@ namespace Scheduler {
         
         mainTask->id = 0;
         mainTask->stack_pointer = nullptr; // Will be set on first Schedule call
+        // Ensure event queue indices are initialized for the main task
+        mainTask->eventHead = 0;
+        mainTask->eventTail = 0;
         
         // Main task runs in the boot page table
         uint64_t cr3;
@@ -336,7 +339,10 @@ namespace Scheduler {
         EarlyTerm::Print("\n");
     #endif
         
-        // Wake up task if sleeping? (Optional optimization)
+        // Wake up task if sleeping (ensure event consumer runs promptly)
+        if (t->state == TaskState::SLEEPING) {
+            t->state = TaskState::READY;
+        }
         
         if (ints) ::HAL::Platform::EnableInterrupts();
         return true;

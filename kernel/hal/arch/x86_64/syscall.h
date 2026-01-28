@@ -37,6 +37,7 @@
 #define SYS_STAT 79
 #define SYS_YIELD 80
 #define SYS_LIST_MOUNTS 81
+#define SYS_GET_MOUSE_STATE 82
 
 
 

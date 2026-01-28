@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "../../input/mouse.h"
 #include "../../video/early_term.h"
 #include "../../video/compositor.h"
 #include "../../video/graphics.h"
@@ -198,6 +199,12 @@ static inline uint32_t ClampU32(uint32_t v, uint32_t lo, uint32_t hi)
     return v;
 }
 
+static constexpr uint64_t kUserSpaceMin = 0x600000000000ULL;
+static inline bool IsUserPtr(uint64_t ptr)
+{
+    return ptr >= kUserSpaceMin;
+}
+
 #ifdef MOUSE_DEBUG
 static uint64_t g_sysGetEventDelivered = 0;
 static uint64_t g_sysGetEventCalls = 0;
@@ -244,21 +251,14 @@ namespace Syscall
         // Our GDT layout:
         //   0x08 = Kernel Code (Ring 0)
         //   0x10 = Kernel Data (Ring 0)
-        //   0x18 = User Code (Ring 3)
-        //   0x20 = User Data (Ring 3)
+        //   0x18 = User Data (Ring 3)
+        //   0x20 = User Code (Ring 3)
         //
         // For SYSCALL (kernel entry): We want CS=0x08, SS=0x10
         //   Base = 0x08 -> CS=0x08, SS=0x10 ✓
         //
-        // For SYSRET (user return): We want CS=0x1B (0x18|3), SS=0x23 (0x20|3)
-        //   With base=0x10: CS=0x10+16=0x20, SS=0x10+8=0x18 (BACKWARDS!)
-        //   With base=0x08: CS=0x08+16=0x18, SS=0x08+8=0x10 (SS is Kernel Data!)
-        //
-        // NOTE: Standard x86-64 GDT expects User Data BEFORE User Code for SYSRET!
-        // Our current GDT has it reversed (Code at 0x18, Data at 0x20).
-        //
-        // For now, we use IRETQ in JumpToUser which works with any GDT order.
-        // SYSRET will need GDT reordering to work properly.
+        // For SYSRET (user return): We want CS=0x23 (0x20|3), SS=0x1B (0x18|3)
+        //   With base=0x10: CS=0x10+16=0x20, SS=0x10+8=0x18 ✓
 
         // STAR MSR Format:
         // [63:48] = SYSRET CS/SS base selector -> 0x10 (Kernel Data)
@@ -417,23 +417,11 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
 
     case SYS_GET_EVENT:
     {
-#ifdef MOUSE_DEBUG
-        g_sysGetEventCalls++;
-        // Print early and periodically even if no events are delivered.
-        if (g_sysGetEventCalls <= 5 || ((g_sysGetEventCalls & 0xFFF) == 0))
-        {
-            UART::Write("[Syscall] GET_EVENT call #");
-            UART::WriteDec((int64_t)g_sysGetEventCalls);
-            UART::Write(" delivered=");
-            UART::WriteDec((int64_t)g_sysGetEventDelivered);
-            UART::Write("\n");
-        }
-#endif
+// Reduced logging: avoid noisy periodic GET_EVENT prints in normal runs.
         if (arg1 == 0)
             return 0;
-        const uint64_t USER_SPACE_MIN = 0x600000000000;
         // Basic sanity check just in case
-        if (arg1 < USER_SPACE_MIN)
+        if (!IsUserPtr(arg1))
             return 0;
 
         OSEvent kEv;
@@ -469,12 +457,22 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         // Return system time in milliseconds (assuming PIT 1ms ticks or close enough)
         return PIT_GetTicks();
 
+    case SYS_GET_MOUSE_STATE:
+    {
+        // Return packed mouse state in RAX:
+        // [63:56] buttons, [55:32] posX (uint32), [31:0] posY (uint32)
+        uint64_t buttons = (uint64_t)Mouse::GetButtons() & 0xFF;
+        uint64_t x = (uint64_t)((uint32_t)Mouse::GetX());
+        uint64_t y = (uint64_t)((uint32_t)Mouse::GetY());
+        uint64_t packed = (buttons << 56) | (x << 32) | (y & 0xFFFFFFFFULL);
+        return packed;
+    }
+
     case 55: // SYS_GET_RTC_DATETIME
     {
         if (arg1 == 0)
             return 0;
-        const uint64_t USER_SPACE_MIN = 0x600000000000ULL;
-        if (arg1 < USER_SPACE_MIN)
+        if (!IsUserPtr(arg1))
             return 0;
 
         MorphicDateTime dt = {};
@@ -488,8 +486,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
     {
         if (arg1 == 0)
             return 0;
-        const uint64_t USER_SPACE_MIN = 0x600000000000ULL;
-        if (arg1 < USER_SPACE_MIN)
+        if (!IsUserPtr(arg1))
             return 0;
 
         MorphicSystemInfo si = {};
@@ -569,18 +566,14 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
         __asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
 
-        UART::Write("[Syscall] Allocated Backbuffer at ");
-        UART::WriteHex(virt_base);
-        UART::Write("\n");
+        // Backbuffer allocated at virt_base (silent in normal operation)
 
         return virt_base;
     }
 
     case 50: // SYS_VIDEO_MAP
     {
-        UART::Write("[SyscallMapX] Entry - caller task: ");
-        UART::WriteDec(Scheduler::GetCurrentTaskId());
-        UART::Write("\n");
+        // SYS_VIDEO_MAP called by userspace to map kernel backbuffer (silent)
         
         // For Desktop (compositor), we need to share the SAME backbuffer as the kernel.
         // This ensures Desktop's drawing and ComposeAppWindowsOnly() operate on the same memory.
@@ -614,11 +607,11 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         if (k_phys_base == 0 && k_virt_base < 0x100000000ULL) {
             // This is identity-mapped memory - virt == phys
             k_phys_base = k_virt_base;
-            UART::Write("[Syscall] SYS_VIDEO_MAP: Using identity-mapped address\n");
+            // Using identity-mapped address
         }
         
         if (k_phys_base == 0) {
-            UART::Write("[Syscall] SYS_VIDEO_MAP: Failed to resolve physical address!\n");
+            // Failed to resolve physical address
             return 0;
         }
         
@@ -634,15 +627,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, 
         __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
         __asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
         
-        UART::Write("[SyscallMapX] Mapped kernel backbuffer to user @ ");
-        UART::WriteHex(user_video_virt);
-        UART::Write(" phys=");
-        UART::WriteHex(k_phys_base);
-        UART::Write(" size=");
-        UART::WriteHex(size);
-        UART::Write(" pages=");
-        UART::WriteDec(pages);
-        UART::Write("\n");
+        // Mapping completed (silent in normal operation)
         
         return user_video_virt;
     }

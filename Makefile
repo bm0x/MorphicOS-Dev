@@ -179,7 +179,7 @@ userspace/desktop.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/
 
 CALCULATOR_APP_DIR = userspace/apps/calculator
 CALCULATOR_APP_DIR = userspace/apps/calculator
-userspace/calculator.mpk: userspace/syscalls.o userspace/entry.o
+userspace/calculator.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/libmorphic_gui.a
 	@echo "========================================"
 	@echo "  [USER] Building Calculator App..."
 	@echo "========================================"
@@ -187,7 +187,7 @@ userspace/calculator.mpk: userspace/syscalls.o userspace/entry.o
 	cp $(CALCULATOR_APP_DIR)/calculator.mpk userspace/calculator.mpk
 
 TERMINAL_APP_DIR = userspace/apps/terminal
-userspace/terminal.mpk: userspace/syscalls.o userspace/entry.o
+userspace/terminal.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/libmorphic_gui.a
 	@echo "========================================"
 	@echo "  [USER] Building Terminal App..."
 	@echo "========================================"
@@ -195,7 +195,7 @@ userspace/terminal.mpk: userspace/syscalls.o userspace/entry.o
 	cp $(TERMINAL_APP_DIR)/terminal.mpk userspace/terminal.mpk
 
 FILEMANAGER_APP_DIR = userspace/apps/filemanager
-userspace/filemanager.mpk: userspace/syscalls.o userspace/entry.o
+userspace/filemanager.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/libmorphic_gui.a
 	@echo "========================================"
 	@echo "  [USER] Building File Manager App..."
 	@echo "========================================"

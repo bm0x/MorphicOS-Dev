@@ -70,6 +70,7 @@ sys_update_window:
 %define SYS_VIDEO_FLIP 51
 %define SYS_INPUT_POLL 52
 %define SYS_VIDEO_FLIP_RECT 54
+%define SYS_GET_MOUSE_STATE 82
 
 section .text
 
@@ -102,6 +103,12 @@ sys_video_flip_rect:
 sys_input_poll:
     mov rax, SYS_INPUT_POLL
     ; arg1 is already in rdi (System V ABI matches syscall ABI for arg1)
+    syscall
+    ret
+
+global sys_get_mouse_state
+sys_get_mouse_state:
+    mov rax, SYS_GET_MOUSE_STATE
     syscall
     ret
 

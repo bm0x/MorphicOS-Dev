@@ -14,20 +14,26 @@ syscall_entry:
 
     ; Save user stack
     mov r10, rsp
+
+    ; Switch to Thread-Specific Kernel Stack (from TSS.RSP0)
+    ; Use a scratch register to avoid clobbering RAX (syscall number)
+    mov r9, qword [kernel_tss_ptr]  ; Load address of TSS into r9
+    mov r9, qword [r9 + 4]          ; Load RSP0 (Offset 4 in packed struct)
+    mov rsp, r9               ; Switch to kernel stack
+
+    ; Preserve user callee-saved registers we will clobber
+    push r12
+    push r13
+    push r14
+    push r15
+
     ; Preserve syscall number and arguments into callee-saved registers
-    ; RAX = syscall number, RDI = arg1, RSI = arg2, RDX = arg3
     mov r12, rax        ; save syscall number
     mov r13, rdi        ; save arg1
     mov r14, rsi        ; save arg2
     mov r15, rdx        ; save arg3
 
-    ; Switch to Thread-Specific Kernel Stack (from TSS.RSP0)
-    ; Use a temporary register instead of RSP to avoid fragile pointer-on-stack hacks
-    mov rax, qword [kernel_tss_ptr] ; Load address of TSS into rax
-    mov rax, qword [rax + 4]        ; Load RSP0 (Offset 4 in packed struct)
-    mov rsp, rax              ; Switch to kernel stack
-
-    ; Save user context (we will build IRETQ frame later)
+    ; Save user context (we will build a return frame later)
     push r10        ; User RSP
     push rcx        ; User RIP (saved by CPU)
     push r11        ; User RFLAGS (saved by CPU)
@@ -41,25 +47,25 @@ syscall_entry:
     call syscall_handler
     ; Result in RAX
     
-    ; Restore registers into temp registers (we will build an IRETQ frame)
+    ; Restore registers into temp registers for SYSRETQ
     pop r11         ; User RFLAGS
     pop rcx         ; User RIP
     pop r10         ; User RSP
 
-    ; CRITICAL: Disable interrupts before returning to userland
-    cli
+    ; Restore preserved user registers
+    pop r15
+    pop r14
+    pop r13
+    pop r12
 
-    ; Prepare IRETQ frame on stack: SS, RSP, RFLAGS, CS, RIP
-    ; Use selectors matching JumpToUser: User SS = 0x18|3 = 0x1B, User CS = 0x20|3 = 0x23
-    push 0x1B           ; User SS (push immediate to avoid clobbering rax)
-    push r10            ; User RSP
-    push r11            ; User RFLAGS
-    push 0x23           ; User CS (push immediate)
-    push rcx            ; User RIP
-    iretq
+    ; Return to userland via SYSRETQ
+    ; SYSRETQ uses RCX (RIP) and R11 (RFLAGS), and RSP must be user stack.
+    mov rsp, r10
+    o64 sysret
 
 section .bss
 align 16
 kernel_syscall_stack:
     resb 16384
 kernel_syscall_stack_top:
+    resb 0
