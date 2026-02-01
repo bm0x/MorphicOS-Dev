@@ -1,11 +1,14 @@
 #include "mouse.h"
 #include "input_device.h"
+#include "input_event.h"
+#include "evdev.h"
 #include "../arch/x86_64/io.h"
 #include "../video/graphics.h"
 #include "../video/compositor.h"
 #include "../video/early_term.h"
 #include "../serial/uart.h"
 #include "../../utils/std.h"
+#include "focus_manager.h"
 
 // SIMD blit functions
 extern "C" {
@@ -21,6 +24,20 @@ namespace Mouse {
     static uint16_t maxX = 1024;
     static uint16_t maxY = 768;
     static bool visible = true;
+    
+    // Simple Arrow Bitmap (12x18) code: 0=Trans, 1=White, 2=Black
+    static const uint8_t cursor_w = 12;
+    static const uint8_t cursor_h = 18;
+    static const uint8_t cursor_bitmap[] = {
+        2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        2, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0,
+        2, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 2, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0,
+        2, 1, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 2, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0, 0,
+        2, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0,
+        2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 0, 2, 1, 1, 2, 1, 1, 2, 0, 0, 0, 0, 0,
+        2, 1, 2, 0, 2, 1, 1, 2, 0, 0, 0, 0, 2, 2, 0, 0, 2, 1, 1, 2, 0, 0, 0, 0,
+        2, 0, 0, 0, 0, 2, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 1, 2, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     
     // PS/2 Mouse state machine
     static uint8_t cycle = 0;
@@ -77,18 +94,9 @@ namespace Mouse {
         return IO::inb(0x60);
     }
     
-    // === ZERO-LATENCY OVERLAY SYSTEM ===
-    static bool fastPathEnabled = false;
-    static uint32_t* backbufferPtr = nullptr;
-    static uint32_t* framebufferPtr = nullptr;
-    static uint32_t bufferPitch = 0;
-    
-    // Background restoration buffer (32x32 max cursor)
-    static uint32_t restoreBuffer[CURSOR_BUFFER_SIZE];
-    static int16_t lastX = -1;
-    static int16_t lastY = -1;
-    static bool hasStoredBackground = false;
-    static bool cursorDrawnThisFrame = false;
+    // === ZERO-LATENCY OVERLAY SYSTEM REMOVED ===
+    // Cleanup: Variables removed as part of Phase 5 Refactor
+
     
     // === CURSOR STATE MACHINE ===
     static CursorVisibility cursorVisibility = CursorVisibility::HIDDEN;
@@ -96,24 +104,7 @@ namespace Mouse {
 
     
     // Pre-rendered cursor sprite (16x16 white arrow with black outline)
-    static const uint32_t cursorSprite[CURSOR_BUFFER_SIZE] = {
-        0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    };
+    // Cursor Sprite Removed (Now drawn by Userspace)
     
     void Init() {
         // Robust PS/2 init: flush buffers, enable aux device, enable IRQ12 in controller,
@@ -163,55 +154,8 @@ namespace Mouse {
         EarlyTerm::Print("[Mouse] PS/2 initialized.\n");
     }
     
-    void InitOverlay(uint32_t* backbuffer, uint32_t pitch) {
-        backbufferPtr = backbuffer;
-        bufferPitch = pitch;
-        hasStoredBackground = false;
-        lastX = -1;
-        lastY = -1;
-    }
-    
-    void EnableFastPath(bool enable) {
-        fastPathEnabled = enable;
-    }
-    
-    void SaveBackground(int16_t x, int16_t y) {
-        if (!backbufferPtr || x < 0 || y < 0) return;
-        
-        for (int row = 0; row < CURSOR_HEIGHT && (y + row) < maxY; row++) {
-            for (int col = 0; col < CURSOR_WIDTH && (x + col) < maxX; col++) {
-                restoreBuffer[row * CURSOR_WIDTH + col] = 
-                    backbufferPtr[(y + row) * bufferPitch + (x + col)];
-            }
-        }
-        lastX = x;
-        lastY = y;
-        hasStoredBackground = true;
-    }
-    
-    void RestoreBackground() {
-        if (!backbufferPtr || !hasStoredBackground || lastX < 0 || lastY < 0) return;
-        
-        for (int row = 0; row < CURSOR_HEIGHT && (lastY + row) < maxY; row++) {
-            for (int col = 0; col < CURSOR_WIDTH && (lastX + col) < maxX; col++) {
-                backbufferPtr[(lastY + row) * bufferPitch + (lastX + col)] = 
-                    restoreBuffer[row * CURSOR_WIDTH + col];
-            }
-        }
-    }
-    
-    void DrawCursorFast() {
-        if (!backbufferPtr || !visible) return;
-        
-        for (int row = 0; row < CURSOR_HEIGHT && (posY + row) < maxY; row++) {
-            for (int col = 0; col < CURSOR_WIDTH && (posX + col) < maxX; col++) {
-                uint32_t pixel = cursorSprite[row * CURSOR_WIDTH + col];
-                if (pixel != 0x00000000) {  // Not transparent
-                    backbufferPtr[(posY + row) * bufferPitch + (posX + col)] = pixel;
-                }
-            }
-        }
-    }
+    // Legacy Overlay Functions Removed (Cleanup)
+    void InitOverlay(uint32_t*, uint32_t) {}
     
     void OnInterrupt() {
 #ifdef MOUSE_DEBUG
@@ -224,28 +168,66 @@ namespace Mouse {
             UART::Write("\n");
         }
 #endif
-        // Drain up to a few bytes in case the controller queued more than one.
-        // This improves robustness on fast host mice / emulators.
-        for (int drain = 0; drain < 8; drain++) {
+        // ========================================================================
+        // [FIX] Robust PS/2 Packet Processing - Linux evdev-inspired
+        // Process ONE complete packet per IRQ for synchronization stability.
+        // Check AUX bit (0x20) to filter keyboard data from mouse data.
+        // ========================================================================
+        
+        // Maximum bytes to drain per IRQ (prevent infinite loop on bad hardware)
+        const int MAX_DRAIN = 16;
+        int bytesRead = 0;
+        
+        while (bytesRead < MAX_DRAIN) {
             uint8_t status = IO::inb(0x64);
-            if (!(status & 0x01)) return;      // no data
-            // Some PS/2 controllers/emulators may not set the AUX bit reliably.
-            // Don't require 0x20 here; rely on packet resync below.
-
+            
+            // No data available - exit
+            if (!(status & 0x01)) {
+                return;
+            }
+            
+            // [FIX] Check AUX bit (0x20) - if not set, this is keyboard data, skip it
+            // Some emulators don't set this reliably, so we also rely on packet sync
+            bool isMouseData = (status & 0x20) != 0;
+            
             uint8_t data = IO::inb(0x60);
-#ifdef MOUSE_DEBUG
-            UART::Write("[Mouse] data=0x"); UART::WriteHex(data); UART::Write("\n");
-#endif
-
-            // Resync: first byte must have bit 3 set.
-            if (cycle == 0 && !(data & 0x08)) {
+            bytesRead++;
+            
+            // If definitely keyboard data, discard and continue
+            if (!isMouseData && cycle == 0) {
+                // Only skip at cycle 0 to avoid breaking mid-packet
                 continue;
             }
+            
+#ifdef MOUSE_DEBUG
+            UART::Write("[Mouse] data=0x"); UART::WriteHex(data); 
+            UART::Write(" aux="); UART::WriteDec(isMouseData ? 1 : 0);
+            UART::Write(" cycle="); UART::WriteDec(cycle);
+            UART::Write("\n");
+#endif
 
+            // [FIX] Robust Resync: First byte of packet MUST have bit 3 set
+            // If not, this byte is garbage or we're desynchronized
+            if (cycle == 0) {
+                if (!(data & 0x08)) {
+                    // Not a valid packet start - skip this byte entirely
+                    // Do NOT advance cycle, keep waiting for valid start byte
+                    continue;
+                }
+            }
+
+            // Store byte in packet buffer
             packet[cycle] = data;
-            cycle = (cycle + 1) % 3;
-        
-            if (cycle != 0) continue;
+            cycle++;
+            
+            // [FIX] Process packet only when complete (3 bytes)
+            if (cycle < 3) {
+                // Packet incomplete - continue reading
+                continue;
+            }
+            
+            // Packet complete - reset cycle for next packet
+            cycle = 0;
 
             // [ENGINEER-FIX] 1. Sync Validation
             // Bit 3 of Byte 0 must ALWAYS be 1. If not, we are desynchronized.
@@ -293,6 +275,21 @@ namespace Mouse {
                 click.buttons = buttons;
                 click.scancode = 0;
                 InputManager::PushEvent(click);
+                
+                // [NEW] Also push to evdev subsystem
+                // Generate individual button events for each changed button
+                uint8_t changed = buttons ^ lastButtons;
+                if (changed & 0x01) {  // Left button
+                    Evdev::PushButton(Input::BTN_LEFT, (buttons & 0x01) != 0);
+                }
+                if (changed & 0x02) {  // Right button
+                    Evdev::PushButton(Input::BTN_RIGHT, (buttons & 0x02) != 0);
+                }
+                if (changed & 0x04) {  // Middle button
+                    Evdev::PushButton(Input::BTN_MIDDLE, (buttons & 0x04) != 0);
+                }
+                Evdev::PushSync();
+                
                 lastButtons = buttons;
             }
             
@@ -301,16 +298,14 @@ namespace Mouse {
             // UART::Write(" dy:"); UART::WriteDec(rel_y);
             // UART::Write("\n");
             
-            // [ENGINEER-FIX] 3. Update Kernel Cursor Coordinates
-            // Negate Y because PS/2 Up is Positive, but Screen Y=0 is Top.
-            posX += rel_x;
-            posY -= rel_y; 
+            // Centralized Focus/Cursor Management
+            // Forward delta to FocusManager which tracks absolute position and focus
+            FocusManager::HandleMouse((int32_t)rel_x, -(int32_t)rel_y, buttons);
             
-            // [ENGINEER-FIX] 4. Kernel-Side Clamping (Safety Net)
-            if (posX < 0) posX = 0;
-            if (posY < 0) posY = 0;
-            if (posX >= maxX) posX = maxX - 1;
-            if (posY >= maxY) posY = maxY - 1;
+            // Sync local state for legacy consumers
+            auto fState = FocusManager::GetState();
+            posX = (int16_t)fState.mouse_x;
+            posY = (int16_t)fState.mouse_y;
             
             // Forward to Compositor (Window Manager)
             if (Compositor::ProcessMouseEvent(posX, posY, buttons)) {
@@ -329,6 +324,11 @@ namespace Mouse {
             ev.scancode = 0;
             
             InputManager::PushEvent(ev);
+            
+            // [NEW] Also push to evdev subsystem for Linux-style input handling
+            // This produces standardized InputEvent structs with timestamps
+            Evdev::PushRelativeMotion(rel_x, -rel_y);  // Y inverted for screen coords
+            Evdev::PushSync();  // Mark end of event batch
 
 #ifdef MOUSE_DEBUG
             irq12Samples++;
@@ -367,16 +367,6 @@ namespace Mouse {
     // === CURSOR STATE MACHINE ===
     
     void SetVisibility(CursorVisibility state) {
-        if (cursorVisibility == state) return;
-        
-        // If transitioning from visible to hidden, restore background
-        if (cursorVisibility == CursorVisibility::VISIBLE_GUI && state == CursorVisibility::HIDDEN) {
-            if (hasStoredBackground && backbufferPtr) {
-                RestoreBackground();
-                Graphics::FlipRect(lastX, lastY, CURSOR_WIDTH, CURSOR_HEIGHT);
-            }
-        }
-        
         cursorVisibility = state;
         visible = (state == CursorVisibility::VISIBLE_GUI);
     }
@@ -385,152 +375,51 @@ namespace Mouse {
         return cursorVisibility;
     }
     
-    void RefreshCursor() {
-        // Only refresh in GUI mode with fast path
-        if (cursorVisibility != CursorVisibility::VISIBLE_GUI) return;
-        if (!fastPathEnabled || !backbufferPtr) return;
-        
-        // ALWAYS redraw cursor after MorphicGUI::Draw() repainted the frame
-        // This ensures cursor stays visible even when static
-        SaveBackground(posX, posY);
-        DrawCursorFast();
-        Graphics::FlipRect(posX, posY, CURSOR_WIDTH, CURSOR_HEIGHT);
-    }
-
-    
-    void SetVisualContext(VisualContext mode) {
-        if (currentContext == mode) return;
-        
-        VisualContext oldContext = currentContext;
-        currentContext = mode;
-        
-        if (mode == VisualContext::GRAPHICAL_GUI) {
-            // Entering desktop mode
-            SetVisibility(CursorVisibility::VISIBLE_GUI);
-            EnableFastPath(true);
-        } else {
-            // Exiting to text shell
-            SetVisibility(CursorVisibility::HIDDEN);
-            EnableFastPath(false);
-            
-            // Clear any cursor artifacts
-            if (hasStoredBackground && backbufferPtr) {
-                RestoreBackground();
-            }
-            hasStoredBackground = false;
-            lastX = -1;
-            lastY = -1;
-            
-            // Full screen clear handled by caller
-        }
-    }
+    void RefreshCursor() {}
     
     VisualContext GetVisualContext() {
         return currentContext;
     }
+
+    void SetVisualContext(VisualContext mode) {
+        currentContext = mode;
+    }
     
-    void DrawCursor() {
-        if (!visible) return;
-        for (int y = 0; y < CURSOR_HEIGHT; y++) {
-            for (int x = 0; x < CURSOR_WIDTH; x++) {
-                uint32_t pixel = cursorSprite[y * CURSOR_WIDTH + x];
-                if (pixel != 0x00000000) {
-                    Graphics::PutPixel(posX + x, posY + y, pixel);
-                }
+    // Legacy / Stubs (Cleanup Phase 5)
+    // InitOverlay is defined above (line 144)
+    void EnableFastPath(bool) {}
+    void SaveBackground(int16_t, int16_t) {}
+    void RestoreBackground() {}
+    void DrawCursorFast() {}
+    bool PollEvent(MouseEvent*) { return false; }
+    void RenderCursorAtomic() {}
+    void DrawCursor(uint32_t* buffer, uint32_t width, uint32_t height) {
+        if (!visible || !buffer) return;
+        
+        for (int cy = 0; cy < cursor_h; cy++) {
+            for (int cx = 0; cx < cursor_w; cx++) {
+                int px = posX + cx;
+                int py = posY + cy;
+
+                if (px < 0 || px >= (int)width || py < 0 || py >= (int)height)
+                    continue;
+
+                uint8_t code = cursor_bitmap[cy * cursor_w + cx];
+                uint32_t color = 0;
+
+                if (code == 1)
+                    color = 0xFFFFFFFF; // White
+                else if (code == 2)
+                    color = 0xFF000000; // Black
+                else
+                    continue; // Transparent
+
+                buffer[py * width + px] = color;
             }
         }
     }
-    
-    void HideCursor() {
-        if (fastPathEnabled && hasStoredBackground) {
-            RestoreBackground();
-        }
-    }
-    
+    void HideCursor() {}
     void SetCursorVisible(bool v) { visible = v; }
     
-    bool PollEvent(MouseEvent* event) {
-        return false;
-    }
-    
-    // === POST-COMPOSITION CURSOR ===
-    
-    // Static position tracking for optimization (DISABLED for Triple Buffering stability)
-    // static int16_t lastDrawnPosX = -1;
-    // static int16_t lastDrawnPosY = -1;
-    
-    // === ASYNCHRONOUS ATOMIC CURSOR (SCRATCHPAD) ===
-    
-    // Scratchpad buffer for atomic composition (32x32)
-    static uint32_t scratchpad[CURSOR_BUFFER_SIZE];
-    
-    void RenderCursorAtomic() {
-        // Only draw in GUI mode
-        if (cursorVisibility != CursorVisibility::VISIBLE_GUI) return;
-        if (!visible) return;
-        
-        // 1. Restore OLD cursor background (erase previous position)
-        // We use the BACKBUFFER (clean UI) to restore the Framebuffer state
-        if (backbufferPtr) {
-             // Use Graphics::FlipRect to copy native UI to FB (erasing old cursor)
-             // Note: We erase a slightly larger area to be safe or just the cursor size
-             // Using current posX/posY might be wrong if we just moved...
-             // But Flip() refreshes the whole screen anyway if used in the main loop.
-             // If this function is called asynchronously, we must handle dirty rects.
-             // BUT, the current architecture calls this AFTER Flip(). 
-             // So the screen is fresh UI. We just need to draw the cursor.
-             // Wait, if Flip() was called, the screen is clean. No need to "erase" old cursor 
-             // because Flip() overwrote it with the backbuffer.
-        }
-
-        // 2. Compose NEW cursor on Scratchpad
-        // Copy background from Backbuffer (UI) to Scratchpad
-        uint32_t* bb = backbufferPtr; // Backbuffer source
-        
-        // Safety bounds
-        int16_t x = posX;
-        int16_t y = posY;
-        if (x >= maxX || y >= maxY) return;
-        
-        // Copy 32x32 clean UI to scratchpad
-        uint32_t pitch = Graphics::GetPitch();
-        uint32_t w = CURSOR_WIDTH;
-        uint32_t h = CURSOR_HEIGHT;
-        
-        // Clamp
-        if (x + w > maxX) w = maxX - x;
-        if (y + h > maxY) h = maxY - y;
-        
-        // Prepare Scratchpad (Copy clean UI)
-        for(uint32_t r=0; r<h; r++) {
-            for(uint32_t c=0; c<w; c++) {
-                 scratchpad[r*CURSOR_WIDTH + c] = bb[(y+r)*(pitch/4) + (x+c)];
-            }
-        }
-        
-        // Draw Sprite on Scratchpad (Alpha Blend)
-        for(uint32_t r=0; r<h; r++) {
-            for(uint32_t c=0; c<w; c++) {
-                uint32_t spritePixel = cursorSprite[r*CURSOR_WIDTH + c];
-                uint32_t bgPixel = scratchpad[r*CURSOR_WIDTH + c];
-                
-                // SOFTWARE ALPHA BLENDING (Fixes Black Box)
-                scratchpad[r*CURSOR_WIDTH + c] = Graphics::BlendPixelRaw(bgPixel, spritePixel);
-            }
-        }
-
-        
-        // 3. Atomic Blit Scratchpad -> Framebuffer
-        // This is the only operation visible to the user (anti-flicker)
-        Graphics::DrawImage(x, y, w, h, scratchpad); // Draws directly to FB if we direct it?
-        // Wait, Graphics::DrawImage draws to Backbuffer usually.
-        // We need a direct Framebuffer draw.
-        Graphics::DrawCursorOnFramebuffer(x, y, scratchpad, w, h);
-    }
-
-
-    
-    const uint32_t* GetCursorSprite() {
-        return cursorSprite;
-    }
+    const uint32_t* GetCursorSprite() { return nullptr; }
 }

@@ -73,7 +73,7 @@ namespace Desktop {
         
         // === POST-COMPOSITION CURSOR SYSTEM ===
         // InitOverlay for cursor sprite access
-        Mouse::InitOverlay(Graphics::GetBackbuffer(), Graphics::GetPitch());
+        Mouse::InitOverlay(Graphics::GetDrawBuffer(), Graphics::GetPitch());
         Mouse::SetVisualContext(VisualContext::GRAPHICAL_GUI);
         
         // IMPORTANT: Disable IRQ12 fast path - we use post-composition cursor now
@@ -189,7 +189,7 @@ namespace Desktop {
                 Mouse::SetVisualContext(VisualContext::TEXT_SHELL);
                 
                 // Full screen clear for clean text mode
-                Graphics::Clear(0xFF000000);  // Black
+                Graphics::FillRect(0, 0, Graphics::GetWidth(), Graphics::GetHeight(), 0xFF000000);  // Black
                 Graphics::Flip();
                 
                 break;

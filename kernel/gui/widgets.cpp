@@ -8,6 +8,7 @@
 #include "../hal/input/mouse.h"
 #include "../utils/std.h"
 #include "../mm/user_heap.h"
+#include "../hal/drm/drm.h"
 
 namespace MorphicGUI {
     // Widget pool
@@ -200,7 +201,7 @@ namespace MorphicGUI {
         // This is simpler and avoids dirty rect tracking overhead
         
         // Clear screen
-        Graphics::Clear(COLOR_DESKTOP);
+        Graphics::FillRect(0, 0, Graphics::GetWidth(), Graphics::GetHeight(), COLOR_DESKTOP);
         
         // Taskbar
         uint32_t taskbarY = desktopState.screen_h - desktopState.taskbar_h;
@@ -236,7 +237,7 @@ namespace MorphicGUI {
         
         // === SYNCHRONIZED RENDER FLOW (V-SYNC) ===
         // 1. Flip with VSync to present a tear-free frame at stable refresh
-        Graphics::FlipWithVSync();
+        DRM::Present(true);
 
         // 2. Atomic Scratchpad Cursor (Anti-Flicker)
         // Draw cursor into framebuffer atomically after the frame is presented

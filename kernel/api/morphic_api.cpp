@@ -181,7 +181,7 @@ namespace MorphicAPI {
     }
     
     void GfxClear(uint32_t color) {
-        Graphics::Clear(color);
+        Graphics::FillRect(0, 0, Graphics::GetWidth(), Graphics::GetHeight(), color);
     }
     
     void GfxText(int x, int y, const char* text, uint32_t color) {

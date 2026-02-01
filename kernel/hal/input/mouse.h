@@ -98,7 +98,8 @@ namespace Mouse {
     const uint32_t* GetCursorSprite();
     
     // Legacy cursor rendering (for non-fast-path mode)
-    void DrawCursor();
+    // Draw cursor directly to buffer
+    void DrawCursor(uint32_t* buffer, uint32_t width, uint32_t height);
     void HideCursor();
     void SetCursorVisible(bool visible);
     

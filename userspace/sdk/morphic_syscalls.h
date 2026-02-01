@@ -72,6 +72,15 @@ int sys_list_mounts(MountEntry* entries, int max_entries);
 // Direct mouse state read for quick diagnostics
 uint64_t sys_get_mouse_state();
 
+// DRM / Graphics (New Architecture)
+uint64_t sys_drm_create_buffer(uint32_t w, uint32_t h);
+int      sys_drm_destroy_buffer(uint64_t id);
+void*    sys_drm_map_buffer(uint64_t id);
+int      sys_drm_mark_ready(uint64_t id);
+int      sys_drm_mark_dirty_rect(uint64_t id, uint32_t packed_pos, uint32_t packed_size);
+uint64_t sys_drm_present(uint32_t flags);
+int      sys_drm_mark_compositor_dirty(uint32_t packed_pos, uint32_t packed_size);
+
 #ifdef __cplusplus
 }
 #endif

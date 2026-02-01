@@ -1,5 +1,6 @@
 #include "compositor.h"
 #include "graphics.h"
+#include "../drm/drm.h"
 #include "early_term.h"
 #include "alpha_lut.h"
 #include "../../mm/heap.h"
@@ -9,6 +10,7 @@
 #include "font_renderer.h"
 #include "../serial/uart.h"
 #include "../../process/scheduler.h"
+#include "../input/mouse.h"
 
 namespace Compositor {
     static volatile int lock = 0;
@@ -333,7 +335,7 @@ namespace Compositor {
 
     void Compose() {
         AcquireLock();
-        uint32_t* backbuf = Graphics::GetBackbuffer();
+        uint32_t* backbuf = Graphics::GetDrawBuffer();
         uint32_t pitch = Graphics::GetWidth();
         
         // NOTE: In userspaceMode, Desktop handles its own rendering.
@@ -383,7 +385,7 @@ namespace Compositor {
     void ComposeAppWindowsOnly(int mouseX, int mouseY) {
         AcquireLock();
         
-        uint32_t* backbuf = Graphics::GetBackbuffer();
+        uint32_t* backbuf = Graphics::GetDrawBuffer();
         if (!backbuf) {
             ReleaseLock();
             return;
@@ -512,15 +514,18 @@ namespace Compositor {
             DrawWindowDecoration(layer);
         }
 
-        // Cursor Drawing Logic Removed: Handled by userspace (Desktop) post-composition or pre-composition.
-        // This ensures the Desktop, which owns the mouse concept, controls its rendering.
+        // Cursor Drawing (Kernel Overlay)
+        // Fixed: Ensure cursor is drawn ON TOP of apps on the SHARED buffer.
+        // Userspace manages background, but Kernel manages Apps + Cursor layering.
+        Mouse::DrawCursor(backbuf, Graphics::GetWidth(), Graphics::GetHeight());
+        
         // if (cursorLayer) { ... }
         
         ReleaseLock();
     }
     
     void ComposeRegion(uint32_t rx, uint32_t ry, uint32_t rw, uint32_t rh) {
-        uint32_t* backbuf = Graphics::GetBackbuffer();
+        uint32_t* backbuf = Graphics::GetDrawBuffer();
         uint32_t pitch = Graphics::GetWidth();
         uint32_t screenH = Graphics::GetHeight();
         
@@ -575,8 +580,8 @@ namespace Compositor {
     }
     
     void Flip() {
-        // Use VSync to eliminate tearing and ensure stable 60Hz presentation
-        Graphics::FlipWithVSync();
+        // Use DRM for VSync stable presentation
+        DRM::Present(true);
     }
     
     void ToggleDebugOverlay() {
@@ -686,7 +691,7 @@ namespace Compositor {
         Graphics::FillRect(lx, ly - 2, lw, 1, c_accent);
 
         // 4. Title Text
-        FontRenderer::DrawText(Graphics::GetBackbuffer(), Graphics::GetWidth(), Graphics::GetHeight(),
+        FontRenderer::DrawText(Graphics::GetDrawBuffer(), Graphics::GetWidth(), Graphics::GetHeight(),
                                lx + 8, ly - titleH + 6, layer->name, 0xFFE0E0E0, 0);
 
         // 5. Window Control Buttons

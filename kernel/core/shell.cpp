@@ -318,7 +318,7 @@ namespace Shell {
         EarlyTerm::Print("Displaying boot logo...\n");
         
         // Clear with dark background
-        Graphics::Clear(0xFF1a1a2e);
+        Graphics::FillRect(0, 0, Graphics::GetWidth(), Graphics::GetHeight(), 0xFF1a1a2e);
         
         // Draw Morphic logo (procedural - no file needed)
         uint32_t cx = Graphics::GetWidth() / 2;
@@ -360,7 +360,7 @@ namespace Shell {
         EarlyTerm::Print("Mouse test - move mouse, any key to exit\n");
         
         // Initial clear and setup
-        Graphics::Clear(0xFF2d2d44);
+        Graphics::FillRect(0, 0, Graphics::GetWidth(), Graphics::GetHeight(), 0xFF2d2d44);
         Graphics::FillRect(10, 10, 250, 25, 0xFF404060);
         Graphics::Flip();
         
@@ -381,7 +381,7 @@ namespace Shell {
                 Graphics::FillRect(prevX, prevY, 10, 10, 0xFF2d2d44);
                 
                 // Draw new cursor
-                Mouse::DrawCursor();
+                Mouse::DrawCursor(Graphics::GetDrawBuffer(), Graphics::GetWidth(), Graphics::GetHeight());
                 
                 // Only flip the changed region would be ideal,
                 // but for now just flip

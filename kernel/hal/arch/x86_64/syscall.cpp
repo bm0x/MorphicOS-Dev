@@ -18,6 +18,8 @@
 #include "../../video/graphics.h"
 #include "../x86_64/io.h"
 #include "system_info.h"
+#include "../../drm/drm.h"
+#include "../../drm/buffer_manager.h"
 
 extern "C" uint64_t PIT_GetTicks();
 
@@ -572,7 +574,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     uint32_t height = Graphics::GetHeight();
 
     // Get kernel's backbuffer physical address
-    uint32_t *kernelBackbuf = Graphics::GetBackbuffer();
+    uint32_t *kernelBackbuf = Graphics::GetDrawBuffer();
     if (!kernelBackbuf) {
       UART::Write("[Syscall] SYS_VIDEO_MAP: No kernel backbuffer!\n");
       return 0;
@@ -660,7 +662,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     if (arg1 < USER_SPACE_MIN)
       return 0;
 
-    uint32_t *dest = Graphics::GetFramebuffer();
+    uint32_t *dest = Graphics::GetDrawBuffer();
     if (!dest)
       return 0;
 
@@ -1087,6 +1089,74 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     }
 
     return count;
+  }
+
+  case 90: // sys_drm_create_buffer(w, h) -> id
+  {
+      // Create kernel-managed buffer
+      uint64_t pid = Scheduler::GetCurrentTaskId();
+      auto* buf = BufferManager::CreateBuffer((uint32_t)arg1, (uint32_t)arg2, pid);
+      return buf ? buf->id : 0;
+  }
+
+  case 91: // sys_drm_destroy_buffer(id)
+  {
+      auto* buf = BufferManager::GetBuffer(arg1);
+      if(buf && buf->owner_pid == Scheduler::GetCurrentTaskId()) {
+          BufferManager::DestroyBuffer(buf);
+          return 0;
+      }
+      return (uint64_t)-1;
+  }
+
+  case 92: // sys_drm_map_buffer(id) -> virt_addr
+  {
+      auto* buf = BufferManager::GetBuffer(arg1);
+      if(buf && buf->owner_pid == Scheduler::GetCurrentTaskId()) {
+          return (uint64_t)BufferManager::MapToUser(buf, Scheduler::GetCurrentTaskId());
+      }
+      return 0;
+  }
+
+  case 93: // sys_drm_mark_ready(id)
+  {
+       auto* buf = BufferManager::GetBuffer(arg1);
+       if(buf && buf->owner_pid == Scheduler::GetCurrentTaskId()) {
+           BufferManager::MarkReady(buf);
+           return 0;
+       }
+       return (uint64_t)-1;
+  }
+
+  case 94: // sys_drm_mark_dirty_rect(id, packed_pos, packed_size)
+  {
+      // args: 1=id, 2=(y<<16)|x, 3=(h<<16)|w
+      auto* buf = BufferManager::GetBuffer(arg1);
+      if(buf && buf->owner_pid == Scheduler::GetCurrentTaskId()) {
+           int32_t x = (int16_t)(arg2 & 0xFFFF);
+           int32_t y = (int16_t)(arg2 >> 16);
+           int32_t w = (int16_t)(arg3 & 0xFFFF);
+           int32_t h = (int16_t)(arg3 >> 16);
+           BufferManager::MarkDirty(buf, x, y, w, h);
+           return 0;
+      }
+      return (uint64_t)-1;
+  }
+
+  case 95: // sys_drm_present(flags) -> vsync
+  {
+      bool vsync = (arg1 & 1);
+      return (uint64_t)DRM::Present(vsync);
+  }
+
+  case 96: // sys_drm_mark_compositor_dirty(packed_pos, packed_size)
+  {
+      int32_t x = (int16_t)(arg1 & 0xFFFF);
+      int32_t y = (int16_t)(arg1 >> 16);
+      int32_t w = (int16_t)(arg2 & 0xFFFF);
+      int32_t h = (int16_t)(arg2 >> 16);
+      DRM::MarkDirty(x, y, w, h);
+      return 0;
   }
 
   default:

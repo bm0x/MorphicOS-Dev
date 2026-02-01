@@ -3,35 +3,46 @@
 #include <stdint.h>
 #include "../../../shared/boot_info.h"
 
-// Graphics HAL - Double Buffering and Primitives
-
-// V-Sync wait using robust HAL
-namespace VSync {
-    void Init();
-    void WaitForRetrace();
-}
+// Graphics HAL - Low Level Display Access & Primitives
+// Now simplified to delegate buffer management to DRM
 
 namespace Graphics {
-    // Initialize graphics with framebuffer info
+    
+    //=========================================================================
+    // Initialization & Info
+    //=========================================================================
+    
+    /**
+     * Initialize graphics HAL with boot info
+     */
     void Init(FramebufferInfo* fb);
     
-    // Double buffering
-    void Flip();           // Copy entire backbuffer to framebuffer
-    void FlipRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);  // Partial flip (dirty rect)
-    void FlipDirty();      // Flip only dirty regions (performance optimized)
-    void Clear(uint32_t color);
+    uint32_t GetWidth();
+    uint32_t GetHeight();
+    uint32_t GetPitch();
     
-    // Dirty Region Management
-    void MarkDirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h);  // Mark region as needing update
-    void ClearDirtyRects();  // Clear all dirty regions
-    bool HasDirtyRects();    // Check if any regions need update
+    /**
+     * Get direct VRAM pointer (Use with caution, prefer DRM)
+     */
+    uint32_t* GetVRAM();
     
-    // === ATOMIC COMPOSITION ===
-    void FlipWithVSync();  // V-Blank wait + atomic flip
-    void DrawCursorOnFramebuffer(int16_t x, int16_t y, const uint32_t* sprite, uint32_t w, uint32_t h);
-    uint32_t* GetFramebuffer();  // Direct framebuffer access
+    /**
+     * Get current drawing target buffer
+     * Default: VRAM (during boot) or Compositor Backbuffer (during userspace)
+     */
+    uint32_t* GetDrawBuffer();
     
-    // Primitives (draw to backbuffer)
+    /**
+     * Set drawing target
+     * @param buffer Target buffer (nullptr = VRAM)
+     */
+    void SetDrawBuffer(uint32_t* buffer);
+
+    //=========================================================================
+    // Basic Primitives (Draw to current buffer)
+    // Used for Boot Screen, Kernel Panic, etc.
+    //=========================================================================
+    
     void PutPixel(uint32_t x, uint32_t y, uint32_t color);
     void FillRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
     void DrawRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
@@ -40,20 +51,27 @@ namespace Graphics {
     void DrawImage(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t* data);
     void DrawImageCentered(uint32_t w, uint32_t h, uint32_t* data);
     
-    // Alpha blending helper (R,G,B mixing)
+    // Alpha blending helper
     uint32_t BlendPixelRaw(uint32_t bg, uint32_t fg);
-    
-    // Alpha blending for transparency
-
     void BlendPixel(uint32_t x, uint32_t y, uint32_t color);
     
-    // Get dimensions
-    uint32_t GetWidth();
-    uint32_t GetHeight();
-    uint32_t GetPitch();
+    //=========================================================================
+    // Hardware Acceleration / Low Level Blit
+    //=========================================================================
     
-    // Direct access (for advanced use)
-    uint32_t* GetBackbuffer();
+    /**
+     * Copy block of memory (SIMD optimized)
+     */
+    void BlitBuffer(uint32_t* dest, uint32_t* src, uint32_t count);
+
+    //=========================================================================
+    // Legacy / Compatibility (Deprecated)
+    // These will now redirect to DRM or simple behaviors
+    //=========================================================================
+    void Flip(); 
+    void FlipRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    void MarkDirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    void ClearDirtyRects();
 }
 
 // Color constants (BGRA format)

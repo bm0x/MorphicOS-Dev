@@ -36,6 +36,7 @@ static MorphicDateTime g_rtc = {};
 static MorphicSystemInfo g_sys = {};
 static uint64_t g_last_rtc_ms = 0;
 static uint32_t g_last_clock_sec = 0;
+static uint64_t g_last_render_time = 0;
 
 static Launcher g_launcher;
 
@@ -825,6 +826,17 @@ extern "C" int main(void* asset_ptr) {
                         line4[pos] = '\0';
                         UppercaseInplace(line4);
                         Compositor::DrawText(x, y, line4, 0xFFCCCCCC, 1);
+                        y += 12;
+
+                        // Frame Time (Phase 3 Requirement)
+                        char lineFT[32];
+                        pos = 0;
+                        const char* ft = "FT: ";
+                        while (*ft) lineFT[pos++] = *ft++;
+                        write_u64(lineFT, pos, g_last_render_time);
+                        lineFT[pos++] = 'm'; lineFT[pos++] = 's';
+                        lineFT[pos] = 0;
+                        Compositor::DrawText(x, y, lineFT, 0xFF88CC88, 1);
                     }
                 }
                 // Match "MPK Installer"
@@ -856,14 +868,32 @@ extern "C" int main(void* asset_ptr) {
         // This puts the Wallpaper + Icons + Taskbar into the shared buffer
         // Note: Default Target is BACK_BUFFER, used by RenderScene/RenderTaskbar
         
-        // CRITICAL: If launcher just closed, force full flush to clear launcher graphics
-        if (!menu_open && prev_menu_open) {
-            sys_debug_print("[Desktop] Launcher just closed - forcing full flush\n");
-            Compositor::Flush();  // Full screen copy to ensure launcher is erased
+        // CRITICAL: Force full flush in any of these cases:
+        // 1. Launcher just closed
+        // 2. External app windows are active (prevents ghosting when apps move/close)
+        bool hasExternalWindows = (externalWindowCount > 0);
+        bool needsFullFlush = (!menu_open && prev_menu_open) || hasExternalWindows;
+        
+        if (needsFullFlush) {
+            // Full screen copy ensures all areas under app windows are redrawn
+            Compositor::Flush();
+            // Mark full screen dirty for DRM
+            sys_drm_mark_compositor_dirty(0, ((Compositor::GetHeight() & 0xFFFF) << 16) | (Compositor::GetWidth() & 0xFFFF));
         } else if (g_dirty.valid) {
             Compositor::FlushRect(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
+            // Mark UI dirty region for DRM
+            sys_drm_mark_compositor_dirty(((g_dirty.y & 0xFFFF) << 16) | (g_dirty.x & 0xFFFF), ((g_dirty.h & 0xFFFF) << 16) | (g_dirty.w & 0xFFFF));
         } else {
-             Compositor::Flush();
+             // Ensure at least cursor area update if nothing else
+        }
+
+        // [CRITICAL FIX] 1b. Clear Previous Cursor Trail
+        // Before we ask Kernel to draw the NEW buffer (Compose), we must ensure 
+        // the background buffer (Shared) is clean of the OLD cursor.
+        // We copy the clean background from Scratch -> Shared at the OLD position.
+        // We do this BEFORE sys_compose_layers to avoid overwriting the NEW cursor if they overlap.
+        if (prev_mouse_x != mouse_x || prev_mouse_y != mouse_y) {
+             Compositor::FlushRect(prev_mouse_x, prev_mouse_y, 16, 16);
         }
 
         // 2. Compose Apps (Kernel Overlay) 
@@ -871,29 +901,38 @@ extern "C" int main(void* asset_ptr) {
         sys_compose_layers();
 
         // 3. Post-Compose Overlay (Launcher + Cursor)
-        // Switch to FRONT BUFFER (Direct Shared Access)
-        Compositor::SetRenderTarget(Compositor::RenderTarget::FRONT_BUFFER);
+        // 3. Post-Compose Overlay (Launcher + Cursor)
+        // Draw to BACK BUFFER (Same as Apps/Wallpaper) so it persists after Flip
+        // Compositor::SetRenderTarget(Compositor::RenderTarget::FRONT_BUFFER); // REMOVED
         
         // 3a. Draw Launcher (if open) - Now On Top of Apps
+        // Note: Ideally Launcher should be a separate layer or drawn before Compose if it's "desktop"
         if (menu_open) {
              g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
         }
         
-        // 3b. Draw Cursor (On Top of Everything)
-        Compositor::DrawCursor(mouse_x, mouse_y);
+        // 3b. Draw Cursor
+        // Handled by Kernel Overlay in sys_compose_layers
         
-        // Restore Target for next frame logic (Desktop rendering)
-        Compositor::SetRenderTarget(Compositor::RenderTarget::BACK_BUFFER);
-
-        // 4. Present (Flip)
-        // Use PresentFullDirty only when launcher just closed (to erase launcher graphics)
-        // Otherwise use normal Present (only copies dirty regions for performance)
-        bool vsynced;
-        if (!menu_open && prev_menu_open) {
-            vsynced = Compositor::PresentFullDirty();
-        } else {
-            vsynced = Compositor::Present();
+        // [DRM] Mark cursor regions as dirty
+        // We must mark both the NEW position (where cursor is now) 
+        // AND the OLD position (where we restored the background)
+        sys_drm_mark_compositor_dirty(((mouse_y & 0xFFFF) << 16) | (mouse_x & 0xFFFF), 0x00100010);
+        if (prev_mouse_x != mouse_x || prev_mouse_y != mouse_y) {
+             sys_drm_mark_compositor_dirty(((prev_mouse_y & 0xFFFF) << 16) | (prev_mouse_x & 0xFFFF), 0x00100010);
         }
+
+        // Measure Render Time (CPU) before VSync wait
+        uint64_t time_render_done = sys_get_time_ms();
+        g_last_render_time = time_render_done - start_time;
+
+        // 4. Present (Flip) via DRM
+        // This atomically updates the screen at VBlank
+        sys_drm_present(1); // Wait for VSync
+        bool vsynced = true;
+        
+        // Restore rendering to back buffer for next frame UI
+        Compositor::SetRenderTarget(Compositor::RenderTarget::BACK_BUFFER);
         
         // E. Sync
         // If present already waited for VSync, don't add extra sleep (avoids 1-frame lag).

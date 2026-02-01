@@ -19,8 +19,9 @@ else
 	CXXFLAGS = $(CXXFLAGS_BASE) -O0 -g -DDEBUG
 endif
 
-# Optional debug toggles
-MOUSE_DEBUG ?= 1
+# Optional debug toggles (disabled by default for performance)
+# Enable mouse debug with: make MOUSE_DEBUG=1
+MOUSE_DEBUG ?= 0
 ifeq ($(MOUSE_DEBUG),1)
     CXXFLAGS += -DMOUSE_DEBUG
 endif
@@ -40,11 +41,15 @@ KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/hal/video/graphics.cpp \
                  kernel/hal/video/verbose.cpp \
                  kernel/hal/video/compositor.cpp \
+                 kernel/hal/drm/drm.cpp \
+                 kernel/hal/drm/buffer_manager.cpp \
                  kernel/hal/video/vsync.cpp \
                  kernel/hal/video/alpha_lut.cpp \
                  kernel/hal/input/input_manager.cpp \
+                 kernel/hal/input/focus_manager.cpp \
                  kernel/hal/input/mouse.cpp \
                  kernel/hal/input/keymap.cpp \
+                 kernel/hal/input/evdev.cpp \
                  kernel/hal/audio/audio.cpp \
                  kernel/hal/audio/mixer.cpp \
                  kernel/hal/audio/wav.cpp \

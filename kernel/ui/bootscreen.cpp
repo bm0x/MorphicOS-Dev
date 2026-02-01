@@ -19,7 +19,7 @@ namespace BootScreen {
         height = Graphics::GetHeight();
 
         // 1. Clear Screen to generic background
-        Graphics::Clear(BG_COLOR);
+        Graphics::FillRect(0, 0, width, height, BG_COLOR);
 
         // 2. Draw "Logo" (Centered Text for now)
         const char* title = "MORPHIC OS";
@@ -28,9 +28,9 @@ namespace BootScreen {
         uint32_t titleY = (height / 2) - 50;
 
         // Draw basic shadow
-        FontRenderer::DrawText(Graphics::GetBackbuffer(), width, height, titleX + 2, titleY + 2, title, 0xFF11111B, BG_COLOR);
+        FontRenderer::DrawText(Graphics::GetDrawBuffer(), width, height, titleX + 2, titleY + 2, title, 0xFF11111B, BG_COLOR);
         // Draw Main Text
-        FontRenderer::DrawText(Graphics::GetBackbuffer(), width, height, titleX, titleY, title, 0xFFFFFFFF, BG_COLOR);
+        FontRenderer::DrawText(Graphics::GetDrawBuffer(), width, height, titleX, titleY, title, 0xFFFFFFFF, BG_COLOR);
 
         // 3. Draw initial bar container
         uint32_t barW = width / 3;
@@ -68,7 +68,7 @@ namespace BootScreen {
         uint32_t msgLen = FontRenderer::GetTextWidth(message);
         uint32_t msgX = (width - msgLen) / 2;
         
-        FontRenderer::DrawText(Graphics::GetBackbuffer(), width, height, msgX, textY, message, TEXT_COLOR, BG_COLOR);
+        FontRenderer::DrawText(Graphics::GetDrawBuffer(), width, height, msgX, textY, message, TEXT_COLOR, BG_COLOR);
 
         // 4. Smart Flip (Only update the changing area)
         // Calculating union of bar area and text area
@@ -88,7 +88,7 @@ namespace BootScreen {
 
     void Finish() {
         // Force full refresh to clear any artifacts
-        Graphics::Clear(0xFF000000); // Clear to Black
+        Graphics::FillRect(0, 0, Graphics::GetWidth(), Graphics::GetHeight(), 0xFF000000); // Clear to Black
         Graphics::Flip();
     }
 }

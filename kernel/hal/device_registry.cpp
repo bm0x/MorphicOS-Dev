@@ -1,11 +1,15 @@
 #include "device_registry.h"
 #include "input/input_device.h"
+#include "input/evdev.h"
 #include "video/video_device.h"
 #include "storage/block_device.h"
 #include "video/early_term.h"
 
 namespace DeviceRegistry {
     void Init() {
+        // Initialize evdev subsystem first (Linux-style event device)
+        Evdev::Init();
+        
         InputManager::Init();
         VideoManager::Init();
         StorageManager::Init();

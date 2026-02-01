@@ -199,3 +199,44 @@ sys_list_mounts:
     mov rax, 81
     syscall
     ret
+global sys_drm_create_buffer
+sys_drm_create_buffer:
+    mov rax, 90
+    syscall
+    ret
+
+global sys_drm_destroy_buffer
+sys_drm_destroy_buffer:
+    mov rax, 91
+    syscall
+    ret
+
+global sys_drm_map_buffer
+sys_drm_map_buffer:
+    mov rax, 92
+    syscall
+    ret
+
+global sys_drm_mark_ready
+sys_drm_mark_ready:
+    mov rax, 93
+    syscall
+    ret
+
+global sys_drm_mark_dirty_rect
+sys_drm_mark_dirty_rect:
+    mov rax, 94
+    syscall
+    ret
+
+global sys_drm_present
+sys_drm_present:
+    mov rax, 95
+    syscall
+    ret
+
+global sys_drm_mark_compositor_dirty
+sys_drm_mark_compositor_dirty:
+    mov rax, 96
+    syscall
+    ret

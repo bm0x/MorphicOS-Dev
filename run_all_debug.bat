@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo Morphic OS - Build & Debug Cycle
+echo Morphic OS - Build - Debug Cycle
 echo ========================================
 
 echo [1/3] Cleaning...

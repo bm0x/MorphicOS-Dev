@@ -10,8 +10,8 @@ namespace InputManager {
     static IInputDevice* devices[MAX_INPUT_DEVICES];
     static uint32_t deviceCount = 0;
 
-    // Small stash to buffer events until a compositor registers.
-    static const int STASH_SIZE = 64;
+    // [FIX] Increased buffer size to prevent event loss during fast dragging/movement
+    static const int STASH_SIZE = 256;
     static OSEvent g_eventStash[STASH_SIZE];
     static int g_stashHead = 0;
     static int g_stashTail = 0;
