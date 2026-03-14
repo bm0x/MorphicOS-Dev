@@ -2,8 +2,37 @@
 
 # Tools
 CXX = clang++
-LD = ld.lld
 ASM = nasm
+
+UNAME_S := $(shell uname -s)
+
+# Try Homebrew-provided LLVM/LLD first on macOS (keg-only paths), then PATH.
+ifeq ($(UNAME_S),Darwin)
+LLD_LD_BIN := $(firstword $(wildcard /opt/homebrew/opt/lld/bin/ld.lld /usr/local/opt/lld/bin/ld.lld /opt/homebrew/opt/llvm/bin/ld.lld /usr/local/opt/llvm/bin/ld.lld))
+LLD_LINK_BIN := $(firstword $(wildcard /opt/homebrew/opt/lld/bin/lld-link /usr/local/opt/lld/bin/lld-link /opt/homebrew/opt/llvm/bin/lld-link /usr/local/opt/llvm/bin/lld-link))
+endif
+
+ifeq ($(strip $(LLD_LD_BIN)),)
+LD = ld.lld
+else
+LD = $(LLD_LD_BIN)
+endif
+
+ifeq ($(strip $(LLD_LINK_BIN)),)
+LLD_LINK = lld-link
+else
+LLD_LINK = $(LLD_LINK_BIN)
+endif
+
+ifeq ($(UNAME_S),Darwin)
+MKFS_FAT_BIN := $(firstword $(wildcard /opt/homebrew/opt/dosfstools/sbin/mkfs.fat /usr/local/opt/dosfstools/sbin/mkfs.fat))
+endif
+
+ifeq ($(strip $(MKFS_FAT_BIN)),)
+MKFS_FAT = mkfs.fat
+else
+MKFS_FAT = $(MKFS_FAT_BIN)
+endif
 
 # Build mode (release/debug)
 MODE ?= release
@@ -124,7 +153,7 @@ build/EFI/BOOT/BOOTX64.EFI: boot/main.o
 	@echo "  [BOOT] Linking Bootloader..."
 	@echo "========================================"
 	mkdir -p build/EFI/BOOT
-	lld-link $(EFI_LDFLAGS) /out:build/EFI/BOOT/BOOTX64.EFI boot/main.o
+	$(LLD_LINK) $(EFI_LDFLAGS) /out:build/EFI/BOOT/BOOTX64.EFI boot/main.o
 
 # --- Kernel ---
 kernel: build/morph_kernel.elf
@@ -306,7 +335,7 @@ iso: kernel bootloader initrd
 	# Create EFI System Partition (ESP) - 64MB to fit all apps + kernel
 	@echo "  [ISO] Creating ESP Image..."
 	dd if=/dev/zero of=$(ESP_IMG) bs=1M count=64 2>/dev/null
-	mkfs.fat -F 16 $(ESP_IMG) >/dev/null 2>&1
+	$(MKFS_FAT) -F 16 $(ESP_IMG) >/dev/null 2>&1
 	mmd -i $(ESP_IMG) ::/EFI
 	mmd -i $(ESP_IMG) ::/EFI/BOOT
 	mcopy -i $(ESP_IMG) build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/

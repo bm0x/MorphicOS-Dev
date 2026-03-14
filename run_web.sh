@@ -77,12 +77,23 @@ if [ ! -f debug_disk.img ]; then
     echo "Creating 2GB Debug Disk..."
     dd if=/dev/zero of=debug_disk.img bs=1M count=2048
     
-    # Format as FAT32 if mkfs.vfat exists
-    if command -v mkfs.vfat &> /dev/null; then
+    MKFS_TOOL=""
+    if command -v mkfs.vfat >/dev/null 2>&1; then
+        MKFS_TOOL="$(command -v mkfs.vfat)"
+    elif command -v mkfs.fat >/dev/null 2>&1; then
+        MKFS_TOOL="$(command -v mkfs.fat)"
+    elif [ -x "/opt/homebrew/opt/dosfstools/sbin/mkfs.fat" ]; then
+        MKFS_TOOL="/opt/homebrew/opt/dosfstools/sbin/mkfs.fat"
+    elif [ -x "/usr/local/opt/dosfstools/sbin/mkfs.fat" ]; then
+        MKFS_TOOL="/usr/local/opt/dosfstools/sbin/mkfs.fat"
+    fi
+
+    # Format as FAT32 if mkfs tool exists
+    if [ -n "$MKFS_TOOL" ]; then
         echo "Formatting debug_disk.img as FAT32..."
-        mkfs.vfat -F 32 debug_disk.img
+        "$MKFS_TOOL" -F 32 debug_disk.img
     else
-        echo "mkfs.vfat not found, leaving disk as RAW."
+        echo "mkfs.vfat/mkfs.fat not found, leaving disk as RAW."
     fi
 fi
 

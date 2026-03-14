@@ -81,7 +81,7 @@ install_macos() {
     brew update
 
     echo "Installing Core Build Tools with Homebrew..."
-    brew install llvm nasm mtools dosfstools xorriso qemu python3 git wget
+    brew install llvm lld nasm mtools dosfstools xorriso qemu python3 git wget
 
     echo "Installing Web/VNC Tools..."
     if brew install novnc >/dev/null 2>&1; then
@@ -111,6 +111,12 @@ install_macos() {
     if [ -d "$BREW_PREFIX/opt/llvm/bin" ]; then
         export PATH="$BREW_PREFIX/opt/llvm/bin:$PATH"
     fi
+    if [ -d "$BREW_PREFIX/opt/lld/bin" ]; then
+        export PATH="$BREW_PREFIX/opt/lld/bin:$PATH"
+    fi
+    if [ -d "$BREW_PREFIX/opt/dosfstools/sbin" ]; then
+        export PATH="$BREW_PREFIX/opt/dosfstools/sbin:$PATH"
+    fi
 }
 
 if [ "$OS_NAME" = "Darwin" ]; then
@@ -137,7 +143,7 @@ mkdir -p shared
 echo "--- Dependencies Installed. Ready to Build. ---"
 
 # Ensure mkfs.fat is available (used to create EFI System Partition image)
-if ! command -v mkfs.fat >/dev/null 2>&1; then
+if ! command -v mkfs.fat >/dev/null 2>&1 && [ ! -x "/opt/homebrew/opt/dosfstools/sbin/mkfs.fat" ] && [ ! -x "/usr/local/opt/dosfstools/sbin/mkfs.fat" ]; then
     echo "mkfs.fat not found after install. Attempting to install dosfstools..."
     if [ "$OS_NAME" = "Darwin" ]; then
         brew install dosfstools || \

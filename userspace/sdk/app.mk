@@ -17,8 +17,19 @@ ifndef MORPHIC_ROOT
 endif
 
 CXX = clang++
-LD = ld.lld
 ASM = nasm
+
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+LLD_LD_BIN := $(firstword $(wildcard /opt/homebrew/opt/lld/bin/ld.lld /usr/local/opt/lld/bin/ld.lld /opt/homebrew/opt/llvm/bin/ld.lld /usr/local/opt/llvm/bin/ld.lld))
+endif
+
+ifeq ($(strip $(LLD_LD_BIN)),)
+LD = ld.lld
+else
+LD = $(LLD_LD_BIN)
+endif
 
 # Standard flags for Morphic Userspace
 CXXFLAGS += -target x86_64-elf -ffreestanding -fno-rtti -fno-exceptions \
