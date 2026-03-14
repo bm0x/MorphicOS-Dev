@@ -190,13 +190,15 @@ Morphic es un **sistema operativo experimental** (hobby OS) escrito desde cero.
 
 ## Quick Start
 
-### Requisitos
+### Linux (Arch / Debian / Ubuntu)
+
+#### Requisitos
 
 ```bash
 ./setup.sh
 ```
 
-### Build
+#### Build
 
 ```bash
 make      # Genera morphic.img (imagen USB/QEMU)
@@ -207,23 +209,59 @@ Esto genera:
 - `morphic.img`: Imagen de disco para QEMU o para grabar en USB (DD mode).
 - `morphic_os.iso`: Imagen ISO arrancable (UEFI El Torito) para VirtualBox, VMware o grabar en DVD.
 
-### Run (recomendado para input/depurar)
+#### Run directo (recomendado para input/depurar)
 
 ```bash
 ./run_direct.sh 2>&1 | tee boot.log
 ```
 
-Notas:
-- El mouse en QEMU requiere “grab”: click en la ventana, `Ctrl+Alt` para soltar.
-- Para lanzar el desktop, en la shell escribe `desktop`.
-
-### Run por noVNC (web)
+#### Run por noVNC (web)
 
 ```bash
 ./run_web.sh
 ```
 
 Luego abre: `http://localhost:8080/vnc.html`
+
+### macOS (Intel y Apple Silicon)
+
+> Nota: Morphic sigue siendo x86_64. En Apple Silicon (M1/M2/M3), QEMU ejecuta Morphic por emulación x86_64.
+
+#### Requisitos
+
+```bash
+./setup.sh
+```
+
+#### Build
+
+```bash
+make
+make iso
+```
+
+#### Run directo (UI local)
+
+```bash
+# Recomendado en Apple Silicon
+ACCEL=tcg DISPLAY_BACKEND=cocoa AUDIO_BACKEND=coreaudio ./run_direct.sh 2>&1 | tee boot.log
+```
+
+Opcional:
+- En Mac Intel, puedes probar `ACCEL=hvf` si QEMU lo soporta.
+- Si `coreaudio` no está disponible, usa `AUDIO_BACKEND=sdl`.
+
+#### Run por noVNC (web)
+
+```bash
+./run_web.sh
+```
+
+Luego abre: `http://localhost:8080/vnc.html`
+
+Notas generales de ejecución:
+- El mouse en QEMU requiere “grab”: click en la ventana, `Ctrl+Alt` para soltar.
+- Para lanzar el desktop, en la shell escribe `desktop`.
 
 ### Ejecutar en VirtualBox
 
