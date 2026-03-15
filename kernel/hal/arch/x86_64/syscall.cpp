@@ -6,6 +6,7 @@
 #include "../../../mm/heap.h"
 #include "../../../mm/pmm.h"
 #include "../../../process/scheduler.h"
+#include "../../../api/graphics_uapi.h"
 #include "../../audio/audio_device.h"
 #include "../../input/input_device.h"
 #include "../../input/keymap.h"
@@ -456,6 +457,12 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     return packed;
   }
 
+  case SYS_GET_PID:
+    return Scheduler::GetCurrentTaskId();
+
+  case SYS_GET_COMPOSITOR_PID:
+    return InputManager::GetCompositorPID();
+
   case 55: // SYS_GET_RTC_DATETIME
   {
     if (arg1 == 0)
@@ -573,8 +580,16 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     uint32_t width = Graphics::GetWidth();
     uint32_t height = Graphics::GetHeight();
 
-    // Get kernel's backbuffer physical address
-    uint32_t *kernelBackbuf = Graphics::GetDrawBuffer();
+    // Ensure desktop userspace and kernel composition use DRM compositor buffer.
+    // This avoids mixed VRAM/compositor-buffer paths that cause visual desync.
+    uint32_t *kernelBackbuf = DRM::GetCompositorBuffer();
+    if (kernelBackbuf) {
+      Graphics::SetDrawBuffer(kernelBackbuf);
+    } else {
+      kernelBackbuf = Graphics::GetDrawBuffer();
+    }
+
+    // Get kernel backbuffer physical address
     if (!kernelBackbuf) {
       UART::Write("[Syscall] SYS_VIDEO_MAP: No kernel backbuffer!\n");
       return 0;
@@ -1158,6 +1173,65 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
       DRM::MarkDirty(x, y, w, h);
       return 0;
   }
+
+    case 97: // sys_drm_get_caps(out_caps)
+    {
+      if (!arg1 || !IsUserPtr(arg1))
+        return 0;
+
+      GraphicsUapiCaps caps = {};
+      if (!DRM::GetUapiCaps(&caps))
+        return 0;
+
+      GraphicsUapiCaps* out_caps = (GraphicsUapiCaps*)arg1;
+      *out_caps = caps;
+      return 1;
+    }
+
+    case 98: // sys_drm_poll_event(out_event)
+    {
+      if (!arg1 || !IsUserPtr(arg1))
+        return 0;
+
+      GraphicsUapiEvent ev = {};
+      if (!DRM::PollUapiEvent(&ev))
+        return 0;
+
+      GraphicsUapiEvent* out_event = (GraphicsUapiEvent*)arg1;
+      *out_event = ev;
+      return 1;
+    }
+
+    case SYS_GET_INPUT_DROP_COUNT:
+    {
+      return Scheduler::GetEventDropCount();
+    }
+
+    case SYS_DRM_ATOMIC_TEST:
+    {
+      DRM::AtomicRequest req = {};
+      req.x = (int16_t)(arg1 & 0xFFFF);
+      req.y = (int16_t)(arg1 >> 16);
+      req.w = (uint16_t)(arg2 & 0xFFFF);
+      req.h = (uint16_t)(arg2 >> 16);
+      req.wait_vsync = (arg3 & 1) != 0;
+      req.full_update = (arg3 & 2) != 0;
+      req.has_damage = (req.w > 0 && req.h > 0);
+      return DRM::AtomicTest(req) ? 1 : 0;
+    }
+
+    case SYS_DRM_ATOMIC_COMMIT:
+    {
+      DRM::AtomicRequest req = {};
+      req.x = (int16_t)(arg1 & 0xFFFF);
+      req.y = (int16_t)(arg1 >> 16);
+      req.w = (uint16_t)(arg2 & 0xFFFF);
+      req.h = (uint16_t)(arg2 >> 16);
+      req.wait_vsync = (arg3 & 1) != 0;
+      req.full_update = (arg3 & 2) != 0;
+      req.has_damage = (req.w > 0 && req.h > 0);
+      return DRM::AtomicCommit(req) ? 1 : 0;
+    }
 
   default:
     return (uint64_t)-1;

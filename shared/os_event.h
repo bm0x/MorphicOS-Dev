@@ -9,7 +9,8 @@ struct OSEvent {
         KEY_PRESS = 3,
         KEY_RELEASE = 4,
         WINDOW_CREATED = 5,
-        WINDOW_DESTROYED = 6
+        WINDOW_DESTROYED = 6,
+        USER_MESSAGE = 64
     };
 
     uint32_t type;

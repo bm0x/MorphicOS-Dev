@@ -514,10 +514,11 @@ namespace Compositor {
             DrawWindowDecoration(layer);
         }
 
-        // Cursor Drawing (Kernel Overlay)
-        // Fixed: Ensure cursor is drawn ON TOP of apps on the SHARED buffer.
-        // Userspace manages background, but Kernel manages Apps + Cursor layering.
-        Mouse::DrawCursor(backbuf, Graphics::GetWidth(), Graphics::GetHeight());
+        // In userspace compositor mode, cursor ownership is handled by desktop userspace.
+        // Keep kernel cursor only for legacy/kernel-composed mode.
+        if (!userspaceMode) {
+            Mouse::DrawCursor(backbuf, Graphics::GetWidth(), Graphics::GetHeight());
+        }
         
         // if (cursorLayer) { ... }
         
@@ -844,31 +845,50 @@ namespace Compositor {
     uint32_t GetWindowList(void* user_buf, uint32_t max_count) {
         if (!user_buf) return 0;
         WindowInfo* infos = (WindowInfo*)user_buf;
-        uint32_t count = 0;
-        
-        for (int i = 0; i < 16 && count < max_count; i++) {
+        Window* ordered[16];
+        uint32_t ordered_count = 0;
+
+        // Build a compact list first.
+        for (int i = 0; i < 16; i++) {
             if (windows[i].id != 0 && windows[i].layer) {
-                infos[count].id = windows[i].id;
-                infos[count].x = windows[i].layer->x;
-                infos[count].y = windows[i].layer->y;
-                infos[count].w = windows[i].width;
-                infos[count].h = windows[i].height;
-                infos[count].flags = (windows[i].layer->visible ? 1 : 0);
-                
-                // Copy title
-                const char* name = windows[i].layer->name;
-                int j = 0;
-                while (j < 31 && name[j]) {
-                    infos[count].title[j] = name[j];
-                    j++;
-                }
-                infos[count].title[j] = 0;
-                
-                infos[count].pid = windows[i].owner_pid;
-                
-                count++;
+                ordered[ordered_count++] = &windows[i];
             }
         }
+
+        // Sort by z_order ascending (bottom -> top).
+        // Userspace can iterate reverse for top-most hit tests.
+        for (uint32_t i = 1; i < ordered_count; i++) {
+            Window* key = ordered[i];
+            int j = (int)i - 1;
+            while (j >= 0 && ordered[j]->layer->z_order > key->layer->z_order) {
+                ordered[j + 1] = ordered[j];
+                j--;
+            }
+            ordered[j + 1] = key;
+        }
+
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < ordered_count && count < max_count; i++) {
+            Window* win = ordered[i];
+            infos[count].id = win->id;
+            infos[count].x = win->layer->x;
+            infos[count].y = win->layer->y;
+            infos[count].w = win->width;
+            infos[count].h = win->height;
+            infos[count].flags = (win->layer->visible ? 1 : 0);
+
+            const char* name = win->layer->name;
+            int j = 0;
+            while (j < 31 && name[j]) {
+                infos[count].title[j] = name[j];
+                j++;
+            }
+            infos[count].title[j] = 0;
+
+            infos[count].pid = win->owner_pid;
+            count++;
+        }
+
         return count;
     }
     

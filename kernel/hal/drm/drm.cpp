@@ -7,6 +7,8 @@
 #include "../platform.h"
 #include "../../drivers/gpu/bga.h"
 
+extern "C" uint64_t PIT_GetTicks();
+
 namespace DRM {
 
     //=========================================================================
@@ -45,6 +47,15 @@ namespace DRM {
     static DirtyRect dirty_rects[MAX_DIRTY_RECTS];
     static uint32_t dirty_count = 0;
     static bool full_dirty = true;
+
+    // UAPI display events (ring queue for v1)
+    static constexpr uint32_t MAX_UAPI_EVENTS = 128;
+    static GraphicsUapiEvent uapi_events[MAX_UAPI_EVENTS];
+    static uint32_t uapi_event_head = 0;
+    static uint32_t uapi_event_tail = 0;
+    static uint32_t uapi_event_count = 0;
+    static uint64_t last_vblank_sequence = 0;
+    static uint64_t last_flip_sequence = 0;
     
     // Lock for thread-safe operations
     static volatile uint32_t drm_lock = 0;
@@ -70,6 +81,51 @@ namespace DRM {
     
     static void ReleaseLock() {
         __sync_lock_release(&drm_lock);
+    }
+
+    static void QueueUapiEventLocked(uint32_t type, uint32_t flags, uint64_t sequence) {
+        if (uapi_event_count == MAX_UAPI_EVENTS) {
+            uapi_event_tail = (uapi_event_tail + 1) % MAX_UAPI_EVENTS;
+            uapi_event_count--;
+        }
+
+        GraphicsUapiEvent& ev = uapi_events[uapi_event_head];
+        ev.type = type;
+        ev.flags = flags;
+        ev.sequence = sequence;
+        ev.timestamp_ms = PIT_GetTicks();
+
+        uapi_event_head = (uapi_event_head + 1) % MAX_UAPI_EVENTS;
+        uapi_event_count++;
+    }
+
+    static bool NormalizeDamageRect(const AtomicRequest& req,
+                                    int32_t* out_x,
+                                    int32_t* out_y,
+                                    uint32_t* out_w,
+                                    uint32_t* out_h) {
+        if (req.w == 0 || req.h == 0) return false;
+
+        int64_t x1 = req.x;
+        int64_t y1 = req.y;
+        int64_t x2 = x1 + (int64_t)req.w;
+        int64_t y2 = y1 + (int64_t)req.h;
+
+        if (x2 <= 0 || y2 <= 0) return false;
+        if (x1 >= (int64_t)screen_width || y1 >= (int64_t)screen_height) return false;
+
+        if (x1 < 0) x1 = 0;
+        if (y1 < 0) y1 = 0;
+        if (x2 > (int64_t)screen_width) x2 = screen_width;
+        if (y2 > (int64_t)screen_height) y2 = screen_height;
+
+        if (x2 <= x1 || y2 <= y1) return false;
+
+        if (out_x) *out_x = (int32_t)x1;
+        if (out_y) *out_y = (int32_t)y1;
+        if (out_w) *out_w = (uint32_t)(x2 - x1);
+        if (out_h) *out_h = (uint32_t)(y2 - y1);
+        return true;
     }
     
     // SIMD-optimized memory copy (from blit_fast.S)
@@ -265,6 +321,45 @@ namespace DRM {
         return screen_pitch;
     }
 
+    bool GetUapiCaps(GraphicsUapiCaps* out_caps) {
+        if (!out_caps) return false;
+
+        out_caps->version_major = GRAPHICS_UAPI_VERSION_MAJOR;
+        out_caps->version_minor = GRAPHICS_UAPI_VERSION_MINOR;
+        out_caps->caps_flags = GRAPHICS_CAP_CREATE_BUFFER |
+                               GRAPHICS_CAP_DIRTY_RECT |
+                               GRAPHICS_CAP_VSYNC_PRESENT |
+                               GRAPHICS_CAP_VBLANK_EVENT |
+                               GRAPHICS_CAP_ATOMIC_COMMIT;
+        out_caps->max_width = screen_width;
+        out_caps->max_height = screen_height;
+        out_caps->preferred_format = GRAPHICS_FORMAT_XRGB8888;
+        out_caps->supported_formats_mask = GRAPHICS_FORMAT_BIT_ARGB8888 |
+                                           GRAPHICS_FORMAT_BIT_XRGB8888 |
+                                           GRAPHICS_FORMAT_BIT_RGB888;
+        out_caps->reserved0 = 0;
+
+        return true;
+    }
+
+    bool PollUapiEvent(GraphicsUapiEvent* out_event) {
+        if (!out_event) return false;
+
+        AcquireLock();
+
+        if (uapi_event_count == 0) {
+            ReleaseLock();
+            return false;
+        }
+
+        *out_event = uapi_events[uapi_event_tail];
+        uapi_event_tail = (uapi_event_tail + 1) % MAX_UAPI_EVENTS;
+        uapi_event_count--;
+
+        ReleaseLock();
+        return true;
+    }
+
     //=========================================================================
     // Page Flip / VSync
     //=========================================================================
@@ -454,11 +549,67 @@ namespace DRM {
         
         if (primary_crtc) {
             primary_crtc->vblank_count++;
+            last_vblank_sequence = primary_crtc->vblank_count;
+            QueueUapiEventLocked(GRAPHICS_EVENT_VBLANK, vsync ? 1u : 0u, last_vblank_sequence);
         }
         
         ReleaseLock();
         
-        return vsync;  // Return true if we waited for vsync
+        return true;
+    }
+
+    bool AtomicTest(const AtomicRequest& req) {
+        if (!primary_crtc) return false;
+
+        if (req.full_update) {
+            return true;
+        }
+
+        if (!req.has_damage) {
+            // No damage means a no-op present is valid.
+            return true;
+        }
+
+        return NormalizeDamageRect(req, nullptr, nullptr, nullptr, nullptr);
+    }
+
+    bool AtomicCommit(const AtomicRequest& req) {
+        if (!AtomicTest(req)) return false;
+
+        if (req.full_update) {
+            AcquireLock();
+            full_dirty = true;
+            dirty_count = 0;
+            for (uint32_t i = 0; i < MAX_DIRTY_RECTS; i++) {
+                dirty_rects[i].active = false;
+            }
+            ReleaseLock();
+        } else if (req.has_damage) {
+            int32_t x = 0;
+            int32_t y = 0;
+            uint32_t w = 0;
+            uint32_t h = 0;
+            if (!NormalizeDamageRect(req, &x, &y, &w, &h)) {
+                return false;
+            }
+            MarkDirty(x, y, (int32_t)w, (int32_t)h);
+        }
+
+        if (!Present(req.wait_vsync)) {
+            return false;
+        }
+
+        AcquireLock();
+        if (primary_crtc) {
+            last_flip_sequence = primary_crtc->vblank_count;
+        } else {
+            last_flip_sequence++;
+        }
+        uint32_t event_flags = (req.wait_vsync ? 1u : 0u) |
+                               (req.full_update ? 2u : 0u);
+        QueueUapiEventLocked(GRAPHICS_EVENT_FLIP_COMPLETE, event_flags, last_flip_sequence);
+        ReleaseLock();
+        return true;
     }
 
     //=========================================================================

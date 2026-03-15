@@ -204,12 +204,20 @@ userspace/sdk/gui/libmorphic_gui.a:
 	$(MAKE) -C userspace/sdk/gui
 
 # Delegate desktop build to its own Makefile (SDK Standard)
-userspace/desktop.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/libmorphic_gui.a
+userspace/desktop.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/libmorphic_gui.a $(DESKTOP_APP_DIR)/client_main.cpp
 	@echo "========================================"
 	@echo "  [USER] Building Desktop App..."
 	@echo "========================================"
 	$(MAKE) -C $(DESKTOP_APP_DIR)
 	cp $(DESKTOP_APP_DIR)/desktop.mpk userspace/desktop.mpk
+
+COMPOSITOR_APP_DIR = userspace/apps/compositor
+userspace/compositor.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/libmorphic_gui.a $(COMPOSITOR_APP_DIR)/main.cpp $(DESKTOP_APP_DIR)/desktop.cpp $(DESKTOP_APP_DIR)/launcher.h
+	@echo "========================================"
+	@echo "  [USER] Building Compositor App..."
+	@echo "========================================"
+	$(MAKE) -C $(COMPOSITOR_APP_DIR)
+	cp $(COMPOSITOR_APP_DIR)/compositor.mpk userspace/compositor.mpk
 
 CALCULATOR_APP_DIR = userspace/apps/calculator
 CALCULATOR_APP_DIR = userspace/apps/calculator
@@ -235,6 +243,14 @@ userspace/filemanager.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/
 	@echo "========================================"
 	$(MAKE) -C $(FILEMANAGER_APP_DIR)
 	cp $(FILEMANAGER_APP_DIR)/filemanager.mpk userspace/filemanager.mpk
+
+DISPLAY_PROBE_APP_DIR = userspace/apps/display_probe
+userspace/display_probe.mpk: userspace/syscalls.o userspace/entry.o userspace/sdk/gui/libmorphic_gui.a
+	@echo "========================================"
+	@echo "  [USER] Building Display Probe App..."
+	@echo "========================================"
+	$(MAKE) -C $(DISPLAY_PROBE_APP_DIR)
+	cp $(DISPLAY_PROBE_APP_DIR)/display_probe.mpk userspace/display_probe.mpk
 
 
 kernel/fs/desktop_mpk.cpp: userspace/desktop.mpk
@@ -267,7 +283,7 @@ kernel/fs/filemanager_mpk.o: kernel/fs/filemanager_mpk.cpp
 
 
 # --- Image ---
-image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk userspace/filemanager.mpk initrd
+image: bootloader kernel userspace/compositor.mpk userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk userspace/filemanager.mpk initrd
 	@echo "========================================"
 	@echo "  [IMAGE] Creating Disk Image..."
 	@echo "========================================"
@@ -282,6 +298,7 @@ image: bootloader kernel userspace/desktop.mpk userspace/calculator.mpk userspac
 	# Copy InitRD
 	mcopy -i morphic.img userspace/initrd.img ::/
 	# Copy Apps to Root
+	mcopy -i morphic.img userspace/compositor.mpk ::/
 	mcopy -i morphic.img userspace/desktop.mpk ::/
 	mcopy -i morphic.img userspace/calculator.mpk ::/
 	mcopy -i morphic.img userspace/terminal.mpk ::/
@@ -298,11 +315,11 @@ clean:
 
 # --- InitRD ---
 # Create a standard TAR image containing all userspace applications
-initrd: userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk userspace/filemanager.mpk
+initrd: userspace/compositor.mpk userspace/desktop.mpk userspace/calculator.mpk userspace/terminal.mpk userspace/filemanager.mpk userspace/display_probe.mpk
 	@echo "========================================"
 	@echo "  [INITRD] Packing initrd.img..."
 	@echo "========================================"
-	cd userspace && tar -cvf initrd.img desktop.mpk calculator.mpk terminal.mpk filemanager.mpk
+	cd userspace && tar -cvf initrd.img compositor.mpk desktop.mpk calculator.mpk terminal.mpk filemanager.mpk display_probe.mpk
 
 # --- ISO ---
 ISO_ROOT = iso_root

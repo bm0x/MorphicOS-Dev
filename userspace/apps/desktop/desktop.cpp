@@ -3,6 +3,8 @@
 #include "system_info.h"
 #include "launcher.h"
 #include "morphic_syscalls.h"
+#include "graphics_uapi.h"
+#include "../../sdk/compositor_protocol.h"
 
 // Syscall stubs not covered by compositor.h
 // Syscall stubs are now in morphic_syscalls.h
@@ -23,6 +25,11 @@ static int32_t mouse_target_x16 = 0;
 static int32_t mouse_target_y16 = 0;
 
 static constexpr int MOUSE_SENSITIVITY = 3;
+static constexpr int CURSOR_W = 12;
+static constexpr int CURSOR_H = 18;
+static constexpr int CURSOR_PAD = 2;
+static constexpr int CURSOR_DIRTY_W = CURSOR_W + (CURSOR_PAD * 2);
+static constexpr int CURSOR_DIRTY_H = CURSOR_H + (CURSOR_PAD * 2);
 
 // Globals for Windows
 #define MAX_WINDOWS 10
@@ -31,12 +38,42 @@ int window_count = 0;
 
 static bool menu_open = false;
 static bool ui_dirty = false;
+static uint64_t g_menu_open_ms = 0;
+static uint64_t g_last_menu_toggle_ms = 0;
 
 static MorphicDateTime g_rtc = {};
 static MorphicSystemInfo g_sys = {};
 static uint64_t g_last_rtc_ms = 0;
 static uint32_t g_last_clock_sec = 0;
 static uint64_t g_last_render_time = 0;
+static uint32_t g_last_polled_events = 0;
+static uint64_t g_last_input_drop_count = 0;
+static uint64_t g_last_drop_poll_ms = 0;
+static uint64_t g_startup_time_ms = 0;
+static bool g_has_atomic_commit = false;
+static uint32_t g_last_display_events = 0;
+static uint64_t g_last_vblank_sequence = 0;
+static uint64_t g_last_flip_sequence = 0;
+static uint64_t g_last_client_pid = 0;
+static uint32_t g_last_client_message = 0;
+static uint32_t g_registered_client_count = 0;
+
+static constexpr int MAX_PROTOCOL_CLIENTS = 16;
+static uint64_t g_protocol_clients[MAX_PROTOCOL_CLIENTS] = {};
+
+struct ProtocolSurface {
+    bool active;
+    uint64_t client_pid;
+    uint64_t bound_window_id;
+    uint32_t width;
+    uint32_t height;
+    uint64_t commit_count;
+    uint64_t last_commit_ms;
+};
+
+static ProtocolSurface g_protocol_surfaces[MAX_PROTOCOL_CLIENTS] = {};
+static uint32_t g_active_surface_count = 0;
+static uint64_t g_total_surface_commits = 0;
 
 static Launcher g_launcher;
 
@@ -108,6 +145,11 @@ static void RefreshTimeAndSysinfo() {
             ui_dirty = true;
         }
     }
+
+    if (g_last_drop_poll_ms == 0 || (now - g_last_drop_poll_ms) >= 1000) {
+        g_last_input_drop_count = sys_get_input_drop_count();
+        g_last_drop_poll_ms = now;
+    }
 }
 
 static uint32_t GetClockSeconds() {
@@ -144,6 +186,26 @@ static uint32_t prevExternalWindowCount = 0;
 void FetchExternalWindows() {
     externalWindowCount = sys_get_window_list(externalWindows, MAX_EXT_WINDOWS);
 }
+
+static int FindExternalWindowIndexById(uint64_t id) {
+    for (uint32_t i = 0; i < externalWindowCount; i++) {
+        if (externalWindows[i].id == id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static int FindExternalWindowIndexByPid(uint64_t pid) {
+    for (int i = (int)externalWindowCount - 1; i >= 0; i--) {
+        if (externalWindows[(uint32_t)i].pid == pid && externalWindows[(uint32_t)i].flags) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void DebugProtocolMessage(const char* prefix, uint64_t pid, uint32_t a, uint32_t b);
 
 // Global Keymap State
 static int currentKeymapIndex = 0;
@@ -185,7 +247,221 @@ static void DirtyAdd(DirtyRect& r, int x, int y, int w, int h) {
 
 static DirtyRect g_dirty;
 
+static void RecountProtocolSurfaces() {
+    uint32_t count = 0;
+    for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
+        if (g_protocol_surfaces[i].active) {
+            count++;
+        }
+    }
+    g_active_surface_count = count;
+}
+
+static int FindProtocolSurfaceIndexByPid(uint64_t pid) {
+    for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
+        if (g_protocol_surfaces[i].active && g_protocol_surfaces[i].client_pid == pid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static ProtocolSurface* EnsureProtocolSurface(uint64_t pid, uint32_t width, uint32_t height) {
+    if (pid == 0) {
+        return nullptr;
+    }
+
+    int idx = FindProtocolSurfaceIndexByPid(pid);
+    if (idx < 0) {
+        for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
+            if (!g_protocol_surfaces[i].active) {
+                idx = i;
+                g_protocol_surfaces[i] = {};
+                g_protocol_surfaces[i].active = true;
+                g_protocol_surfaces[i].client_pid = pid;
+                break;
+            }
+        }
+    }
+
+    if (idx < 0) {
+        return nullptr;
+    }
+
+    if (width > 0) {
+        g_protocol_surfaces[idx].width = width;
+    }
+    if (height > 0) {
+        g_protocol_surfaces[idx].height = height;
+    }
+
+    RecountProtocolSurfaces();
+    return &g_protocol_surfaces[idx];
+}
+
+static void MarkProtocolSurfaceDirty(const ProtocolSurface* surface) {
+    if (!surface || !surface->active) {
+        return;
+    }
+
+    int idx = FindExternalWindowIndexById(surface->bound_window_id);
+    if (idx < 0) {
+        DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+        return;
+    }
+
+    const WindowInfo& w = externalWindows[(uint32_t)idx];
+    DirtyAdd(g_dirty, (int)w.x - 2, (int)w.y - 26, (int)w.w + 4, (int)w.h + 30);
+}
+
+static void BindProtocolSurfacesToExternalWindows() {
+    for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
+        ProtocolSurface& surface = g_protocol_surfaces[i];
+        if (!surface.active) {
+            continue;
+        }
+
+        int bound_idx = -1;
+        if (surface.bound_window_id != 0) {
+            bound_idx = FindExternalWindowIndexById(surface.bound_window_id);
+        }
+
+        if (bound_idx < 0) {
+            int pid_idx = FindExternalWindowIndexByPid(surface.client_pid);
+            if (pid_idx >= 0) {
+                WindowInfo& w = externalWindows[(uint32_t)pid_idx];
+                surface.bound_window_id = w.id;
+                if (surface.width == 0) surface.width = w.w;
+                if (surface.height == 0) surface.height = w.h;
+                DebugProtocolMessage("[Desktop] Surface bound", surface.client_pid, surface.width, surface.height);
+                MarkProtocolSurfaceDirty(&surface);
+            } else {
+                surface.bound_window_id = 0;
+            }
+        } else {
+            WindowInfo& w = externalWindows[(uint32_t)bound_idx];
+            surface.width = w.w;
+            surface.height = w.h;
+        }
+    }
+}
+
+static void DrawProtocolSurfaceBadges() {
+    for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
+        const ProtocolSurface& surface = g_protocol_surfaces[i];
+        if (!surface.active || surface.bound_window_id == 0) {
+            continue;
+        }
+
+        int ext_idx = FindExternalWindowIndexById(surface.bound_window_id);
+        if (ext_idx < 0) {
+            continue;
+        }
+
+        const WindowInfo& w = externalWindows[(uint32_t)ext_idx];
+        int bx = (int)w.x + 6;
+        int by = (int)w.y - 22;
+        if (by < 2) by = 2;
+
+        Compositor::DrawRect(bx, by, 14, 14, 0xFF2B4A66);
+        Compositor::DrawText(bx + 4, by + 3, "P", 0xFFEAF2FF, 1);
+    }
+}
+
+static void AppendU64(char* out, int& pos, int max_len, uint64_t value) {
+    char tmp[24];
+    int count = 0;
+    if (value == 0) {
+        tmp[count++] = '0';
+    }
+    while (value && count < 23) {
+        tmp[count++] = (char)('0' + (value % 10));
+        value /= 10;
+    }
+    while (count > 0 && pos < max_len - 1) {
+        out[pos++] = tmp[--count];
+    }
+}
+
+static void DebugProtocolMessage(const char* prefix, uint64_t pid, uint32_t a, uint32_t b) {
+    char line[96];
+    int pos = 0;
+    while (*prefix && pos < 95) line[pos++] = *prefix++;
+    const char* pid_label = " PID=";
+    while (*pid_label && pos < 95) line[pos++] = *pid_label++;
+    AppendU64(line, pos, 96, pid);
+    const char* size_label = " SIZE=";
+    while (*size_label && pos < 95) line[pos++] = *size_label++;
+    AppendU64(line, pos, 96, a);
+    if (pos < 95) line[pos++] = 'x';
+    AppendU64(line, pos, 96, b);
+    if (pos < 95) line[pos++] = '\n';
+    line[pos < 95 ? pos : 95] = 0;
+    sys_debug_print(line);
+}
+
+static void RegisterProtocolClient(uint64_t pid) {
+    if (pid == 0) return;
+    for (uint32_t i = 0; i < g_registered_client_count; i++) {
+        if (g_protocol_clients[i] == pid) {
+            return;
+        }
+    }
+    if (g_registered_client_count >= MAX_PROTOCOL_CLIENTS) {
+        return;
+    }
+    g_protocol_clients[g_registered_client_count++] = pid;
+}
+
+static bool HandleProtocolMessage(const OSEvent& ev) {
+    CompositorMessage msg = {};
+    if (!MorphicCompositor::DecodeMessage(ev, &msg)) {
+        return false;
+    }
+
+    uint64_t client_pid = (msg.arg0 > 0) ? (uint64_t)(uint32_t)msg.arg0 : 0;
+    g_last_client_pid = client_pid;
+    g_last_client_message = msg.type;
+
+    switch (msg.type) {
+    case COMPOSITOR_MSG_HELLO:
+        RegisterProtocolClient(client_pid);
+        EnsureProtocolSurface(client_pid, msg.arg2, msg.arg3);
+        DebugProtocolMessage("[Desktop] Client HELLO", client_pid, msg.arg2, msg.arg3);
+        ui_dirty = true;
+        return true;
+    case COMPOSITOR_MSG_CREATE_SURFACE:
+        RegisterProtocolClient(client_pid);
+        if (ProtocolSurface* surface = EnsureProtocolSurface(client_pid, msg.arg2, msg.arg3)) {
+            surface->last_commit_ms = sys_get_time_ms();
+            MarkProtocolSurfaceDirty(surface);
+        }
+        DebugProtocolMessage("[Desktop] Client CREATE_SURFACE", client_pid, msg.arg2, msg.arg3);
+        return true;
+    case COMPOSITOR_MSG_COMMIT_SURFACE:
+        RegisterProtocolClient(client_pid);
+        if (ProtocolSurface* surface = EnsureProtocolSurface(client_pid, msg.arg2, msg.arg3)) {
+            surface->commit_count++;
+            surface->last_commit_ms = sys_get_time_ms();
+            g_total_surface_commits++;
+            MarkProtocolSurfaceDirty(surface);
+        }
+        return true;
+    case COMPOSITOR_MSG_SET_FOCUS:
+        active_pid = client_pid;
+        return true;
+    default:
+        return false;
+    }
+}
+
 void HandleEvent(const OSEvent& ev) {
+    if (ev.type == OSEvent::USER_MESSAGE) {
+        if (HandleProtocolMessage(ev)) {
+            return;
+        }
+    }
+
     // Pass keyboard events to the focused window (topmost)
     if (ev.type == OSEvent::KEY_PRESS) {
         if (active_pid != 0) {
@@ -206,6 +482,11 @@ void HandleEvent(const OSEvent& ev) {
         // Kernel sends current button state on transitions.
         const bool was_down = left_down;
         left_down = (ev.buttons & 1);
+
+        // Ignore repeated "press" packets without an intervening release.
+        if (left_down && was_down) {
+            return;
+        }
         
         // Only process on button DOWN transition (not release)
         if (!left_down) {
@@ -222,15 +503,29 @@ void HandleEvent(const OSEvent& ev) {
         drag_target_idx = -1;
         drag_target_external_id = 0;
 
+        // Startup grace period: ignore all click actions for the first 500ms.
+        // Prevents phantom clicks queued by QEMU/firmware during kernel boot
+        // from triggering UI actions (launcher open → shutdown) immediately.
+        if ((sys_get_time_ms() - g_startup_time_ms) < 500) {
+            return;
+        }
+
         // ========================================
         // PRIORITY 1: Launcher (captures ALL clicks when open)
         // ========================================
         if (menu_open) {
+            uint64_t now_click_ms = sys_get_time_ms();
+            // Debounce opening click: prevents immediate close/reopen loops.
+            if ((now_click_ms - g_menu_open_ms) < 140) {
+                return;
+            }
+
             sys_debug_print("[Desktop] Click while launcher open\n");
             
             // CRITICAL: Close launcher FIRST before any action
             // This ensures the UI updates even if spawn causes preemption
             menu_open = false;
+            g_last_menu_toggle_ms = now_click_ms;
             ui_dirty = true;
             
             // Force full screen dirty immediately so the next render clears launcher
@@ -264,7 +559,16 @@ void HandleEvent(const OSEvent& ev) {
 
             // Menu button (toggle launcher)
             if (HitRect(click_x, click_y, 10, taskY + 8, 28, 24)) {
+                uint64_t now_toggle_ms = sys_get_time_ms();
+                if ((now_toggle_ms - g_last_menu_toggle_ms) < 160) {
+                    return;
+                }
                 menu_open = !menu_open;
+                g_last_menu_toggle_ms = now_toggle_ms;
+                if (menu_open) {
+                    g_menu_open_ms = now_toggle_ms;
+                    sys_debug_print("[Desktop] Launcher opened\n");
+                }
                 ui_dirty = true;
                 active_pid = 0;
                 return;
@@ -288,9 +592,8 @@ void HandleEvent(const OSEvent& ev) {
         // PRIORITY 3: External Windows (apps)
         // ========================================
         const int titleH = 26;
-            const int border = 1;
-            for (int i = 0; i < externalWindowCount; i++) {
-                 WindowInfo& w = externalWindows[i];
+              for (int i = (int)externalWindowCount - 1; i >= 0; i--) {
+                  WindowInfo& w = externalWindows[(uint32_t)i];
                  if (!w.flags) continue; // Only visible
                  
                  // 1. Hit Test Buttons (Close, Max, Min) - CHECK FIRST
@@ -333,6 +636,7 @@ void HandleEvent(const OSEvent& ev) {
                      drag_target_external_id = w.id;
                      drag_offset_x = click_x - w.x;
                      drag_offset_y = click_y - w.y;
+                     active_pid = w.pid;
                      return;
                  }
 
@@ -422,9 +726,14 @@ void HandleEvent(const OSEvent& ev) {
     }
 
     if (ev.type == OSEvent::MOUSE_MOVE) {
-        // If buttons are present in move packets, allow click-to-drag even without MOUSE_CLICK.
-        if (ev.buttons & 1) {
-            left_down = true;
+        // Keep drag state coherent even when click transition packets are delayed/lost.
+        const bool move_left_down = (ev.buttons & 1) != 0;
+        if (move_left_down != left_down) {
+            left_down = move_left_down;
+            if (!left_down) {
+                drag_target_idx = -1;
+                drag_target_external_id = 0;
+            }
         }
 
         // Accumulate into a target position (sub-pixel).
@@ -512,7 +821,22 @@ void PollInput() {
         HandleEvent(ev);
         count++;
     }
+    g_last_polled_events = (uint32_t)count;
     UpdateMousePerFrame();
+}
+
+void PollDisplayEvents() {
+    GraphicsUapiEvent ev = {};
+    int count = 0;
+    while (count < 64 && MorphicGfx::PollEvent(&ev)) {
+        if (ev.type == GRAPHICS_EVENT_VBLANK) {
+            g_last_vblank_sequence = ev.sequence;
+        } else if (ev.type == GRAPHICS_EVENT_FLIP_COMPLETE) {
+            g_last_flip_sequence = ev.sequence;
+        }
+        count++;
+    }
+    g_last_display_events = (uint32_t)count;
 }
 
 extern "C" int main(void* asset_ptr) {
@@ -537,7 +861,35 @@ extern "C" int main(void* asset_ptr) {
     
     InitWindows();
     g_launcher.Init();
-    
+
+    GraphicsUapiCaps gfx_caps = {};
+    if (MorphicGfx::QueryCaps(&gfx_caps)) {
+        g_has_atomic_commit = (gfx_caps.caps_flags & GRAPHICS_CAP_ATOMIC_COMMIT) != 0;
+        if (g_has_atomic_commit) {
+            sys_debug_print("[Desktop] Using DRM atomic commit\n");
+        }
+    }
+
+    // Drain all input events accumulated during kernel boot before entering
+    // the render loop. QEMU / firmware can leave stale mouse/click events in
+    // the queue that would otherwise trigger phantom UI actions on frame 0.
+    {
+        OSEvent _drain;
+        int _n = 0;
+        while (sys_get_event(&_drain) && _n < 2048) _n++;
+        if (_n > 0) {
+            sys_debug_print("[Desktop] Drained stale boot events\n");
+        }
+    }
+    g_startup_time_ms = sys_get_time_ms();
+    // Prime debounce timestamps to NOW so the gap from 0 doesn't bypass them.
+    g_menu_open_ms       = g_startup_time_ms;
+    g_last_menu_toggle_ms = g_startup_time_ms;
+
+    if (sys_spawn("/initrd/desktop.mpk") == 0) {
+        sys_debug_print("[Desktop] Spawned desktop client\n");
+    }
+
     const int TARGET_FPS = 60;
     const int FRAME_TIME_MS = 1000 / TARGET_FPS;
 
@@ -572,6 +924,7 @@ extern "C" int main(void* asset_ptr) {
         
         // Update External Windows List
         FetchExternalWindows();
+        BindProtocolSurfacesToExternalWindows();
         
         // A. Input
         PollInput();
@@ -581,6 +934,15 @@ extern "C" int main(void* asset_ptr) {
 
         // Force a full redraw at startup (ensures the desktop paints 100%).
         if (first_frame) {
+            DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+        }
+
+        // Decide flush strategy early so render clip matches the copy strategy.
+        bool hasExternalWindows = (externalWindowCount > 0);
+        bool needsFullFlush = menu_open || (!menu_open && prev_menu_open) || hasExternalWindows;
+
+        // If we'll do a full flush, force full dirty so we don't copy stale backbuffer regions.
+        if (needsFullFlush) {
             DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
         }
 
@@ -627,8 +989,8 @@ extern "C" int main(void* asset_ptr) {
         }
 
         // Cursor dirty (old + new)
-        DirtyAdd(g_dirty, prev_mouse_x - 2, prev_mouse_y - 2, 20, 24);
-        DirtyAdd(g_dirty, mouse_x - 2, mouse_y - 2, 20, 24);
+        DirtyAdd(g_dirty, prev_mouse_x - CURSOR_PAD, prev_mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
+        DirtyAdd(g_dirty, mouse_x - CURSOR_PAD, mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
 
         // Window moves (drag/max/min)
         for (int i = 0; i < window_count; i++) {
@@ -672,14 +1034,18 @@ extern "C" int main(void* asset_ptr) {
         // C. Render
         // If nothing marked dirty (rare), still redraw cursor region.
         if (!g_dirty.valid) {
-            DirtyAdd(g_dirty, mouse_x - 2, mouse_y - 2, 20, 24);
+            DirtyAdd(g_dirty, mouse_x - CURSOR_PAD, mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
         }
 
         // Redraw only dirty region: background + UI + windows + cursor.
         // (Compositor is clip-aware internally.)
         // Set clip via SwapBuffersRect usage: we redraw full but clipped.
         // We reuse RenderScene for windows/cursor and draw taskbar/menu explicitly.
-        Compositor::SetClip(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
+        if (needsFullFlush) {
+            Compositor::SetClip(0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+        } else {
+            Compositor::SetClip(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
+        }
         // Full render within clip
         // Background is drawn inside RenderScene
         Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
@@ -837,6 +1203,79 @@ extern "C" int main(void* asset_ptr) {
                         lineFT[pos++] = 'm'; lineFT[pos++] = 's';
                         lineFT[pos] = 0;
                         Compositor::DrawText(x, y, lineFT, 0xFF88CC88, 1);
+                        y += 12;
+
+                        char lineEv[32];
+                        pos = 0;
+                        const char* evs = "EV: ";
+                        while (*evs) lineEv[pos++] = *evs++;
+                        write_u64(lineEv, pos, g_last_polled_events);
+                        lineEv[pos] = 0;
+                        Compositor::DrawText(x, y, lineEv, 0xFF88AAAA, 1);
+                        y += 12;
+
+                        char lineDrop[40];
+                        pos = 0;
+                        const char* dr = "DROP: ";
+                        while (*dr) lineDrop[pos++] = *dr++;
+                        write_u64(lineDrop, pos, g_last_input_drop_count);
+                        lineDrop[pos] = 0;
+                        uint32_t dropColor = (g_last_input_drop_count > 0) ? 0xFF4040C0 : 0xFF88CC88;
+                        Compositor::DrawText(x, y, lineDrop, dropColor, 1);
+                        y += 12;
+
+                        char lineClients[40];
+                        pos = 0;
+                        const char* cl = "CLIENTS: ";
+                        while (*cl) lineClients[pos++] = *cl++;
+                        write_u64(lineClients, pos, g_registered_client_count);
+                        lineClients[pos] = 0;
+                        Compositor::DrawText(x, y, lineClients, 0xFF88AAAA, 1);
+                        y += 12;
+
+                        char lineClientPid[40];
+                        pos = 0;
+                        const char* cp = "LAST PID: ";
+                        while (*cp && pos < 39) lineClientPid[pos++] = *cp++;
+                        write_u64(lineClientPid, pos, g_last_client_pid);
+                        lineClientPid[pos] = 0;
+                        Compositor::DrawText(x, y, lineClientPid, 0xFF88AAAA, 1);
+                        y += 12;
+
+                        char lineSurf[40];
+                        pos = 0;
+                        const char* sf = "SURF: ";
+                        while (*sf) lineSurf[pos++] = *sf++;
+                        write_u64(lineSurf, pos, g_active_surface_count);
+                        lineSurf[pos] = 0;
+                        Compositor::DrawText(x, y, lineSurf, 0xFF88AAAA, 1);
+                        y += 12;
+
+                        char lineCommit[40];
+                        pos = 0;
+                        const char* sc = "SCOM: ";
+                        while (*sc) lineCommit[pos++] = *sc++;
+                        write_u64(lineCommit, pos, g_total_surface_commits);
+                        lineCommit[pos] = 0;
+                        Compositor::DrawText(x, y, lineCommit, 0xFF88CC88, 1);
+                        y += 12;
+
+                        char lineDe[32];
+                        pos = 0;
+                        const char* de = "DE: ";
+                        while (*de) lineDe[pos++] = *de++;
+                        write_u64(lineDe, pos, g_last_display_events);
+                        lineDe[pos] = 0;
+                        Compositor::DrawText(x, y, lineDe, 0xFF88AAAA, 1);
+                        y += 12;
+
+                        char lineFlip[40];
+                        pos = 0;
+                        const char* fl = "FLIP: ";
+                        while (*fl) lineFlip[pos++] = *fl++;
+                        write_u64(lineFlip, pos, g_last_flip_sequence);
+                        lineFlip[pos] = 0;
+                        Compositor::DrawText(x, y, lineFlip, 0xFF88CC88, 1);
                     }
                 }
                 // Match "MPK Installer"
@@ -871,18 +1310,11 @@ extern "C" int main(void* asset_ptr) {
         // CRITICAL: Force full flush in any of these cases:
         // 1. Launcher just closed
         // 2. External app windows are active (prevents ghosting when apps move/close)
-        bool hasExternalWindows = (externalWindowCount > 0);
-        bool needsFullFlush = (!menu_open && prev_menu_open) || hasExternalWindows;
-        
         if (needsFullFlush) {
-            // Full screen copy ensures all areas under app windows are redrawn
+            // Full screen copy ensures all areas under app windows are redrawn.
             Compositor::Flush();
-            // Mark full screen dirty for DRM
-            sys_drm_mark_compositor_dirty(0, ((Compositor::GetHeight() & 0xFFFF) << 16) | (Compositor::GetWidth() & 0xFFFF));
         } else if (g_dirty.valid) {
             Compositor::FlushRect(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
-            // Mark UI dirty region for DRM
-            sys_drm_mark_compositor_dirty(((g_dirty.y & 0xFFFF) << 16) | (g_dirty.x & 0xFFFF), ((g_dirty.h & 0xFFFF) << 16) | (g_dirty.w & 0xFFFF));
         } else {
              // Ensure at least cursor area update if nothing else
         }
@@ -893,43 +1325,65 @@ extern "C" int main(void* asset_ptr) {
         // We copy the clean background from Scratch -> Shared at the OLD position.
         // We do this BEFORE sys_compose_layers to avoid overwriting the NEW cursor if they overlap.
         if (prev_mouse_x != mouse_x || prev_mouse_y != mouse_y) {
-             Compositor::FlushRect(prev_mouse_x, prev_mouse_y, 16, 16);
+               Compositor::FlushRect(prev_mouse_x, prev_mouse_y, CURSOR_W, CURSOR_H);
         }
 
         // 2. Compose Apps (Kernel Overlay) 
         // Kernel draws apps ON TOP of the shared buffer
         sys_compose_layers();
 
-        // 3. Post-Compose Overlay (Launcher + Cursor)
-        // 3. Post-Compose Overlay (Launcher + Cursor)
-        // Draw to BACK BUFFER (Same as Apps/Wallpaper) so it persists after Flip
-        // Compositor::SetRenderTarget(Compositor::RenderTarget::FRONT_BUFFER); // REMOVED
-        
-        // 3a. Draw Launcher (if open) - Now On Top of Apps
-        // Note: Ideally Launcher should be a separate layer or drawn before Compose if it's "desktop"
+           // 3. Post-Compose Overlay (Launcher + Cursor)
+           // Draw overlays directly to the shared front buffer so they are above APP_WINDOW layers.
+           Compositor::SetRenderTarget(Compositor::RenderTarget::FRONT_BUFFER);
+
+           // 3a. Draw Launcher (if open) - On top of app windows.
         if (menu_open) {
              g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
         }
-        
-        // 3b. Draw Cursor
-        // Handled by Kernel Overlay in sys_compose_layers
-        
-        // [DRM] Mark cursor regions as dirty
-        // We must mark both the NEW position (where cursor is now) 
-        // AND the OLD position (where we restored the background)
-        sys_drm_mark_compositor_dirty(((mouse_y & 0xFFFF) << 16) | (mouse_x & 0xFFFF), 0x00100010);
-        if (prev_mouse_x != mouse_x || prev_mouse_y != mouse_y) {
-             sys_drm_mark_compositor_dirty(((prev_mouse_y & 0xFFFF) << 16) | (prev_mouse_x & 0xFFFF), 0x00100010);
-        }
 
+              // 3a.1 Protocol surface badges over bound client windows.
+              DrawProtocolSurfaceBadges();
+
+           // 3b. Draw Cursor (userspace-owned)
+           Compositor::DrawCursorToFront(mouse_x, mouse_y);
+        
         // Measure Render Time (CPU) before VSync wait
         uint64_t time_render_done = sys_get_time_ms();
         g_last_render_time = time_render_done - start_time;
 
-        // 4. Present (Flip) via DRM
-        // This atomically updates the screen at VBlank
-        sys_drm_present(1); // Wait for VSync
-        bool vsynced = true;
+        // 4. Present via DRM.
+        // Prefer the atomic path when available; keep legacy fallback during transition.
+        bool vsynced = false;
+        if (g_has_atomic_commit) {
+            if (needsFullFlush || !g_dirty.valid) {
+                vsynced = MorphicGfx::AtomicCommitFull(true) != 0;
+            } else {
+                vsynced = MorphicGfx::AtomicCommit((int16_t)g_dirty.x,
+                                                   (int16_t)g_dirty.y,
+                                                   (uint16_t)g_dirty.w,
+                                                   (uint16_t)g_dirty.h,
+                                                   MorphicGfx::ATOMIC_WAIT_VSYNC) != 0;
+                if (!vsynced) {
+                    vsynced = MorphicGfx::AtomicCommitFull(true) != 0;
+                }
+            }
+        } else {
+            if (needsFullFlush) {
+                MorphicGfx::MarkCompositorDirty(0, 0,
+                                                (uint16_t)Compositor::GetWidth(),
+                                                (uint16_t)Compositor::GetHeight());
+            } else if (g_dirty.valid) {
+                MorphicGfx::MarkCompositorDirty((int16_t)g_dirty.x,
+                                                (int16_t)g_dirty.y,
+                                                (uint16_t)g_dirty.w,
+                                                (uint16_t)g_dirty.h);
+            }
+            vsynced = MorphicGfx::Present(MorphicGfx::ATOMIC_WAIT_VSYNC) != 0;
+        }
+
+        if (g_has_atomic_commit) {
+            PollDisplayEvents();
+        }
         
         // Restore rendering to back buffer for next frame UI
         Compositor::SetRenderTarget(Compositor::RenderTarget::BACK_BUFFER);

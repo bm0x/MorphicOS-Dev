@@ -10,6 +10,8 @@ extern "C" {
 
 uint64_t sys_get_screen_info();
 uint64_t sys_get_time_ms();
+uint64_t sys_get_pid();
+uint64_t sys_get_compositor_pid();
 int      sys_get_rtc_datetime(void* out_datetime /* MorphicDateTime* */);
 int      sys_get_system_info(void* out_info /* MorphicSystemInfo* */);
 int      sys_get_event(void* ev /* OSEvent* */);
@@ -71,6 +73,7 @@ int sys_list_mounts(MountEntry* entries, int max_entries);
 
 // Direct mouse state read for quick diagnostics
 uint64_t sys_get_mouse_state();
+uint64_t sys_get_input_drop_count();
 
 // DRM / Graphics (New Architecture)
 uint64_t sys_drm_create_buffer(uint32_t w, uint32_t h);
@@ -80,6 +83,10 @@ int      sys_drm_mark_ready(uint64_t id);
 int      sys_drm_mark_dirty_rect(uint64_t id, uint32_t packed_pos, uint32_t packed_size);
 uint64_t sys_drm_present(uint32_t flags);
 int      sys_drm_mark_compositor_dirty(uint32_t packed_pos, uint32_t packed_size);
+int      sys_drm_get_caps(void* out_caps /* GraphicsUapiCaps* */);
+int      sys_drm_poll_event(void* out_event /* GraphicsUapiEvent* */);
+int      sys_drm_atomic_test(uint32_t packed_pos, uint32_t packed_size, uint32_t flags);
+int      sys_drm_atomic_commit(uint32_t packed_pos, uint32_t packed_size, uint32_t flags);
 
 #ifdef __cplusplus
 }

@@ -18,7 +18,7 @@ struct Task {
     uint64_t kernel_stack_top; // TSS.RSP0: Thread-Specific Kernel Stack Top (for Interrupts/Syscalls)
     
     // Per-Task Event Queue (IPC)
-    static const int EVENT_QUEUE_SIZE = 32;
+    static const int EVENT_QUEUE_SIZE = 128;
     OSEvent eventQueue[EVENT_QUEUE_SIZE];
     volatile int eventHead = 0;
     volatile int eventTail = 0;
@@ -52,10 +52,10 @@ namespace Scheduler {
 
     // IPC
     bool PushEventToTask(uint64_t taskId, const OSEvent& ev);
-    
-    // IPC
-    bool PushEventToTask(uint64_t taskId, const OSEvent& ev);
     bool PopEventFromCurrentTask(OSEvent* outEv);
+    uint64_t GetEventPushCount();
+    uint64_t GetEventPopCount();
+    uint64_t GetEventDropCount();
     
     // Yield current timeslice (voluntary switch)
     void Yield();

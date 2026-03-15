@@ -28,13 +28,17 @@ public:
         // Scan initrd for installed apps
         DirEntry entries[32];
         int count = sys_readdir("/initrd", entries, 32);
+        if (count < 0) {
+            return;
+        }
         
         for (int i = 0; i < count && appCount < 16; i++) {
             // Check if it's an .mpk file
             if (entries[i].type == 0) { // File
+                if (StrCmp(entries[i].name, ".") == 0 || StrCmp(entries[i].name, "..") == 0) continue;
                 if (EndsWith(entries[i].name, ".mpk")) {
-                    // Skip desktop.mpk - launching multiple compositors causes kernel panic
-                    if (StrCmp(entries[i].name, "desktop.mpk") == 0) continue;
+                    // Skip compositor packages - launching another compositor instance is invalid.
+                    if (StrCmp(entries[i].name, "compositor.mpk") == 0) continue;
                     
                     // Add to apps list
                     BuildAppItem(entries[i].name, "/initrd/");
@@ -47,18 +51,18 @@ public:
 
     void Draw(int screenW, int screenH) {
         // Full screen overlay
-        // Dark background (matches macOS Launchpad blur/darkening)
-        Compositor::DrawRect(0, 0, screenW, screenH, 0xD0000000); 
+        // Opaque dark background for deterministic rendering on software path
+        Compositor::DrawRect(0, 0, screenW, screenH, 0xFF101418);
         
         // Search Bar (Rounded Rect approximation)
         int searchW = 300;
         int searchH = 34;
         int searchX = (screenW - searchW) / 2;
         int searchY = 60;
-        Compositor::DrawRect(searchX, searchY, searchW, searchH, 0x40FFFFFF); 
+        Compositor::DrawRect(searchX, searchY, searchW, searchH, 0xFF2A3038);
         // Search Text
         const char* sTxt = "Search";
-        Compositor::DrawText(searchX + 110, searchY + 9, sTxt, 0x80FFFFFF, 1);
+        Compositor::DrawText(searchX + 110, searchY + 9, sTxt, 0xFFBFC7D4, 1);
 
         // App Grid
         // 5 columns, centered
@@ -83,8 +87,14 @@ public:
             
             Compositor::DrawRect(cx, cy, iconSize, iconSize, iconColor);
             
-            // Icon Gloss/Gradient (Top half lighter)
-            Compositor::DrawRect(cx, cy, iconSize, iconSize/2, 0x20FFFFFF);
+            // Icon top highlight (opaque to avoid alpha-path artifacts)
+            Compositor::DrawRect(cx, cy, iconSize, 8, 0xFFEAEAEA);
+
+            // Persist exact hit-box from draw pass for consistent click behavior.
+            apps[i].x = cx;
+            apps[i].y = cy;
+            apps[i].w = iconSize;
+            apps[i].h = iconSize;
             
             // Icon Label
             int textLen = StrLen(apps[i].name);
@@ -148,24 +158,16 @@ public:
             return true;
         }
         
-        // App grid hit test
-        int cols = 5;
-        int iconSize = 80; 
-        int gapX = 60;
-        int gapY = 60;
-        
-        int totalRowW = (cols * iconSize) + ((cols - 1) * gapX);
-        int gridStartX = (screenW - totalRowW) / 2;
-        int gridStartY = 160;
-
+        // App grid hit test (uses geometry generated in Draw for 1:1 mapping)
         for (int i = 0; i < appCount; i++) {
-            int col = i % cols;
-            int row = i / cols;
+            int cx = apps[i].x;
+            int cy = apps[i].y;
+            int cw = apps[i].w;
+            int ch = apps[i].h;
 
-            int cx = gridStartX + col * (iconSize + gapX);
-            int cy = gridStartY + row * (iconSize + gapY);
-            int cw = iconSize;
-            int ch = iconSize;
+            if (cw <= 0 || ch <= 0) {
+                continue;
+            }
 
             if (mx >= cx && mx < cx + cw && my >= cy && my < cy + ch) {
                 // Launch! But only if not already spawning
@@ -228,10 +230,10 @@ private:
         }
         
         app.color = GetAppColor(app.name);
-        app.x = appCount % 5;
-        app.y = appCount / 5;
-        app.w = 1;
-        app.h = 1;
+        app.x = 0;
+        app.y = 0;
+        app.w = 0;
+        app.h = 0;
         
         appCount++;
     }

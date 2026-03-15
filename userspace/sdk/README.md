@@ -130,6 +130,18 @@ Los stubs están implementados en [syscalls.asm](../syscalls.asm). Incluye `morp
 | `sys_map_window(windowId)` | 64 | Mapea buffer de otra ventana |
 | `sys_post_message(pid, event)` | 65 | Envía mensaje a otro proceso |
 
+### Protocolo Compositor-Cliente
+
+- Header compartido: `shared/compositor_protocol.h`
+- Wrapper SDK: `userspace/sdk/compositor_protocol.h`
+- Transporte inicial: `sys_post_message()` con `OSEvent::USER_MESSAGE`
+- Mensajes base definidos:
+    - `COMPOSITOR_MSG_HELLO`
+    - `COMPOSITOR_MSG_CREATE_SURFACE`
+    - `COMPOSITOR_MSG_COMMIT_SURFACE`
+    - `COMPOSITOR_MSG_SET_FOCUS`
+    - `COMPOSITOR_MSG_INPUT_EVENT`
+
 ## Estructuras Compartidas
 
 ### OSEvent (shared/os_event.h)

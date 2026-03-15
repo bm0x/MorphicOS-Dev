@@ -64,6 +64,7 @@ namespace InputManager {
 
     // Compositor Registration
     void SetCompositorPID(uint64_t pid);
+    uint64_t GetCompositorPID();
     
     // Get registered device count
     uint32_t GetDeviceCount();

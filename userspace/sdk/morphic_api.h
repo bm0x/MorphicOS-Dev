@@ -1,5 +1,6 @@
 #pragma once
 #include "morphic_syscalls.h"
+#include "compositor_protocol.h"
 #include "os_event.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -174,11 +175,18 @@ namespace MorphicAPI {
         uint64_t sys_width, sys_height;
         uint32_t requestW, requestH;
         bool running;
+        uint64_t appPid;
+        uint64_t compositorPid;
+        uint64_t lastProtocolHelloMs;
+        bool protocolClientMode;
+        bool protocolSurfaceAnnounced;
 
     public:
         Window(uint32_t w = 0, uint32_t h = 0) 
             : backbuffer(nullptr), width(0), height(0), 
-              requestW(w), requestH(h), running(false) {}
+                            requestW(w), requestH(h), running(false),
+                            appPid(0), compositorPid(0), lastProtocolHelloMs(0),
+                              protocolClientMode(false), protocolSurfaceAnnounced(false) {}
         virtual ~Window() {}
 
         // Static Scratch Buffer for Double Buffering (Per-Process)
@@ -233,6 +241,8 @@ namespace MorphicAPI {
             }
             
             running = true;
+            appPid = sys_get_pid();
+            SyncCompositorRegistration(true);
             return true;
         }
 
@@ -263,6 +273,8 @@ namespace MorphicAPI {
             const uint32_t MIN_IDLE_SLEEP = 16;   // 16ms = ~60 FPS when active
 
             while (running) {
+                SyncCompositorRegistration(false);
+
                 // Process all pending events first (responsive input)
                 OSEvent ev;
                 bool hadEvent = false;
@@ -311,6 +323,7 @@ namespace MorphicAPI {
 
                     // Flip/Notify Kernel
                     sys_video_flip(kernelBuffer);
+                    NotifyCompositorCommit();
                     needsRedraw = false;
                     idleCounter = 0;  // Reset idle counter on redraw
                     
@@ -334,6 +347,48 @@ namespace MorphicAPI {
         virtual void OnMouseMove(int x, int y) {
             // DO NOT invalidate on every mouse move - causes excessive redraws
             // Apps that need hover effects should override and call Invalidate() themselves
+        }
+
+    protected:
+        void SyncCompositorRegistration(bool force) {
+            if (appPid == 0) {
+                appPid = sys_get_pid();
+            }
+
+            uint64_t serverPid = sys_get_compositor_pid();
+            if (serverPid == 0 || serverPid == appPid) {
+                protocolSurfaceAnnounced = false;
+                compositorPid = 0;
+                protocolClientMode = false;
+                return;
+            }
+
+            if (compositorPid != serverPid) {
+                protocolSurfaceAnnounced = false;
+            }
+
+            compositorPid = serverPid;
+            protocolClientMode = true;
+
+            uint64_t now = sys_get_time_ms();
+            if (!force && protocolSurfaceAnnounced) {
+                return;
+            }
+
+            MorphicCompositor::PostHello(compositorPid, (uint32_t)appPid, (uint32_t)width, (uint32_t)height);
+            MorphicCompositor::PostCreateSurface(compositorPid, (uint32_t)appPid, (uint32_t)width, (uint32_t)height);
+            lastProtocolHelloMs = now;
+            protocolSurfaceAnnounced = true;
+        }
+
+        void NotifyCompositorCommit() {
+            if (!protocolClientMode || compositorPid == 0 || appPid == 0) {
+                return;
+            }
+            MorphicCompositor::PostCommitSurface(compositorPid,
+                                                 (uint32_t)appPid,
+                                                 (uint32_t)width,
+                                                 (uint32_t)height);
         }
     };
 

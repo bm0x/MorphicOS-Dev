@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "../../api/graphics_uapi.h"
 
 /**
  * DRM (Direct Rendering Manager) - Linux-style Display Abstraction
@@ -91,6 +92,20 @@ namespace DRM {
         Framebuffer* target_fb;
         bool        pending;
         bool        async;          // Allow tearing (games)
+    };
+
+    /**
+     * Minimal atomic commit request for software display path.
+     * v1 scope: primary plane damage/full-screen update + vsync toggle.
+     */
+    struct AtomicRequest {
+        bool        wait_vsync;
+        bool        full_update;
+        bool        has_damage;
+        int32_t     x;
+        int32_t     y;
+        uint32_t    w;
+        uint32_t    h;
     };
 
     //=========================================================================
@@ -230,6 +245,32 @@ namespace DRM {
      * @return true if presented at VSync
      */
     bool Present(bool vsync);
+
+    /**
+     * Validate an atomic request without applying it.
+     * @return true if request is valid for current display state.
+     */
+    bool AtomicTest(const AtomicRequest& req);
+
+    /**
+     * Apply an atomic request on the software display path.
+     * @return true on successful present.
+     */
+    bool AtomicCommit(const AtomicRequest& req);
+
+    /**
+     * Query Graphics UAPI capabilities exposed to userspace
+     * @param out_caps Destination structure
+     * @return true on success
+     */
+    bool GetUapiCaps(GraphicsUapiCaps* out_caps);
+
+    /**
+     * Poll one pending display event
+     * @param out_event Destination event structure
+     * @return true if an event was returned
+     */
+    bool PollUapiEvent(GraphicsUapiEvent* out_event);
 
     //=========================================================================
     // Dynamic Triple Buffering

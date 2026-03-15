@@ -44,7 +44,11 @@ syscall_entry:
     mov rdx, r14    ; arg2
     mov rcx, r15    ; arg3
 
+    ; SysV ABI: stack must be 16-byte aligned before CALL.
+    ; We pushed 7 qwords after switching to the kernel stack, so align here.
+    sub rsp, 8
     call syscall_handler
+    add rsp, 8
     ; Result in RAX
     
     ; Restore registers into temp registers for SYSRETQ

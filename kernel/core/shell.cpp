@@ -458,15 +458,15 @@ namespace Shell {
     }
 
     void CmdDesktop() {
-        EarlyTerm::Print("Starting Morphic Desktop Environment (.mpk)...\n");
+        EarlyTerm::Print("Starting Morphic Compositor (.mpk)...\n");
         // Use PackageLoader to load the structured application container
-        LoadedProcess proc = PackageLoader::Load("/initrd/desktop.mpk");
+        LoadedProcess proc = PackageLoader::Load("/initrd/compositor.mpk");
         if (proc.error_code == 0) {
             uint64_t cr3;
             __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
             Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3, proc.arg1);
         } else {
-            EarlyTerm::Print("Error: Failed to load desktop.mpk\n");
+            EarlyTerm::Print("Error: Failed to load compositor.mpk\n");
         }
     }
 

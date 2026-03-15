@@ -16,7 +16,12 @@ namespace Graphics {
      * Initialize graphics HAL with boot info
      */
     void Init(FramebufferInfo* fb);
-    
+
+    /**
+     * Initialize DRM subsystem. Must be called AFTER KHeap::Init().
+     */
+    void InitDRM();
+
     uint32_t GetWidth();
     uint32_t GetHeight();
     uint32_t GetPitch();

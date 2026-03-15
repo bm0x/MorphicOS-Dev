@@ -99,6 +99,10 @@ namespace InputManager {
         }
         if (ints) HAL::Platform::EnableInterrupts();
     }
+
+    uint64_t GetCompositorPID() {
+        return g_compositorPID;
+    }
     
     void PushEvent(const OSEvent& ev) {
         // Route to Compositor if registered

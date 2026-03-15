@@ -12,6 +12,18 @@ sys_get_time_ms:
     syscall
     ret
 
+global sys_get_pid
+sys_get_pid:
+    mov rax, 83
+    syscall
+    ret
+
+global sys_get_compositor_pid
+sys_get_compositor_pid:
+    mov rax, 84
+    syscall
+    ret
+
 global sys_get_rtc_datetime
 sys_get_rtc_datetime:
     ; arg1: pointer to MorphicDateTime (rdi)
@@ -71,6 +83,9 @@ sys_update_window:
 %define SYS_INPUT_POLL 52
 %define SYS_VIDEO_FLIP_RECT 54
 %define SYS_GET_MOUSE_STATE 82
+%define SYS_GET_INPUT_DROP_COUNT 99
+%define SYS_DRM_ATOMIC_TEST 100
+%define SYS_DRM_ATOMIC_COMMIT 101
 
 section .text
 
@@ -109,6 +124,12 @@ sys_input_poll:
 global sys_get_mouse_state
 sys_get_mouse_state:
     mov rax, SYS_GET_MOUSE_STATE
+    syscall
+    ret
+
+global sys_get_input_drop_count
+sys_get_input_drop_count:
+    mov rax, SYS_GET_INPUT_DROP_COUNT
     syscall
     ret
 
@@ -238,5 +259,29 @@ sys_drm_present:
 global sys_drm_mark_compositor_dirty
 sys_drm_mark_compositor_dirty:
     mov rax, 96
+    syscall
+    ret
+
+global sys_drm_get_caps
+sys_drm_get_caps:
+    mov rax, 97
+    syscall
+    ret
+
+global sys_drm_poll_event
+sys_drm_poll_event:
+    mov rax, 98
+    syscall
+    ret
+
+global sys_drm_atomic_test
+sys_drm_atomic_test:
+    mov rax, SYS_DRM_ATOMIC_TEST
+    syscall
+    ret
+
+global sys_drm_atomic_commit
+sys_drm_atomic_commit:
+    mov rax, SYS_DRM_ATOMIC_COMMIT
     syscall
     ret

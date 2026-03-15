@@ -131,7 +131,9 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
         while(1) __asm__("hlt");
     }
     
-    KHeap::Init(heapBase, heapSize); 
+    KHeap::Init(heapBase, heapSize);
+    // DRM compositor buffer requires the heap; initialize after KHeap is ready.
+    Graphics::InitDRM();
     BootScreen::Update(20, "Memory Initialized");
 
     // ===== TRACE CHECKPOINTS =====
@@ -216,7 +218,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     UART::Write("[BOOT-TRACE] Scheduler::Init() complete!\n");
 
     UART::Write("[BOOT-TRACE] About to call BootScreen::Update(100)...\n");
-    BootScreen::Update(100, "System Ready. Launching Desktop...");
+    BootScreen::Update(100, "System Ready. Launching Compositor...");
     UART::Write("[BOOT-TRACE] BootScreen::Update(100) done, entering delay loop...\n");
     // Artificial delay to see the 100% (optional)
     for(volatile int i=0; i<5000000; i++); 
@@ -236,42 +238,42 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     // =======================================================================
     UART::Write("\n");
     UART::Write("*****************************************************\n");
-    UART::Write("***            Desktop.mpk: GUI Desktop            ***\n");
+    UART::Write("***         Compositor.mpk: Userspace WM          ***\n");
     UART::Write("*****************************************************\n");
     UART::Write("\n");
-    EarlyTerm::Print("\n[Desktop.mpk] Loading...\n");
+    EarlyTerm::Print("\n[Compositor.mpk] Loading...\n");
     UART::Write("\n");
     
     // Call loader directly (loader.h included at top)
-    LoadedProcess proc = PackageLoader::Load("/initrd/desktop.mpk");
+    LoadedProcess proc = PackageLoader::Load("/initrd/compositor.mpk");
     
     if (proc.error_code == 0) {
-        UART::Write("[Desktop.mpk] Load success. Entry: ");
+        UART::Write("[Compositor.mpk] Load success. Entry: ");
         UART::WriteHex(proc.entry_point);
         UART::Write(" Stack: ");
         UART::WriteHex(proc.stack_top);
         UART::Write("\n");
         
         // Create User Task
-        // For the Desktop (AUTO-TEST), we use the current kernel CR3 (shared space)
+        // For the compositor (AUTO-TEST), we use the current kernel CR3 (shared space)
         uint64_t cr3;
         __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
         Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3, proc.arg1);
     } else {
-        UART::Write("!!! Desktop.mpk: PackageLoader::Load failed: ");
+        UART::Write("!!! Compositor.mpk: PackageLoader::Load failed: ");
         UART::WriteDec(proc.error_code);
         UART::Write(" !!!\n");
     }
     
-    EarlyTerm::Print("[Desktop.mpk] Load returned: ");
+    EarlyTerm::Print("[Compositor.mpk] Load returned: ");
     EarlyTerm::PrintDec(proc.error_code);
     EarlyTerm::Print("\n");
     // =======================================================================
     // END AUTO-TEST
     // =======================================================================
     
-    // NOTE: Shell is disabled when Desktop runs.
-    // The Desktop handles all user interaction via sys_get_event().
+    // NOTE: Shell is disabled when the compositor runs.
+    // The compositor handles all user interaction via sys_get_event().
     // Kernel Task 0 becomes an idle task.
     // Shell::Init();  // DISABLED - conflicts with Desktop graphics
     

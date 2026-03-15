@@ -36,8 +36,10 @@ namespace Graphics {
         UART::Write("x");
         UART::WriteDec(screenHeight);
         UART::Write("\n");
-        
-        // Initialize DRM subsystem
+        // DRM requires the kernel heap; call InitDRM() after KHeap::Init().
+    }
+
+    void InitDRM() {
         DRM::Init(vramBuffer, screenWidth, screenHeight, screenPitch);
         drmInitialized = true;
     }

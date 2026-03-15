@@ -23,6 +23,9 @@ tools/noVNC/
 *.swo
 *~
 
+#Internal Docs
+graphics_*.md
+
 # OS specific
 .DS_Store
 Thumbs.db

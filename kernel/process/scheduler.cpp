@@ -12,6 +12,9 @@ namespace Scheduler {
     Task* tasksHead = nullptr;
     Task* idleTask = nullptr;  // Special idle task
     uint64_t nextTaskId = 1;
+    static volatile uint64_t g_eventPushCount = 0;
+    static volatile uint64_t g_eventPopCount = 0;
+    static volatile uint64_t g_eventDropCount = 0;
     
     // Idle Task Entry Point - runs when no other tasks are ready
     // Uses HLT to reduce CPU power consumption and heat
@@ -316,6 +319,7 @@ namespace Scheduler {
 
         int next = (t->eventHead + 1) % Task::EVENT_QUEUE_SIZE;
         if (next == t->eventTail) {
+            g_eventDropCount++;
             // Full
     #ifdef MOUSE_DEBUG
             EarlyTerm::Print("[Scheduler] PushEventToTask FULL for PID: ");
@@ -331,6 +335,7 @@ namespace Scheduler {
         // Place event
         t->eventQueue[t->eventHead] = ev;
         t->eventHead = next;
+        g_eventPushCount++;
     #ifdef MOUSE_DEBUG
         EarlyTerm::Print("[Scheduler] PushEventToTask OK for PID: ");
         EarlyTerm::PrintDec(taskId);
@@ -362,8 +367,21 @@ namespace Scheduler {
 
         *outEv = t->eventQueue[t->eventTail];
         t->eventTail = (t->eventTail + 1) % Task::EVENT_QUEUE_SIZE;
+        g_eventPopCount++;
 
         if (ints) ::HAL::Platform::EnableInterrupts();
         return true;
+    }
+
+    uint64_t GetEventPushCount() {
+        return g_eventPushCount;
+    }
+
+    uint64_t GetEventPopCount() {
+        return g_eventPopCount;
+    }
+
+    uint64_t GetEventDropCount() {
+        return g_eventDropCount;
     }
 }
