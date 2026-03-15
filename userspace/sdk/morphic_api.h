@@ -180,13 +180,21 @@ namespace MorphicAPI {
         uint64_t lastProtocolHelloMs;
         bool protocolClientMode;
         bool protocolSurfaceAnnounced;
+        uint32_t protocolSubmitSerial;
+        uint32_t protocolAckSerial;
+        uint64_t protocolLastCommitMs;
+        uint64_t protocolTimeoutRecoveries;
+        uint64_t protocolThrottleSleeps;
 
     public:
         Window(uint32_t w = 0, uint32_t h = 0) 
             : backbuffer(nullptr), width(0), height(0), 
                             requestW(w), requestH(h), running(false),
                             appPid(0), compositorPid(0), lastProtocolHelloMs(0),
-                              protocolClientMode(false), protocolSurfaceAnnounced(false) {}
+                                                            protocolClientMode(false), protocolSurfaceAnnounced(false),
+                                                            protocolSubmitSerial(0), protocolAckSerial(0),
+                                                            protocolLastCommitMs(0), protocolTimeoutRecoveries(0),
+                                                            protocolThrottleSleeps(0) {}
         virtual ~Window() {}
 
         // Static Scratch Buffer for Double Buffering (Per-Process)
@@ -283,6 +291,24 @@ namespace MorphicAPI {
                 int maxEvents = 20; 
                 while (sys_get_event(&ev) && maxEvents--) {
                     hadEvent = true;
+
+                    if (ev.type == OSEvent::USER_MESSAGE) {
+                        CompositorMessage msg = {};
+                        if (MorphicCompositor::DecodeMessage(ev, &msg) &&
+                            msg.type == COMPOSITOR_MSG_FRAME_DONE &&
+                            (uint32_t)msg.arg0 == (uint32_t)appPid) {
+                            uint32_t ackSerial = (uint32_t)msg.arg1;
+                            if (ackSerial > protocolAckSerial) {
+                                protocolAckSerial = ackSerial;
+                            }
+                            if ((uint32_t)msg.arg3 == COMPOSITOR_FRAME_DONE_TIMEOUT_RECOVERY) {
+                                protocolTimeoutRecoveries++;
+                            }
+                            OnCompositorFrameDone(ackSerial, (uint32_t)msg.arg3);
+                            continue;
+                        }
+                    }
+
                     // Trigger redraw on any input
                     needsRedraw = true;
                     idleCounter = 0;  // Reset idle counter on any event
@@ -310,6 +336,13 @@ namespace MorphicAPI {
                 OnUpdate(); // Animation logic might set needsRedraw
                 
                 if (needsRedraw) {
+                    uint64_t now = sys_get_time_ms();
+                    if (ShouldThrottleCompositorCommit(now)) {
+                        protocolThrottleSleeps++;
+                        sys_sleep(1);
+                        continue;
+                    }
+
                     OnRender(g);
 
                     // Commit Frame: Copy scratch to kernel buffer
@@ -348,11 +381,42 @@ namespace MorphicAPI {
             // DO NOT invalidate on every mouse move - causes excessive redraws
             // Apps that need hover effects should override and call Invalidate() themselves
         }
+        virtual void OnCompositorFrameDone(uint32_t frameSerial, uint32_t flags) {
+            (void)frameSerial;
+            (void)flags;
+        }
+
+        uint32_t GetProtocolSubmitSerial() const { return protocolSubmitSerial; }
+        uint32_t GetProtocolAckSerial() const { return protocolAckSerial; }
+        uint64_t GetProtocolTimeoutRecoveries() const { return protocolTimeoutRecoveries; }
+        uint64_t GetProtocolThrottleSleeps() const { return protocolThrottleSleeps; }
 
     protected:
+        bool ShouldThrottleCompositorCommit(uint64_t now_ms) const {
+            if (!protocolClientMode || compositorPid == 0) {
+                return false;
+            }
+            if (protocolSubmitSerial <= protocolAckSerial + 1) {
+                return false;
+            }
+            if (protocolLastCommitMs == 0 || (now_ms - protocolLastCommitMs) > 1500) {
+                return false;
+            }
+            return true;
+        }
+
         void SyncCompositorRegistration(bool force) {
             if (appPid == 0) {
                 appPid = sys_get_pid();
+            }
+
+            uint64_t now = sys_get_time_ms();
+
+            if (protocolClientMode && protocolSubmitSerial > protocolAckSerial &&
+                protocolLastCommitMs != 0 && (now - protocolLastCommitMs) > 1500) {
+                protocolTimeoutRecoveries++;
+                protocolAckSerial = protocolSubmitSerial;
+                protocolSurfaceAnnounced = false;
             }
 
             uint64_t serverPid = sys_get_compositor_pid();
@@ -360,18 +424,27 @@ namespace MorphicAPI {
                 protocolSurfaceAnnounced = false;
                 compositorPid = 0;
                 protocolClientMode = false;
+                protocolSubmitSerial = 0;
+                protocolAckSerial = 0;
+                protocolLastCommitMs = 0;
                 return;
             }
 
             if (compositorPid != serverPid) {
                 protocolSurfaceAnnounced = false;
+                protocolSubmitSerial = 0;
+                protocolAckSerial = 0;
+                protocolLastCommitMs = 0;
             }
 
             compositorPid = serverPid;
             protocolClientMode = true;
 
-            uint64_t now = sys_get_time_ms();
             if (!force && protocolSurfaceAnnounced) {
+                return;
+            }
+
+            if (!force && lastProtocolHelloMs != 0 && (now - lastProtocolHelloMs) < 300) {
                 return;
             }
 
@@ -385,10 +458,13 @@ namespace MorphicAPI {
             if (!protocolClientMode || compositorPid == 0 || appPid == 0) {
                 return;
             }
-            MorphicCompositor::PostCommitSurface(compositorPid,
-                                                 (uint32_t)appPid,
-                                                 (uint32_t)width,
-                                                 (uint32_t)height);
+            protocolSubmitSerial++;
+            protocolLastCommitMs = sys_get_time_ms();
+            MorphicCompositor::PostCommitSurfaceWithSerial(compositorPid,
+                                                           (uint32_t)appPid,
+                                                           protocolSubmitSerial,
+                                                           (uint32_t)width,
+                                                           (uint32_t)height);
         }
     };
 

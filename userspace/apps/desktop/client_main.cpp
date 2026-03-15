@@ -30,7 +30,7 @@ static uint32_t MakeColor(uint8_t r, uint8_t g, uint8_t b) {
 class DesktopClientApp : public MorphicAPI::Window {
 public:
     DesktopClientApp()
-        : MorphicAPI::Window(520, 220),
+                : MorphicAPI::Window(520, 220),
           currentPid(0),
           compositorPid(0),
                     lastRefreshMs(0),
@@ -87,8 +87,25 @@ public:
         line[pos] = 0;
         g.DrawText(30, 138, line, 0xFFD8DDE6, 1);
 
-        g.DrawText(30, 162, "Press R to refresh status", 0xFF9FB3C8, 1);
-        g.DrawText(30, 182, "HELLO/CREATE/COMMIT via MorphicAPI Window", 0xFF9FB3C8, 1);
+        pos = 0;
+        AppendText(line, pos, 96, "Submit/Ack: ");
+        AppendU64(line, pos, 96, GetProtocolSubmitSerial());
+        AppendText(line, pos, 96, "/");
+        AppendU64(line, pos, 96, GetProtocolAckSerial());
+        line[pos] = 0;
+        g.DrawText(30, 158, line, 0xFFD8DDE6, 1);
+
+        pos = 0;
+        AppendText(line, pos, 96, "Timeout recovery: ");
+        AppendU64(line, pos, 96, GetProtocolTimeoutRecoveries());
+        line[pos] = 0;
+        g.DrawText(30, 178, line, 0xFFD8DDE6, 1);
+
+        pos = 0;
+        AppendText(line, pos, 96, "Backpressure waits: ");
+        AppendU64(line, pos, 96, GetProtocolThrottleSleeps());
+        line[pos] = 0;
+        g.DrawText(30, 198, line, 0xFFD8DDE6, 1);
     }
 
     void OnKeyDown(char c) override {

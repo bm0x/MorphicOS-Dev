@@ -22,8 +22,17 @@ extern "C" {
 
 class Compositor {
 public:
+    enum class BackendType {
+        SOFTWARE = 0,
+        GPU_EXPERIMENTAL = 1,
+    };
+
     static bool Initialize();
     static void Shutdown();
+    static bool SetBackend(BackendType backend);
+    static BackendType GetBackend();
+    static const char* GetBackendName();
+    static bool IsBackendAccelerated();
     
     // Rendering Targets
     enum class RenderTarget {

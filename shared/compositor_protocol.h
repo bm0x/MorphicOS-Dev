@@ -12,6 +12,12 @@ enum CompositorMessageType : uint32_t {
     COMPOSITOR_MSG_COMMIT_SURFACE = 3,
     COMPOSITOR_MSG_SET_FOCUS = 4,
     COMPOSITOR_MSG_INPUT_EVENT = 5,
+    COMPOSITOR_MSG_FRAME_DONE = 6,
+};
+
+enum CompositorFrameDoneFlags : uint32_t {
+    COMPOSITOR_FRAME_DONE_OK = 0,
+    COMPOSITOR_FRAME_DONE_TIMEOUT_RECOVERY = 1,
 };
 
 struct CompositorMessage {

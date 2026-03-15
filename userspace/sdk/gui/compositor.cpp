@@ -1,5 +1,6 @@
 #include "compositor.h"
 #include "../morphic_syscalls.h"
+#include "../graphics_uapi.h"
 
 // Fallback direct syscall if userspace stub is not working as expected
 static inline void *sys_video_map_direct() {
@@ -19,6 +20,9 @@ uint32_t *Compositor::currentBuffer = nullptr; // Active Target
 int Compositor::width = 0;
 int Compositor::height = 0;
 int Compositor::bpp = 32;
+static Compositor::BackendType g_backend_requested = Compositor::BackendType::SOFTWARE;
+static Compositor::BackendType g_backend_active = Compositor::BackendType::SOFTWARE;
+static bool g_backend_gpu_atomic_supported = false;
 
 bool Compositor::clipEnabled = false;
 int Compositor::clipX = 0;
@@ -34,6 +38,33 @@ static inline char ToUpperAscii(char c) {
   if (c >= 'a' && c <= 'z')
     return (char)(c - ('a' - 'A'));
   return c;
+}
+
+bool Compositor::SetBackend(BackendType backend) {
+  if (backend != BackendType::SOFTWARE &&
+      backend != BackendType::GPU_EXPERIMENTAL) {
+    return false;
+  }
+  g_backend_requested = backend;
+  g_backend_active = backend;
+  return true;
+}
+
+Compositor::BackendType Compositor::GetBackend() { return g_backend_active; }
+
+bool Compositor::IsBackendAccelerated() {
+  return g_backend_active == BackendType::GPU_EXPERIMENTAL;
+}
+
+const char* Compositor::GetBackendName() {
+  if (g_backend_active == BackendType::GPU_EXPERIMENTAL) {
+    return "backend_gpu_experimental";
+  }
+  if (g_backend_requested == BackendType::GPU_EXPERIMENTAL &&
+      g_backend_active == BackendType::SOFTWARE) {
+    return "backend_sw_fallback";
+  }
+  return "backend_sw";
 }
 
 bool Compositor::Initialize() {
@@ -114,6 +145,22 @@ bool Compositor::Initialize() {
   }
 
   currentBuffer = backBuffer;
+
+  g_backend_active = g_backend_requested;
+  g_backend_gpu_atomic_supported = false;
+
+  if (g_backend_requested == BackendType::GPU_EXPERIMENTAL) {
+    GraphicsUapiCaps caps = {};
+    if (MorphicGfx::QueryCaps(&caps) &&
+        (caps.caps_flags & GRAPHICS_CAP_ATOMIC_COMMIT) != 0) {
+      g_backend_gpu_atomic_supported = true;
+      sys_debug_print("[Compositor] backend_gpu_experimental enabled\n");
+    } else {
+      g_backend_active = BackendType::SOFTWARE;
+      sys_debug_print("[Compositor] backend_gpu_experimental unavailable, fallback to backend_sw\n");
+    }
+  }
+
   // More debug output
   debug_print_ptr("[Compositor] backBuffer=", backBuffer);
   debug_print_ptr("[Compositor] currentBuffer=", currentBuffer);
@@ -378,6 +425,33 @@ bool Compositor::SwapBuffersRect(int x, int y, int w, int h) {
   // So yes, sys_video_flip_rect IS the Present() for rects.
   if (!frontBuffer)
     return false;
+
+  if (g_backend_active == BackendType::GPU_EXPERIMENTAL &&
+      g_backend_gpu_atomic_supported) {
+    if (x < 0) {
+      w += x;
+      x = 0;
+    }
+    if (y < 0) {
+      h += y;
+      y = 0;
+    }
+    if (x + w > width)
+      w = width - x;
+    if (y + h > height)
+      h = height - y;
+    if (w <= 0 || h <= 0)
+      return MorphicGfx::AtomicCommitFull(true) != 0;
+
+    bool committed = MorphicGfx::AtomicCommit((int16_t)x, (int16_t)y,
+                                              (uint16_t)w, (uint16_t)h,
+                                              MorphicGfx::ATOMIC_WAIT_VSYNC) != 0;
+    if (!committed) {
+      committed = MorphicGfx::AtomicCommitFull(true) != 0;
+    }
+    return committed;
+  }
+
   uint64_t xy = ((uint64_t)(uint32_t)x << 32) | (uint32_t)y;
   uint64_t wh = ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
   return sys_video_flip_rect(frontBuffer, xy, wh) != 0;
@@ -462,12 +536,24 @@ void Compositor::FlushRect(int x, int y, int w, int h) {
 bool Compositor::Present() {
   if (!frontBuffer)
     return false;
+
+  if (g_backend_active == BackendType::GPU_EXPERIMENTAL &&
+      g_backend_gpu_atomic_supported) {
+    return MorphicGfx::AtomicCommitFull(true) != 0;
+  }
+
   return sys_video_flip(frontBuffer) != 0;
 }
 
 bool Compositor::PresentFullDirty() {
   if (!frontBuffer)
     return false;
+
+  if (g_backend_active == BackendType::GPU_EXPERIMENTAL &&
+      g_backend_gpu_atomic_supported) {
+    return MorphicGfx::AtomicCommitFull(true) != 0;
+  }
+
   return sys_video_flip_flags(frontBuffer, 1) != 0; // flag 1 = force full dirty
 }
 

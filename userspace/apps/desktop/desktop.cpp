@@ -24,7 +24,25 @@ static int32_t mouse_y16 = 0;
 static int32_t mouse_target_x16 = 0;
 static int32_t mouse_target_y16 = 0;
 
-static constexpr int MOUSE_SENSITIVITY = 3;
+struct MouseProfile {
+    const char* name;
+    int sensitivity;
+    int32_t max_step_x16;
+    int32_t max_step_y16;
+};
+
+static constexpr MouseProfile k_mouse_profiles[] = {
+    {"SMOOTH", 2, 8 << 16, 8 << 16},
+    {"BALANCED", 3, 12 << 16, 12 << 16},
+    {"FAST", 4, 16 << 16, 16 << 16},
+};
+static constexpr int k_mouse_profile_count = (int)(sizeof(k_mouse_profiles) / sizeof(k_mouse_profiles[0]));
+static int g_mouse_profile_index = 1; // BALANCED default
+
+static const MouseProfile& GetMouseProfile() {
+    return k_mouse_profiles[g_mouse_profile_index];
+}
+
 static constexpr int CURSOR_W = 12;
 static constexpr int CURSOR_H = 18;
 static constexpr int CURSOR_PAD = 2;
@@ -67,13 +85,22 @@ struct ProtocolSurface {
     uint64_t bound_window_id;
     uint32_t width;
     uint32_t height;
+    uint32_t last_submit_serial;
+    uint32_t last_presented_serial;
+    bool in_flight;
     uint64_t commit_count;
     uint64_t last_commit_ms;
+    uint64_t last_submit_ms;
+    uint64_t overrun_count;
+    uint64_t timeout_count;
 };
 
 static ProtocolSurface g_protocol_surfaces[MAX_PROTOCOL_CLIENTS] = {};
 static uint32_t g_active_surface_count = 0;
 static uint64_t g_total_surface_commits = 0;
+static uint64_t g_total_surface_acks = 0;
+static uint64_t g_total_surface_timeouts = 0;
+static uint64_t g_total_surface_overruns = 0;
 
 static Launcher g_launcher;
 
@@ -226,6 +253,15 @@ void CycleKeymap() {
     ui_dirty = true;
 }
 
+void CycleMouseProfile() {
+    g_mouse_profile_index = (g_mouse_profile_index + 1) % k_mouse_profile_count;
+    const MouseProfile& profile = GetMouseProfile();
+    sys_debug_print("Mouse profile: ");
+    sys_debug_print(profile.name);
+    sys_debug_print("\n");
+    ui_dirty = true;
+}
+
 // Dirty Rect Tracking (moved up for use in HandleEvent)
 struct DirtyRect {
     int x, y, w, h;
@@ -314,6 +350,63 @@ static void MarkProtocolSurfaceDirty(const ProtocolSurface* surface) {
     DirtyAdd(g_dirty, (int)w.x - 2, (int)w.y - 26, (int)w.w + 4, (int)w.h + 30);
 }
 
+static void AckProtocolSurface(ProtocolSurface* surface, uint32_t flags) {
+    if (!surface || !surface->active || surface->client_pid == 0 || !surface->in_flight) {
+        return;
+    }
+
+    MorphicCompositor::PostFrameDone((uint32_t)surface->client_pid,
+                                     (uint32_t)surface->client_pid,
+                                     surface->last_submit_serial,
+                                     flags);
+    surface->last_presented_serial = surface->last_submit_serial;
+    surface->in_flight = false;
+    g_total_surface_acks++;
+}
+
+static void ProcessProtocolSyncAfterPresent(bool present_ok, uint64_t now_ms) {
+    for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
+        ProtocolSurface& surface = g_protocol_surfaces[i];
+        if (!surface.active || !surface.in_flight) {
+            continue;
+        }
+
+        if (present_ok) {
+            AckProtocolSurface(&surface, COMPOSITOR_FRAME_DONE_OK);
+            continue;
+        }
+
+        if (surface.last_submit_ms != 0 && (now_ms - surface.last_submit_ms) > 1500) {
+            surface.timeout_count++;
+            g_total_surface_timeouts++;
+            AckProtocolSurface(&surface, COMPOSITOR_FRAME_DONE_TIMEOUT_RECOVERY);
+        }
+    }
+}
+
+static void CleanupStaleProtocolSurfaces(uint64_t now_ms) {
+    bool changed = false;
+    for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
+        ProtocolSurface& surface = g_protocol_surfaces[i];
+        if (!surface.active) {
+            continue;
+        }
+
+        bool has_window = (surface.bound_window_id != 0 &&
+                           FindExternalWindowIndexById(surface.bound_window_id) >= 0);
+        bool stale_commit = (surface.last_commit_ms != 0 && (now_ms - surface.last_commit_ms) > 5000);
+
+        if (!has_window && stale_commit) {
+            surface = {};
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        RecountProtocolSurfaces();
+    }
+}
+
 static void BindProtocolSurfacesToExternalWindows() {
     for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
         ProtocolSurface& surface = g_protocol_surfaces[i];
@@ -400,6 +493,46 @@ static void DebugProtocolMessage(const char* prefix, uint64_t pid, uint32_t a, u
     sys_debug_print(line);
 }
 
+static void DebugPrintU64(uint64_t value) {
+    char tmp[24];
+    int count = 0;
+    if (value == 0) {
+        tmp[count++] = '0';
+    }
+    while (value && count < 23) {
+        tmp[count++] = (char)('0' + (value % 10));
+        value /= 10;
+    }
+
+    char out[24];
+    int pos = 0;
+    while (count > 0 && pos < 23) {
+        out[pos++] = tmp[--count];
+    }
+    out[pos] = 0;
+    sys_debug_print(out);
+}
+
+static void LogProtocolSyncMetrics(uint64_t now_ms) {
+    static uint64_t last_log_ms = 0;
+    if (last_log_ms != 0 && (now_ms - last_log_ms) < 5000) {
+        return;
+    }
+    last_log_ms = now_ms;
+
+    sys_debug_print("[Desktop][Sync] SCOM=");
+    DebugPrintU64(g_total_surface_commits);
+    sys_debug_print(" SACK=");
+    DebugPrintU64(g_total_surface_acks);
+    sys_debug_print(" STO=");
+    DebugPrintU64(g_total_surface_timeouts);
+    sys_debug_print(" SOVR=");
+    DebugPrintU64(g_total_surface_overruns);
+    sys_debug_print(" SURF=");
+    DebugPrintU64(g_active_surface_count);
+    sys_debug_print("\n");
+}
+
 static void RegisterProtocolClient(uint64_t pid) {
     if (pid == 0) return;
     for (uint32_t i = 0; i < g_registered_client_count; i++) {
@@ -441,8 +574,16 @@ static bool HandleProtocolMessage(const OSEvent& ev) {
     case COMPOSITOR_MSG_COMMIT_SURFACE:
         RegisterProtocolClient(client_pid);
         if (ProtocolSurface* surface = EnsureProtocolSurface(client_pid, msg.arg2, msg.arg3)) {
+            if (surface->in_flight) {
+                surface->overrun_count++;
+                g_total_surface_overruns++;
+            }
+            uint32_t serial = (msg.arg1 > 0) ? (uint32_t)msg.arg1 : (uint32_t)(surface->commit_count + 1);
+            surface->last_submit_serial = serial;
+            surface->in_flight = true;
+            surface->last_submit_ms = sys_get_time_ms();
             surface->commit_count++;
-            surface->last_commit_ms = sys_get_time_ms();
+            surface->last_commit_ms = surface->last_submit_ms;
             g_total_surface_commits++;
             MarkProtocolSurfaceDirty(surface);
         }
@@ -464,6 +605,12 @@ void HandleEvent(const OSEvent& ev) {
 
     // Pass keyboard events to the focused window (topmost)
     if (ev.type == OSEvent::KEY_PRESS) {
+        // Global desktop shortcuts.
+        if (ev.ascii == 'm' || ev.ascii == 'M') {
+            CycleMouseProfile();
+            return;
+        }
+
         if (active_pid != 0) {
             OSEvent fwd = ev; // Copy
             sys_post_message(active_pid, &fwd);
@@ -737,8 +884,9 @@ void HandleEvent(const OSEvent& ev) {
         }
 
         // Accumulate into a target position (sub-pixel).
-        mouse_target_x16 += (int32_t)(ev.dx * MOUSE_SENSITIVITY) << 16;
-        mouse_target_y16 += (int32_t)(ev.dy * MOUSE_SENSITIVITY) << 16;
+        const MouseProfile& profile = GetMouseProfile();
+        mouse_target_x16 += (int32_t)(ev.dx * profile.sensitivity) << 16;
+        mouse_target_y16 += (int32_t)(ev.dy * profile.sensitivity) << 16;
 
         // Clamp target to screen bounds
         const int w = Compositor::GetWidth();
@@ -757,10 +905,21 @@ void HandleEvent(const OSEvent& ev) {
 // DirtyRect definitions moved up before HandleEvent
 
 static void UpdateMousePerFrame() {
-    // OPTIMIZATION: Removed smoothing entirely - it was causing perceived lag
-    // The mouse should always snap to target position for responsive feel
-    mouse_x16 = mouse_target_x16;
-    mouse_y16 = mouse_target_y16;
+    // Low-latency bounded smoothing: absorbs packet bursts without adding drag lag.
+    const MouseProfile& profile = GetMouseProfile();
+    const int32_t MAX_STEP_X16 = profile.max_step_x16;
+    const int32_t MAX_STEP_Y16 = profile.max_step_y16;
+
+    int32_t dx16 = mouse_target_x16 - mouse_x16;
+    int32_t dy16 = mouse_target_y16 - mouse_y16;
+
+    if (dx16 > MAX_STEP_X16) dx16 = MAX_STEP_X16;
+    if (dx16 < -MAX_STEP_X16) dx16 = -MAX_STEP_X16;
+    if (dy16 > MAX_STEP_Y16) dy16 = MAX_STEP_Y16;
+    if (dy16 < -MAX_STEP_Y16) dy16 = -MAX_STEP_Y16;
+
+    mouse_x16 += dx16;
+    mouse_y16 += dy16;
 
     const int32_t render_x16 = mouse_x16;
     const int32_t render_y16 = mouse_y16;
@@ -815,9 +974,9 @@ static void UpdateMousePerFrame() {
 
 void PollInput() {
     OSEvent ev;
-    // Drain more events per frame to avoid backlog/jumps when mouse moves fast.
+    // Keep a bounded drain to avoid long input stalls in a single frame.
     int count = 0;
-    while (sys_get_event(&ev) && count < 512) {
+    while (sys_get_event(&ev) && count < 192) {
         HandleEvent(ev);
         count++;
     }
@@ -842,12 +1001,18 @@ void PollDisplayEvents() {
 extern "C" int main(void* asset_ptr) {
     (void)asset_ptr;
     sys_debug_print("[Desktop] main: before Compositor::Initialize\n");
+    if (!Compositor::SetBackend(Compositor::BackendType::GPU_EXPERIMENTAL)) {
+        (void)Compositor::SetBackend(Compositor::BackendType::SOFTWARE);
+    }
     bool ok = Compositor::Initialize();
     if (!ok) {
         sys_debug_print("[Desktop] Compositor::Initialize FAILED\n");
         return -1;
     }
     sys_debug_print("[Desktop] Compositor::Initialize OK\n");
+    sys_debug_print("[Desktop] Render backend: ");
+    sys_debug_print(Compositor::GetBackendName());
+    sys_debug_print("\n");
 
     // Register as Compositor to receive all input and window events
     sys_register_compositor();
@@ -924,6 +1089,7 @@ extern "C" int main(void* asset_ptr) {
         
         // Update External Windows List
         FetchExternalWindows();
+        CleanupStaleProtocolSurfaces(start_time);
         BindProtocolSurfacesToExternalWindows();
         
         // A. Input
@@ -1214,6 +1380,18 @@ extern "C" int main(void* asset_ptr) {
                         Compositor::DrawText(x, y, lineEv, 0xFF88AAAA, 1);
                         y += 12;
 
+                        char lineMouse[48];
+                        pos = 0;
+                        const char* mp = "MOUSE: ";
+                        while (*mp && pos < 47) lineMouse[pos++] = *mp++;
+                        const char* mname = GetMouseProfile().name;
+                        while (*mname && pos < 47) lineMouse[pos++] = *mname++;
+                        const char* mh = " (M)";
+                        while (*mh && pos < 47) lineMouse[pos++] = *mh++;
+                        lineMouse[pos] = 0;
+                        Compositor::DrawText(x, y, lineMouse, 0xFF88AAAA, 1);
+                        y += 12;
+
                         char lineDrop[40];
                         pos = 0;
                         const char* dr = "DROP: ";
@@ -1258,6 +1436,35 @@ extern "C" int main(void* asset_ptr) {
                         write_u64(lineCommit, pos, g_total_surface_commits);
                         lineCommit[pos] = 0;
                         Compositor::DrawText(x, y, lineCommit, 0xFF88CC88, 1);
+                        y += 12;
+
+                        char lineAck[40];
+                        pos = 0;
+                        const char* sa = "SACK: ";
+                        while (*sa) lineAck[pos++] = *sa++;
+                        write_u64(lineAck, pos, g_total_surface_acks);
+                        lineAck[pos] = 0;
+                        Compositor::DrawText(x, y, lineAck, 0xFF88CC88, 1);
+                        y += 12;
+
+                        char lineTo[40];
+                        pos = 0;
+                        const char* st = "STO: ";
+                        while (*st) lineTo[pos++] = *st++;
+                        write_u64(lineTo, pos, g_total_surface_timeouts);
+                        lineTo[pos] = 0;
+                        uint32_t toColor = (g_total_surface_timeouts > 0) ? 0xFF4040C0 : 0xFF88AAAA;
+                        Compositor::DrawText(x, y, lineTo, toColor, 1);
+                        y += 12;
+
+                        char lineOv[40];
+                        pos = 0;
+                        const char* so = "SOVR: ";
+                        while (*so) lineOv[pos++] = *so++;
+                        write_u64(lineOv, pos, g_total_surface_overruns);
+                        lineOv[pos] = 0;
+                        uint32_t ovColor = (g_total_surface_overruns > 0) ? 0xFF4040C0 : 0xFF88AAAA;
+                        Compositor::DrawText(x, y, lineOv, ovColor, 1);
                         y += 12;
 
                         char lineDe[32];
@@ -1384,6 +1591,10 @@ extern "C" int main(void* asset_ptr) {
         if (g_has_atomic_commit) {
             PollDisplayEvents();
         }
+
+        uint64_t end_present_ms = sys_get_time_ms();
+        ProcessProtocolSyncAfterPresent(vsynced, end_present_ms);
+        LogProtocolSyncMetrics(end_present_ms);
         
         // Restore rendering to back buffer for next frame UI
         Compositor::SetRenderTarget(Compositor::RenderTarget::BACK_BUFFER);
