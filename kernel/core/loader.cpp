@@ -97,24 +97,26 @@ LoadedProcess PackageLoader::Load(const char* path, uint64_t base_addr) {
     uint64_t assets_offset = (uint64_t)assets_dest_phys - (uint64_t)code_dest_phys;
     uint8_t* assets_dest = (uint8_t*)(user_base_addr + assets_offset);
     
-    // Alloc Stack
-    uint64_t stack_base_virt = user_base_addr + 0x400000; // 4MB after code base
-    uint64_t stack_size_pages = 4;
+    // Alloc Stack in isolated userspace high virtual region (0x6FFFFFFF0000)
+    // Completely separated from code, BSS, and assets to prevent collision.
+    constexpr uint64_t USER_STACK_TOP = 0x6FFFFFFF0000ULL;
+    constexpr uint64_t USER_STACK_PAGES = 16; // 64KB stack
+    uint64_t stack_base_virt = USER_STACK_TOP - (USER_STACK_PAGES * 4096);
     
-    for (uint64_t i = 0; i < stack_size_pages; i++) {
+    for (uint64_t i = 0; i < USER_STACK_PAGES; i++) {
         void* phys_page = PMM::AllocPage();
         if (!phys_page) {
             result.error_code = -5; return result;
         }
         
-        uint64_t stack_page_virt = stack_base_virt + i * 4096;
+        uint64_t stack_page_virt = stack_base_virt + (i * 4096);
         if (!MMU::MapPage(stack_page_virt, (uint64_t)phys_page, 
                      PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT)) {
              result.error_code = -6; return result;
         }
     }
     
-    uint8_t* stack = (uint8_t*)(stack_base_virt + stack_size_pages * 4096);
+    uint8_t* stack = (uint8_t*)USER_STACK_TOP;
     
     // Reload CR3 to flush TLB (Essential)
     uint64_t cr3;

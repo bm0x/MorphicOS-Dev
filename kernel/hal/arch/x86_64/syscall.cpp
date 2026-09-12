@@ -6,7 +6,9 @@
 #include "../../../mm/heap.h"
 #include "../../../mm/pmm.h"
 #include "../../../process/scheduler.h"
+#include "../../../utils/std.h"
 #include "../../../api/graphics_uapi.h"
+#include "../../../drivers/x86/keyboard.h"
 #include "../../audio/audio_device.h"
 #include "../../input/input_device.h"
 #include "../../input/keymap.h"
@@ -205,7 +207,8 @@ static inline uint32_t ClampU32(uint32_t v, uint32_t lo, uint32_t hi) {
 }
 
 static constexpr uint64_t kUserSpaceMin = 0x600000000000ULL;
-static inline bool IsUserPtr(uint64_t ptr) { return ptr >= kUserSpaceMin; }
+static constexpr uint64_t kUserSpaceMax = 0x7FFFFFFFFFFFULL;
+static inline bool IsUserPtr(uint64_t ptr) { return ptr >= kUserSpaceMin && ptr <= kUserSpaceMax; }
 
 #ifdef MOUSE_DEBUG
 static uint64_t g_sysGetEventDelivered = 0;
@@ -363,20 +366,143 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
   switch (num) {
   case SYS_EXIT:
+    Scheduler::Exit((int)arg1);
     return 0;
 
-  case SYS_WRITE:
-    for (uint64_t i = 0; i < arg3; i++) {
-      EarlyTerm::PutChar(((char *)arg1)[i]);
+  case SYS_WRITE: {
+    // POSIX-lite: arg1 = fd, arg2 = user buffer, arg3 = count
+    // Legacy fallback: arg1 = user buffer, arg3 = count
+    uint64_t fd = arg1;
+    if (fd == 1 || fd == 2) {
+      if (!arg2 || !IsUserPtr(arg2)) return (uint64_t)-1;
+      const char* buf = (const char*)arg2;
+      for (uint64_t i = 0; i < arg3; i++) {
+        EarlyTerm::PutChar(buf[i]);
+      }
+      return arg3;
     }
-    return arg3;
+    if (fd >= 3 && fd < MAX_PROCESS_FDS) {
+      Task* cur = Scheduler::GetCurrentTask();
+      if (!cur || !cur->fdTable[fd].in_use || !cur->fdTable[fd].node) return (uint64_t)-1;
+      if (!arg2 || !IsUserPtr(arg2)) return (uint64_t)-1;
+      uint32_t written = VFS::Write(cur->fdTable[fd].node, cur->fdTable[fd].offset, (uint32_t)arg3, (uint8_t*)arg2);
+      cur->fdTable[fd].offset += written;
+      return written;
+    }
+    // Legacy fallback: arg1 is user buffer pointer
+    if (arg1 >= 0x600000000000ULL && IsUserPtr(arg1)) {
+      for (uint64_t i = 0; i < arg3; i++) {
+        EarlyTerm::PutChar(((const char*)arg1)[i]);
+      }
+      return arg3;
+    }
+    return (uint64_t)-1;
+  }
 
-  case SYS_MALLOC:
-    return (uint64_t)kmalloc((size_t)arg1);
+  case SYS_READ: {
+    // POSIX-lite: arg1 = fd, arg2 = user buffer, arg3 = count
+    uint64_t fd = arg1;
+    if (fd == 0) { // stdin
+      if (!arg2 || !IsUserPtr(arg2) || arg3 == 0) return 0;
+      char* out = (char*)arg2;
+      uint64_t count = 0;
+      char c = Keyboard::GetChar();
+      if (c != 0) {
+        out[count++] = c;
+        while (count < arg3) {
+          c = Keyboard::GetChar();
+          if (c == 0) break;
+          out[count++] = c;
+        }
+      }
+      return count;
+    }
+    if (fd >= 3 && fd < MAX_PROCESS_FDS) {
+      Task* cur = Scheduler::GetCurrentTask();
+      if (!cur || !cur->fdTable[fd].in_use || !cur->fdTable[fd].node) return (uint64_t)-1;
+      if (!arg2 || !IsUserPtr(arg2)) return (uint64_t)-1;
+      uint32_t bytesRead = VFS::Read(cur->fdTable[fd].node, cur->fdTable[fd].offset, (uint32_t)arg3, (uint8_t*)arg2);
+      cur->fdTable[fd].offset += bytesRead;
+      return bytesRead;
+    }
+    return (uint64_t)-1;
+  }
+
+  case SYS_MALLOC: {
+    // Allocate user memory mapped with PAGE_USER in user address space (no KHeap exposure)
+    size_t size = (size_t)arg1;
+    if (size == 0 || size > 64 * 1024 * 1024) return 0;
+    size_t pages = (size + 4095) / 4096;
+    
+    static uint64_t s_userHeapBump = 0x600010000000ULL;
+    uint64_t user_virt = s_userHeapBump;
+    
+    for (size_t i = 0; i < pages; i++) {
+        void* phys = PMM::AllocPage();
+        if (!phys) return 0;
+        kmemset(phys, 0, 4096);
+        MMU::MapPage(user_virt + (i * 4096), (uint64_t)phys,
+                     PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
+    }
+    s_userHeapBump += pages * 4096;
+    MMU::FlushTLBAll();
+    return user_virt;
+  }
 
   case SYS_FREE:
-    kfree((void *)arg1);
     return 0;
+
+  case SYS_OPEN: {
+    // arg1 = user path, arg2 = flags
+    if (!arg1 || !IsUserPtr(arg1)) return (uint64_t)-1;
+    Task* cur = Scheduler::GetCurrentTask();
+    if (!cur) return (uint64_t)-1;
+
+    int free_fd = -1;
+    for (int i = 3; i < MAX_PROCESS_FDS; i++) {
+      if (!cur->fdTable[i].in_use) {
+        free_fd = i;
+        break;
+      }
+    }
+    if (free_fd == -1) return (uint64_t)-1;
+
+    char path_buf[256];
+    const char* user_path = (const char*)arg1;
+    int i = 0;
+    while (i < 255) {
+      path_buf[i] = user_path[i];
+      if (path_buf[i] == 0) break;
+      i++;
+    }
+    path_buf[i] = 0;
+
+    VFSNode* node = VFS::Open(path_buf);
+    if (!node || node->type != NodeType::FILE) {
+      return (uint64_t)-1;
+    }
+
+    cur->fdTable[free_fd].node = node;
+    cur->fdTable[free_fd].offset = 0;
+    cur->fdTable[free_fd].flags = (uint32_t)arg2;
+    cur->fdTable[free_fd].in_use = true;
+    return free_fd;
+  }
+
+  case SYS_CLOSE: {
+    int fd = (int)arg1;
+    if (fd < 3 || fd >= MAX_PROCESS_FDS) return (uint64_t)-1;
+    Task* cur = Scheduler::GetCurrentTask();
+    if (!cur || !cur->fdTable[fd].in_use) return (uint64_t)-1;
+
+    if (cur->fdTable[fd].node) {
+      VFS::Close(cur->fdTable[fd].node);
+    }
+    cur->fdTable[fd].in_use = false;
+    cur->fdTable[fd].node = nullptr;
+    cur->fdTable[fd].offset = 0;
+    return 0;
+  }
 
   case SYS_UPDATE_SCREEN:
     // Compose all layers and flip to framebuffer
@@ -866,10 +992,10 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
                                 (void *)proc.stack_top, newCR3, proc.arg1);
       return 0; // Success
     } else {
-      // Failed. Cleanup Page Table? (Memory Leak TODO: DestroyPageTable)
       UART::Write("[Syscall] Spawn failed: Loader error ");
       UART::WriteDec(proc.error_code);
       UART::Write("\n");
+      MMU::DestroyPageTable(newCR3);
       return (uint64_t)proc.error_code;
     }
   }

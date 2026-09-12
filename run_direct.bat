@@ -49,13 +49,16 @@ if "%OVMF%"=="" (
 
 REM Build QEMU command
 set "QEMU_BASE=qemu-system-x86_64"
-set "QEMU_ARGS=-m 2048M -vga std -display sdl -machine pc,i8042=on -serial stdio"
+set "QEMU_ARGS=-m 2048M -vga std -display sdl -machine pc -serial stdio"
 
 if not "%OVMF%"=="" (
   set "QEMU_ARGS=-bios "%OVMF%" %QEMU_ARGS%"
 )
 
-set "QEMU_DRIVES=-drive format=raw,file="%ISO%",index=0,media=disk -drive format=raw,file="debug_disk.img",index=1,media=disk"
+set "QEMU_DRIVES=-cdrom "%ISO%""
+if exist debug_disk.img (
+  set "QEMU_DRIVES=%QEMU_DRIVES% -drive format=raw,file=debug_disk.img,if=ide,index=3,media=disk"
+)
 
 echo Running QEMU:
 echo %QEMU_BASE% %QEMU_ARGS% %QEMU_DRIVES% %*

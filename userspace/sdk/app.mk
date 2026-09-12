@@ -56,13 +56,25 @@ $(RUNTIME_OBJ): $(MORPHIC_ROOT)/userspace/sdk/runtime.cpp
 	@echo "  [SDK] Compiling Runtime..."
 	$(CXX) $(CXXFLAGS) $< -o $@
 
+$(ENTRY_OBJ): $(MORPHIC_ROOT)/userspace/entry.asm
+	@echo "  [SDK] Assembling Entry..."
+	$(ASM) $(ASMFLAGS) $< -o $@
+
+$(SYSCALLS_OBJ): $(MORPHIC_ROOT)/userspace/syscalls.asm
+	@echo "  [SDK] Assembling Syscalls..."
+	$(ASM) $(ASMFLAGS) $< -o $@
+
+$(GUI_LIB):
+	@echo "  [SDK] Building GUI Library..."
+	$(MAKE) -C "$(MORPHIC_ROOT)/userspace/sdk/gui"
+
 # Compile C++ sources
 %.o: %.cpp
 	@echo "  [APP] Compiling $<..."
 	$(CXX) $(CXXFLAGS) $< -o $@
 
 # Link to binary
-$(APP_BIN): $(APP_OBJS) $(ENTRY_OBJ) $(SYSCALLS_OBJ) $(RUNTIME_OBJ)
+$(APP_BIN): $(APP_OBJS) $(ENTRY_OBJ) $(SYSCALLS_OBJ) $(RUNTIME_OBJ) $(GUI_LIB)
 	@echo "  [APP] Linking $(APP_BIN)..."
 	$(LD) -T "$(MORPHIC_ROOT)/userspace/linker.ld" -z max-page-size=4096 -o $@ $(ENTRY_OBJ) $(RUNTIME_OBJ) $(APP_OBJS) $(SYSCALLS_OBJ) "$(GUI_LIB)" --oformat binary
 

@@ -316,7 +316,32 @@ namespace MMU {
     }
     
     void DestroyPageTable(uint64_t table_phys) {
-        kfree((void*)table_phys);
+        if (!table_phys) return;
+        
+        uint64_t* pml4 = (uint64_t*)table_phys;
+        
+        // Cleanly free user-space translation tables (PML4 entries 1 to 255).
+        // Entry 0 is kernel identity mapping; entries 256-511 are kernel higher half.
+        for (int i = 1; i < 256; i++) {
+            if (pml4[i] & PTE_PRESENT) {
+                uint64_t* pdpt = (uint64_t*)(pml4[i] & PTE_ADDR_MASK);
+                for (int j = 0; j < 512; j++) {
+                    if (pdpt[j] & PTE_PRESENT) {
+                        uint64_t* pd = (uint64_t*)(pdpt[j] & PTE_ADDR_MASK);
+                        for (int k = 0; k < 512; k++) {
+                            if (pd[k] & PTE_PRESENT) {
+                                uint64_t* pt = (uint64_t*)(pd[k] & PTE_ADDR_MASK);
+                                PMM::FreePage((void*)pt);
+                            }
+                        }
+                        PMM::FreePage((void*)pd);
+                    }
+                }
+                PMM::FreePage((void*)pdpt);
+            }
+        }
+        
+        PMM::FreePage((void*)table_phys);
     }
     
     bool IsMapped(uint64_t virt) {

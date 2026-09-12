@@ -7,6 +7,12 @@ Morphic es un **sistema operativo experimental** (hobby OS) escrito desde cero.
 - Boot nativo **UEFI** (aplicación EFI `BOOTX64.EFI`).
 - Arquitectura objetivo: **x86_64**.
 - Userspace mínimo con **syscalls**; el “Desktop” actual corre como app en userspace y se empaqueta en un `.mpk` embebido en el kernel.
+
+> [!NOTE]
+> **Normas de Ingeniería y Desarrollo:**
+> - [Guía Oficial para Agentes de IA y Contribuidores (AGENTS.md)](AGENTS.md)
+> - [Especificación Maestra de Arquitectura y Desarrollo de Ingeniería](docs/DEVELOPMENT_ARCHITECTURE_SPEC.md)
+
 ## Arquitectura del Sistema - Pila de Software
 
 ```
@@ -33,8 +39,8 @@ Morphic es un **sistema operativo experimental** (hobby OS) escrito desde cero.
 │                              ▼            KERNEL (Ring 0)                        │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │  ┌───────────────────────────────────────────────────────────────────────────┐  │
-│  │                         MORPHIC API LAYER                                 │  │
-│  │                       (kernel/api/morphic_api.h)                          │  │
+│  │                    SYSCALL DISPATCHER & CORE HAL                          │  │
+│  │                     (kernel/hal/arch/x86_64/syscall.cpp)                  │  │
 │  │   Syscall Dispatcher │ Graphics API │ Audio API │ Input API │ Memory API │  │
 │  └───────────────────────────────────────────────────────────────────────────┘  │
 │                                      │                                           │
@@ -307,22 +313,30 @@ Structs compartidos (kernel ↔ userspace):
 
 ### Lista de syscalls (principales)
 
-- `0  SYS_EXIT` → (no usado en userspace actualmente)
-- `1  SYS_WRITE(arg1=ptr, arg2=?, arg3=len)` → escribe a consola (debug)
-- `3  SYS_MALLOC(arg1=size)` → puntero
-- `4  SYS_FREE(arg1=ptr)`
+- `0  SYS_EXIT(arg1=code)` → termina el proceso actual (Scheduler marca estado DEAD)
+- `1  SYS_WRITE(arg1=fd, arg2=buf, arg3=len)` → escribe a consola o descriptor de archivo (validación de punteros)
+- `2  SYS_READ(arg1=fd, arg2=buf, arg3=len)` → lee desde stdin o descriptor de archivo
+- `3  SYS_MALLOC(arg1=size)` → asigna páginas de usuario aisladas con `PAGE_USER`
+- `4  SYS_FREE(arg1=ptr)` → liberación de memoria de usuario
+- `5  SYS_OPEN(arg1=path, arg2=flags)` → abre archivo en el VFS y devuelve su descriptor (fd)
+- `6  SYS_CLOSE(arg1=fd)` → cierra un descriptor de archivo abierto
 - `10 SYS_UPDATE_SCREEN` → compone/flip (GUI kernel)
 - `11 SYS_GET_SCREEN_INFO` → `((width << 32) | height)`
 - `12 SYS_BEEP(arg1=freq_hz, arg2=duration_ms)`
 - `13 SYS_SLEEP(arg1=ms)`
 - `20 SYS_GET_TIME_MS` → ms desde boot (PIT a 1000Hz)
 - `21 SYS_GET_EVENT(arg1=OSEvent*)` → `1` si entregó evento, `0` si no
-- `50 SYS_VIDEO_MAP` → mapea framebuffer (MMIO) a userspace, retorna puntero
-- `51 SYS_VIDEO_FLIP(arg1=backbuffer_ptr)` → presenta backbuffer completo, retorna `1` si VSync (best-effort)
+- `50 SYS_VIDEO_MAP` → mapea framebuffer DRM a userspace (exclusivo Compositor)
+- `51 SYS_VIDEO_FLIP(arg1=backbuffer_ptr)` → presenta backbuffer completo, retorna `1` si VSync
 - `53 SYS_ALLOC_BACKBUFFER(arg1=size_bytes)` → retorna puntero al backbuffer en userspace (RAM cacheable)
 - `54 SYS_VIDEO_FLIP_RECT(arg1=backbuffer_ptr, arg2=(x<<32)|y, arg3=(w<<32)|h)` → presenta solo rectángulo (dirty-rect)
-- `55 SYS_GET_RTC_DATETIME(arg1=MorphicDateTime*)` → `1` si OK (RTC/CMOS)
-- `56 SYS_GET_SYSTEM_INFO(arg1=MorphicSystemInfo*)` → `1` si OK
+- `55 SYS_GET_RTC_DATETIME(arg1=MorphicDateTime*)` → `1` si OK (lectura de CMOS/RTC)
+- `56 SYS_GET_SYSTEM_INFO(arg1=MorphicSystemInfo*)` → `1` si OK (CPU, memoria total/libre)
+- `60 SYS_SPAWN(arg1=path)` → lanza un paquete `.mpk` en un nuevo proceso
+- `61 SYS_DEBUG_PRINT(arg1=str)` → envía traza de depuración a COM1 (serial)
+- `62 SYS_CREATE_WINDOW(arg1=w, arg2=h, arg3=flags)` → crea superficie de ventana para app cliente
+- `63 SYS_REGISTER_COMPOSITOR` → registra el proceso actual como gestor exclusivo de pantalla
+- `65 SYS_POST_MESSAGE(arg1=pid, arg2=ev)` → IPC entre procesos (Compositor <-> Clientes)
 - `70 SYS_SET_KEYMAP(arg1=char* map_code)` → cambia layout ("US", "ES", "LA")
 
 ## Rendimiento: qué se optimiza y por qué

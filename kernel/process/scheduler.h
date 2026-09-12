@@ -6,8 +6,20 @@
 enum class TaskState {
     READY,      // Task is ready to run
     RUNNING,    // Task is currently executing
-    SLEEPING    // Task is waiting (future use)
+    SLEEPING,   // Task is waiting (future use)
+    DEAD        // Task has terminated
 };
+
+struct VFSNode;
+
+struct FileDescriptor {
+    VFSNode* node;
+    uint32_t offset;
+    uint32_t flags;
+    bool in_use;
+};
+
+constexpr int MAX_PROCESS_FDS = 32;
 
 struct Task {
     uint64_t* stack_pointer; // Saved RSP
@@ -17,6 +29,9 @@ struct Task {
     uint64_t wake_up_time; // For SLEEPING state (ticks)
     uint64_t kernel_stack_top; // TSS.RSP0: Thread-Specific Kernel Stack Top (for Interrupts/Syscalls)
     
+    // Per-Process File Descriptors
+    FileDescriptor fdTable[MAX_PROCESS_FDS];
+
     // Per-Task Event Queue (IPC)
     static const int EVENT_QUEUE_SIZE = 128;
     OSEvent eventQueue[EVENT_QUEUE_SIZE];
@@ -59,4 +74,7 @@ namespace Scheduler {
     
     // Yield current timeslice (voluntary switch)
     void Yield();
+    
+    // Terminate current task
+    void Exit(int exit_code = 0);
 }

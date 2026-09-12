@@ -13,6 +13,8 @@
 #define SYS_READ           2
 #define SYS_MALLOC         3
 #define SYS_FREE           4
+#define SYS_OPEN           5
+#define SYS_CLOSE          6
 #define SYS_UPDATE_SCREEN  10   // Compose and flip
 #define SYS_GET_SCREEN_INFO 11  // Get screen dimensions
 #define SYS_BEEP           12   // Play beep (freq, duration_ms)

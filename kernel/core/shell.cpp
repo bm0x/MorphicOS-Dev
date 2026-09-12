@@ -14,7 +14,6 @@
 #include "../hal/storage/block_device.h"
 #include "../hal/storage/buffer_cache.h"
 #include "../mcl/mcl_parser.h"
-#include "../gui/desktop.h"
 #include "loader.h"
 #include "../process/scheduler.h"
 
@@ -509,10 +508,6 @@ namespace Shell {
             CmdKeymap(nullptr);
         } else if (StartsWith(cmdBuffer, "keymap ")) {
             CmdKeymap(GetArg(cmdBuffer));
-        } else if (kstrcmp(cmdBuffer, "desktop") == 0) {
-            EarlyTerm::Print("Launching desktop...\n");
-            Desktop::Run();
-            EarlyTerm::Print("Returned to shell.\n");
         } else if (kstrcmp(cmdBuffer, "panic") == 0) {
             CmdPanic();
         } else {

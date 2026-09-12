@@ -4,6 +4,8 @@
 #include "../hal/video/early_term.h"
 #include "../hal/arch/x86_64/tss.h"
 #include "../hal/platform.h"
+#include "../arch/common/mmu.h"
+#include "../fs/vfs.h"
 
 extern "C" uint64_t kernel_stack_top; // Boot stack symbol
 
@@ -77,6 +79,11 @@ namespace Scheduler {
         mainTask->state = TaskState::RUNNING; // It's already running!
         mainTask->next = mainTask; // Circular list
         
+        // Per-Process Standard Streams
+        mainTask->fdTable[0].in_use = true;
+        mainTask->fdTable[1].in_use = true;
+        mainTask->fdTable[2].in_use = true;
+
         currentTask = mainTask;
         tasksHead = mainTask;
         
@@ -150,6 +157,11 @@ namespace Scheduler {
         newTask->kernel_stack_top = stackTop;  // TSS needs the actual top
         newTask->state = TaskState::READY;
         
+        // Per-Process Standard Streams
+        newTask->fdTable[0].in_use = true;
+        newTask->fdTable[1].in_use = true;
+        newTask->fdTable[2].in_use = true;
+
         // Insert into circular list after current head
         newTask->next = tasksHead->next;
         tasksHead->next = newTask;
@@ -196,6 +208,11 @@ namespace Scheduler {
         newTask->kernel_stack_top = (uint64_t)kstackBase + 16384; // Store original top for TSS
         newTask->state = TaskState::READY;
         
+        // Per-Process Standard Streams
+        newTask->fdTable[0].in_use = true;
+        newTask->fdTable[1].in_use = true;
+        newTask->fdTable[2].in_use = true;
+
         newTask->next = tasksHead->next;
         tasksHead->next = newTask;
         
@@ -217,6 +234,68 @@ namespace Scheduler {
     void Yield() {
         // Trigger interrupt 0x20 (timer) to force schedule
         __asm__ volatile("int $0x20");
+    }
+
+    void Exit(int exit_code) {
+        (void)exit_code;
+        if (!currentTask || currentTask->id == 0) return;
+
+        bool ints = HAL::Platform::AreInterruptsEnabled();
+        HAL::Platform::DisableInterrupts();
+
+        currentTask->state = TaskState::DEAD;
+
+        if (ints) HAL::Platform::EnableInterrupts();
+
+        Yield();
+        while (1) {
+            __asm__ volatile("hlt");
+        }
+    }
+
+    static void ReapDeadTasks() {
+        if (!tasksHead) return;
+        
+        Task* prev = tasksHead;
+        Task* curr = prev->next;
+        
+        int count = 0;
+        while (curr != tasksHead && count < 64) {
+            count++;
+            if (curr != currentTask && curr != idleTask && curr->state == TaskState::DEAD) {
+                // Unlink curr from circular list
+                prev->next = curr->next;
+                
+                // Close any open file descriptors
+                for (int fd = 3; fd < MAX_PROCESS_FDS; fd++) {
+                    if (curr->fdTable[fd].in_use) {
+                        if (curr->fdTable[fd].node) {
+                            VFS::Close(curr->fdTable[fd].node);
+                        }
+                        curr->fdTable[fd].in_use = false;
+                        curr->fdTable[fd].node = nullptr;
+                    }
+                }
+                
+                // Destroy user page table if distinct from boot CR3
+                if (curr->cr3 && curr->cr3 != tasksHead->cr3) {
+                    MMU::DestroyPageTable(curr->cr3);
+                }
+                
+                // Free kernel stack (allocated as 16384 bytes)
+                if (curr->kernel_stack_top) {
+                    kfree((void*)(curr->kernel_stack_top - 16384));
+                }
+                
+                Task* deadTask = curr;
+                curr = prev->next;
+                
+                kfree(deadTask);
+            } else {
+                prev = curr;
+                curr = curr->next;
+            }
+        }
     }
 
     uint64_t* Schedule(uint64_t* current_rsp) {
@@ -254,20 +333,21 @@ namespace Scheduler {
         }
         
         // Handle case where we looped back to current task
-        // If current is sleeping, we have a problem: ALL tasks are sleeping.
+        // If current is sleeping or dead, switch to Idle Task
         if (next == start) {
              if (currentTask->state == TaskState::SLEEPING) {
                  if (now >= currentTask->wake_up_time) {
                      currentTask->state = TaskState::RUNNING;
                  } else {
-                     // ALL TASKS SLEEPING - Switch to Idle Task
-                     // The Idle Task uses HLT instruction to save CPU power
-                     // It will be preempted when next timer interrupt fires
                      if (idleTask && idleTask != currentTask) {
                          next = idleTask;
                          next->state = TaskState::RUNNING;
                      }
-                     // If idleTask unavailable, current task continues (rare)
+                 }
+             } else if (currentTask->state == TaskState::DEAD) {
+                 if (idleTask && idleTask != currentTask) {
+                     next = idleTask;
+                     next->state = TaskState::RUNNING;
                  }
              }
         }
@@ -288,6 +368,9 @@ namespace Scheduler {
         // CRITICAL: Update TSS RSP0 so next Interrupt/Syscall uses THIS task's stack
         TSS::SetKernelStack(currentTask->kernel_stack_top);
         
+        // Reclaim memory from any previously terminated tasks
+        ReapDeadTasks();
+
         return currentTask->stack_pointer;
     }
     

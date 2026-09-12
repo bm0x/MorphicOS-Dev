@@ -285,3 +285,32 @@ sys_drm_atomic_commit:
     mov rax, SYS_DRM_ATOMIC_COMMIT
     syscall
     ret
+
+global sys_write
+sys_write:
+    ; rdi = fd, rsi = buf, rdx = count
+    mov rax, 1
+    syscall
+    ret
+
+global sys_read
+sys_read:
+    ; rdi = fd, rsi = buf, rdx = count
+    mov rax, 2
+    syscall
+    ret
+
+global sys_open
+sys_open:
+    ; rdi = path, rsi = flags
+    mov rax, 5
+    syscall
+    ret
+
+global sys_close
+sys_close:
+    ; rdi = fd
+    mov rax, 6
+    syscall
+    ret
+

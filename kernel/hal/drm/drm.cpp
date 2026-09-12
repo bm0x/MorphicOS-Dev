@@ -372,12 +372,13 @@ namespace DRM {
     }
     
     static void WaitVBlankVGA() {
-        // Wait for end of current retrace (if in retrace)
-        while (inb(0x3DA) & 0x08) {
+        // Safe bounded wait to prevent infinite hang on UEFI/virtualized VGA
+        uint32_t timeout = 2000;
+        while ((inb(0x3DA) & 0x08) && --timeout) {
             asm volatile("pause");
         }
-        // Wait for start of retrace
-        while (!(inb(0x3DA) & 0x08)) {
+        timeout = 50000;
+        while (!(inb(0x3DA) & 0x08) && --timeout) {
             asm volatile("pause");
         }
     }

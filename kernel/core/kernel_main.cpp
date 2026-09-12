@@ -244,30 +244,46 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     EarlyTerm::Print("\n[Compositor.mpk] Loading...\n");
     UART::Write("\n");
     
-    // Call loader directly (loader.h included at top)
-    LoadedProcess proc = PackageLoader::Load("/initrd/compositor.mpk");
-    
-    if (proc.error_code == 0) {
-        UART::Write("[Compositor.mpk] Load success. Entry: ");
-        UART::WriteHex(proc.entry_point);
-        UART::Write(" Stack: ");
-        UART::WriteHex(proc.stack_top);
-        UART::Write("\n");
-        
-        // Create User Task
-        // For the compositor (AUTO-TEST), we use the current kernel CR3 (shared space)
-        uint64_t cr3;
-        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-        Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, cr3, proc.arg1);
+    // Create dedicated address space (PML4) for the compositor process
+    uint64_t compCR3 = MMU::CreatePageTable();
+    if (!compCR3) {
+        UART::Write("!!! Compositor.mpk: MMU::CreatePageTable failed !!!\n");
     } else {
-        UART::Write("!!! Compositor.mpk: PackageLoader::Load failed: ");
-        UART::WriteDec(proc.error_code);
-        UART::Write(" !!!\n");
+        bool ints = HAL::Platform::AreInterruptsEnabled();
+        HAL::Platform::DisableInterrupts();
+
+        uint64_t kernelCR3 = MMU::GetCurrentPageTable();
+        MMU::SwitchPageTable(compCR3);
+
+        const uint64_t COMP_BASE = 0x600000000000ULL;
+        LoadedProcess proc = PackageLoader::Load("/initrd/compositor.mpk", COMP_BASE);
+
+        MMU::SwitchPageTable(kernelCR3);
+
+        if (ints) HAL::Platform::EnableInterrupts();
+
+        if (proc.error_code == 0) {
+            UART::Write("[Compositor.mpk] Load success. Entry: ");
+            UART::WriteHex(proc.entry_point);
+            UART::Write(" Stack: ");
+            UART::WriteHex(proc.stack_top);
+            UART::Write(" CR3: ");
+            UART::WriteHex(compCR3);
+            UART::Write("\n");
+            
+            // Create User Task with its dedicated CR3
+            Scheduler::CreateUserTask((void(*)())proc.entry_point, (void*)proc.stack_top, compCR3, proc.arg1);
+        } else {
+            UART::Write("!!! Compositor.mpk: PackageLoader::Load failed: ");
+            UART::WriteDec(proc.error_code);
+            UART::Write(" !!!\n");
+            MMU::DestroyPageTable(compCR3);
+        }
+
+        EarlyTerm::Print("[Compositor.mpk] Load returned: ");
+        EarlyTerm::PrintDec(proc.error_code);
+        EarlyTerm::Print("\n");
     }
-    
-    EarlyTerm::Print("[Compositor.mpk] Load returned: ");
-    EarlyTerm::PrintDec(proc.error_code);
-    EarlyTerm::Print("\n");
     // =======================================================================
     // END AUTO-TEST
     // =======================================================================

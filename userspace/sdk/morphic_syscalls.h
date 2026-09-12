@@ -61,6 +61,10 @@ void sys_shutdown();
 void sys_reboot();
 
 // File operations
+int sys_open(const char* path, uint32_t flags);
+int sys_close(int fd);
+int sys_read(int fd, void* buffer, uint32_t count);
+int sys_write(int fd, const void* buffer, uint32_t count);
 int sys_read_file(const char* path, void* buffer, int max_size);
 void sys_yield();
 

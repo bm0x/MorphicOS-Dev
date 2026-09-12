@@ -15,11 +15,11 @@ fi
 
 find_ovmf() {
     local candidates=(
-        "./OVMF.fd"
         "/usr/share/ovmf/OVMF.fd"
         "/usr/share/qemu/OVMF.fd"
         "/usr/share/edk2/x64/OVMF.fd"
         "/usr/share/edk2-ovmf/x64/OVMF.fd"
+        "./OVMF.fd"
         "/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
         "/usr/local/share/qemu/edk2-x86_64-code.fd"
     )
@@ -48,7 +48,7 @@ else
     CPUS=${CPUS:-4}
 fi
 RAM=${RAM:-2048M}
-GL=${GL:-1}
+GL=${GL:-0}
 FULLSCREEN=${FULLSCREEN:-0}
 
 if [ ! -f "$ISO" ]; then
@@ -142,6 +142,9 @@ case "$DISPLAY_BACKEND" in
             DISPLAY_OPTS="-display sdl"
         fi
         ;;
+    none)
+        DISPLAY_OPTS="-display none"
+        ;;
     *)
         echo "Error: unsupported DISPLAY_BACKEND=$DISPLAY_BACKEND"
         exit 1
@@ -169,15 +172,31 @@ if [ "$AUDIO_BACKEND" = "auto" ]; then
     fi
 fi
 
-MACHINE_OPTS="-machine pc,i8042=on"
+MACHINE_OPTS="-machine pc"
 AUDIO_OPTS=""
 if [ -n "$AUDIO_BACKEND" ] && [ "$AUDIO_BACKEND" != "none" ] && echo "$AUDIO_HELP" | grep -qw "$AUDIO_BACKEND"; then
-    MACHINE_OPTS="-machine pc,i8042=on,pcspk-audiodev=snd0"
     AUDIO_OPTS="-audiodev ${AUDIO_BACKEND},id=snd0"
+    if qemu-system-x86_64 -machine pc,help 2>/dev/null | grep -qw "pcspk-audiodev"; then
+        MACHINE_OPTS="-machine pc,pcspk-audiodev=snd0"
+    fi
 fi
 
 # Use standard VGA (good compatibility with BGA driver), but enable GL on the GTK frontend
 VGA_OPTS="-vga std"
+
+# Configure drive options based on image type
+DRIVE_OPTS=""
+if [[ "$ISO" == *.iso ]]; then
+    DRIVE_OPTS="-cdrom $ISO"
+    if [ -f "debug_disk.img" ]; then
+        DRIVE_OPTS="$DRIVE_OPTS -drive format=raw,file=debug_disk.img,if=ide,index=3,media=disk"
+    fi
+else
+    DRIVE_OPTS="-drive format=raw,file=$ISO,index=0,media=disk"
+    if [ -f "debug_disk.img" ]; then
+        DRIVE_OPTS="$DRIVE_OPTS -drive format=raw,file=debug_disk.img,if=ide,index=3,media=disk"
+    fi
+fi
 
 # Build and run QEMU command (expanded safely)
 echo "Launching QEMU..."
@@ -185,8 +204,7 @@ cd "$(dirname "$0")"
 
 exec qemu-system-x86_64 \
     -bios "$OVMF" \
-    -drive format=raw,file="$ISO",index=0,media=disk \
-    -drive format=raw,file="debug_disk.img",index=1,media=disk \
+    $DRIVE_OPTS \
     -m $RAM \
     $VGA_OPTS \
     $DISPLAY_OPTS \
