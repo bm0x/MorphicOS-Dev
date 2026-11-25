@@ -41,78 +41,98 @@ LoadedProcess PackageLoader::Load(const char* path, uint64_t base_addr) {
         result.error_code = -3; return result;
     }
     
-    // Validate Bounds (Simplified)
-    if (header.code_off > node->size || header.code_off + header.code_size > node->size) {
+    // Validate Bounds (Overflow-safe)
+    if (header.code_size == 0 ||
+        header.code_off > node->size ||
+        header.code_size > (node->size - header.code_off)) {
         result.error_code = -4; return result;
     }
-    
-    // Alloc Memory (+Padding for .bss section)
-    // The binary's .bss section (uninitialized data) is not included in code_size
-    // but needs virtual memory. The userspace runtime has a 2MB heap in .bss.
-    // We reserve extra space (BSS_RESERVE) to cover typical .bss sizes.
-    constexpr uint64_t BSS_RESERVE = 0x400000; // 4MB for .bss sections
-    constexpr uint64_t ASSETS_GAP  = 0x400000; // 4MB gap before assets (after .bss)
-    
-    uint64_t alloc_size = header.code_size + BSS_RESERVE + ASSETS_GAP + header.assets_size; 
-    uint64_t pages_needed = (alloc_size + 0xFFF) / 0x1000;
-    
-    void* phys_buffer = PMM::AllocContiguous(pages_needed);
+    if (header.assets_size > 0 &&
+        (header.assets_off > node->size || header.assets_size > (node->size - header.assets_off))) {
+        result.error_code = -4; return result;
+    }
+
+    uint64_t user_base_addr = (base_addr != 0) ? base_addr : 0x600000000000ULL;
+
+    // 1. Allocate Code + .bss pages (Canonical region: 0x6000_0000_0000)
+    // Code pages get RX/RW as required by flat binary; pure .bss pages get RW+NX (non-executable).
+    constexpr uint64_t BSS_RESERVE = 0x400000ULL; // 4MB for .bss (covers 2MB SDK pool + globals)
+    uint64_t code_pages = (header.code_size + 0xFFFULL) / 0x1000ULL;
+    uint64_t bss_pages  = BSS_RESERVE / 0x1000ULL;
+    uint64_t total_image_pages = code_pages + bss_pages;
+
+    void* phys_buffer = PMM::AllocContiguous(total_image_pages);
     if (!phys_buffer) {
         result.error_code = -5; return result;
     }
-    
+
     uint64_t phys_base = (uint64_t)phys_buffer;
-    constexpr uint64_t KERNEL_RESERVED_SIZE = 0x10000000; // 256MB
+    constexpr uint64_t KERNEL_RESERVED_SIZE = 0x10000000ULL; // 256MB
     if (phys_base < KERNEL_RESERVED_SIZE) {
+        PMM::FreePages(phys_buffer, total_image_pages);
         result.error_code = -10; return result;
     }
-    
+
     uint8_t* code_dest_phys = (uint8_t*)phys_base;
-    kmemset(code_dest_phys, 0, pages_needed * 0x1000);
-    
-    // Load Code
+    kmemset(code_dest_phys, 0, total_image_pages * 0x1000ULL);
     VFS::Read(node, header.code_off, header.code_size, code_dest_phys);
 
-    // Calc Assets Dest - placed AFTER code + BSS_RESERVE + alignment gap
-    // This ensures assets don't overlap with the .bss section
-    uint8_t* assets_dest_phys = code_dest_phys + header.code_size + BSS_RESERVE + ASSETS_GAP;
-    assets_dest_phys = (uint8_t*)(((uint64_t)assets_dest_phys + 0xFFF) & ~0xFFFULL); // Page align
-    
-    if (header.assets_size > 0) {
-        VFS::Read(node, header.assets_off, header.assets_size, assets_dest_phys);
+    for (uint64_t i = 0; i < total_image_pages; i++) {
+        uint64_t phys_addr = phys_base + (i * 0x1000ULL);
+        uint64_t virt_addr = user_base_addr + (i * 0x1000ULL);
+        // Pure .bss pages strictly enforce NX (non-executable)
+        uint32_t page_flags = (i < code_pages)
+            ? (PAGE_USER | PAGE_WRITABLE | PAGE_EXECUTABLE | PAGE_PRESENT)
+            : (PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
+        if (!MMU::MapPage(virt_addr, phys_addr, page_flags)) {
+            result.error_code = -6; return result;
+        }
     }
-    
-    uint64_t user_base_addr = base_addr;
-    if (user_base_addr == 0) user_base_addr = 0x600000000000ULL;
 
-    // Map Pages
-    for (uint64_t i = 0; i < pages_needed; i++) {
-        uint64_t phys_addr = phys_base + (i * 0x1000);
-        uint64_t virt_addr = user_base_addr + (i * 0x1000);
-        MMU::MapPage(virt_addr, phys_addr, 
-                     PAGE_USER | PAGE_WRITABLE | PAGE_EXECUTABLE | PAGE_PRESENT);
+    // 2. Map MPK Assets in dedicated read-only + NX window (0x6000_2000_0000 per Architecture Spec §2)
+    uint64_t assets_virt_base = 0x600020000000ULL;
+    uint8_t* assets_dest = nullptr;
+    if (header.assets_size > 0) {
+        uint64_t asset_pages = (header.assets_size + 0xFFFULL) / 0x1000ULL;
+        void* assets_phys = PMM::AllocContiguous(asset_pages);
+        if (!assets_phys) {
+            result.error_code = -5; return result;
+        }
+        kmemset(assets_phys, 0, asset_pages * 0x1000ULL);
+        VFS::Read(node, header.assets_off, header.assets_size, (uint8_t*)assets_phys);
+
+        for (uint64_t i = 0; i < asset_pages; i++) {
+            // Read-Only + NX (PAGE_USER | PAGE_PRESENT)
+            if (!MMU::MapPage(assets_virt_base + (i * 0x1000ULL),
+                              (uint64_t)assets_phys + (i * 0x1000ULL),
+                              PAGE_USER | PAGE_PRESENT)) {
+                result.error_code = -6; return result;
+            }
+        }
+        assets_dest = (uint8_t*)assets_virt_base;
     }
-    
+
     uint8_t* code_dest = (uint8_t*)user_base_addr;
-    uint64_t assets_offset = (uint64_t)assets_dest_phys - (uint64_t)code_dest_phys;
-    uint8_t* assets_dest = (uint8_t*)(user_base_addr + assets_offset);
-    
-    // Alloc Stack in isolated userspace high virtual region (0x6FFFFFFF0000)
-    // Completely separated from code, BSS, and assets to prevent collision.
+
+    // 3. Alloc Stack in isolated userspace high virtual region (0x6FFFFFFF0000)
+    // Leave guard page at stack_base_virt - 4096 unmapped (PROT_NONE) to catch stack overflows.
     constexpr uint64_t USER_STACK_TOP = 0x6FFFFFFF0000ULL;
     constexpr uint64_t USER_STACK_PAGES = 16; // 64KB stack
-    uint64_t stack_base_virt = USER_STACK_TOP - (USER_STACK_PAGES * 4096);
-    
+    uint64_t stack_base_virt = USER_STACK_TOP - (USER_STACK_PAGES * 4096ULL);
+    MMU::UnmapPage(stack_base_virt - 4096ULL); // Explicit stack guard page
+
     for (uint64_t i = 0; i < USER_STACK_PAGES; i++) {
         void* phys_page = PMM::AllocPage();
         if (!phys_page) {
             result.error_code = -5; return result;
         }
-        
-        uint64_t stack_page_virt = stack_base_virt + (i * 4096);
-        if (!MMU::MapPage(stack_page_virt, (uint64_t)phys_page, 
-                     PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT)) {
-             result.error_code = -6; return result;
+        kmemset(phys_page, 0, 4096);
+
+        uint64_t stack_page_virt = stack_base_virt + (i * 4096ULL);
+        if (!MMU::MapPage(stack_page_virt, (uint64_t)phys_page,
+                          PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT)) {
+            PMM::FreePage(phys_page);
+            result.error_code = -6; return result;
         }
     }
     

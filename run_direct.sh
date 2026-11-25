@@ -52,9 +52,17 @@ GL=${GL:-0}
 FULLSCREEN=${FULLSCREEN:-0}
 
 if [ ! -f "$ISO" ]; then
-    echo "Error: disk image not found: $ISO"
-    echo "Build first with: make or make iso"
-    exit 1
+    if [ "$ISO" = "morphic_os.iso" ] && [ -f "morphic.img" ]; then
+        echo "Note: morphic_os.iso not found, falling back to morphic.img"
+        ISO="morphic.img"
+    elif [ "$ISO" = "morphic.img" ] && [ -f "morphic_os.iso" ]; then
+        echo "Note: morphic.img not found, falling back to morphic_os.iso"
+        ISO="morphic_os.iso"
+    else
+        echo "Error: disk image not found: $ISO"
+        echo "Build first with: make or make iso"
+        exit 1
+    fi
 fi
 
 echo "========================================"

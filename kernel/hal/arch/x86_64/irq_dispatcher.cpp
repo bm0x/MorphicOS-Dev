@@ -19,6 +19,11 @@ struct Registers {
 #include "../../../process/scheduler.h"
 
 extern "C" uint64_t* GenericIRQHandler(Registers* regs) {
+    // Cooperative yield vector (does not come from 8259 PIC or advance PIT clock)
+    if (regs->interrupt_number == 0x81) {
+        return Scheduler::Schedule((uint64_t*)regs);
+    }
+
     uint64_t irq = regs->interrupt_number - 32;
 
     if (irq >= 8) {

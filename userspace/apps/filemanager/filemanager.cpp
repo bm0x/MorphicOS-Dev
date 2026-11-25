@@ -3,20 +3,20 @@
 
 #include "filemanager.h"
 
-// Colors - Dark Modern Theme
-#define COL_BG           0xFF1A1A2E   // Dark blue-gray background
-#define COL_SIDEBAR      0xFF16213E   // Darker sidebar
-#define COL_HEADER       0xFF0F3460   // Header/accent
-#define COL_SELECTED     0xFF3282B8   // Selection blue
-#define COL_HOVER        0xFF252542   // Hover state
-#define COL_TEXT         0xFFE8E8E8   // Light text
-#define COL_TEXT_DIM     0xFF888888   // Dimmed text
-#define COL_BORDER       0xFF2D2D44   // Borders
-#define COL_FOLDER       0xFFF9A825   // Folder yellow/orange
-#define COL_FILE         0xFF64B5F6   // File blue
-#define COL_BTN_PRIMARY  0xFF00B894   // Green button
-#define COL_BTN_SECONDARY 0xFF2D3436  // Secondary button
-#define COL_STORAGE_BAR  0xFF00CEC9   // Storage bar teal
+// Colors - MorphicUI v2 Glass Dark Theme
+#define COL_BG            0xFF0B101B
+#define COL_SIDEBAR       0xFF111827
+#define COL_HEADER        0xFF162036
+#define COL_SELECTED      0xFF0284C7
+#define COL_HOVER         0xFF1E293B
+#define COL_TEXT          0xFFF1F5F9
+#define COL_TEXT_DIM      0xFF94A3B8
+#define COL_BORDER        0xFF28354D
+#define COL_FOLDER        0xFFFBBF24
+#define COL_FILE          0xFF38BDF8
+#define COL_BTN_PRIMARY   0xFF38BDF8
+#define COL_BTN_SECONDARY 0xFF1E293B
+#define COL_STORAGE_BAR   0xFF34D399
 
 // Utility functions
 static void fm_memset(void* ptr, int val, int size) {

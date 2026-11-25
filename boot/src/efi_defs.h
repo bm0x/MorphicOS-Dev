@@ -176,8 +176,28 @@ typedef EFI_STATUS (EFIAPI *EFI_GET_MEMORY_MAP)(UINTN *MemoryMapSize, EFI_MEMORY
 typedef EFI_STATUS (EFIAPI *EFI_ALLOCATE_POOL)(EFI_MEMORY_TYPE PoolType, UINTN Size, VOID **Buffer);
 typedef EFI_STATUS (EFIAPI *EFI_FREE_POOL)(VOID *Buffer);
 typedef EFI_STATUS (EFIAPI *EFI_EXIT_BOOT_SERVICES)(EFI_HANDLE ImageHandle, UINTN MapKey);
-// LocateProtocol
+// LocateProtocol & HandleProtocol
 typedef EFI_STATUS (EFIAPI *EFI_LOCATE_PROTOCOL)(EFI_GUID *Protocol, VOID *Registration, VOID **Interface);
+typedef EFI_STATUS (EFIAPI *EFI_HANDLE_PROTOCOL)(EFI_HANDLE Handle, EFI_GUID *Protocol, VOID **Interface);
+
+#define EFI_LOADED_IMAGE_PROTOCOL_GUID \
+    { 0x5B1B31A1, 0x9562, 0x11d2, {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B} }
+
+typedef struct {
+    UINT32                  Revision;
+    EFI_HANDLE              ParentHandle;
+    struct EFI_SYSTEM_TABLE *SystemTable;
+    EFI_HANDLE              DeviceHandle;
+    VOID                    *FilePath;
+    VOID                    *Reserved;
+    UINT32                  LoadOptionsSize;
+    VOID                    *LoadOptions;
+    VOID                    *ImageBase;
+    UINT64                  ImageSize;
+    EFI_MEMORY_TYPE         ImageCodeType;
+    EFI_MEMORY_TYPE         ImageDataType;
+    VOID                    *Unload;
+} EFI_LOADED_IMAGE_PROTOCOL;
 
 
 typedef struct EFI_BOOT_SERVICES {
@@ -206,7 +226,7 @@ typedef struct EFI_BOOT_SERVICES {
     void*               InstallProtocolInterface;
     void*               ReinstallProtocolInterface;
     void*               UninstallProtocolInterface;
-    void*               HandleProtocol;
+    EFI_HANDLE_PROTOCOL HandleProtocol;
     void*               Reserved;
     void*               RegisterProtocolNotify;
     void*               LocateHandle;

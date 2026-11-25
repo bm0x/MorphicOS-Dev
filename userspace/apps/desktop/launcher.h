@@ -2,255 +2,237 @@
 #include "compositor.h"
 #include "../../sdk/morphic_syscalls.h"
 
-// Define external sys_spawn if not in header
 extern "C" int sys_spawn(const char* path);
 
 struct AppItem {
     char name[32];
     char mpk_path[64];
-    uint32_t color;
+    uint32_t colorTop;
+    uint32_t colorBot;
     int x, y, w, h;
 };
 
 class Launcher {
 public:
-    bool spawnPending;  // Prevent multiple spawns
-    
+    bool spawnPending;
+
     void Init() {
         spawnPending = false;
-        // Scan /initrd/ for .mpk files dynamically
         ScanApps();
     }
-    
+
     void ScanApps() {
         appCount = 0;
-        
-        // Scan initrd for installed apps
-        DirEntry entries[32];
-        int count = sys_readdir("/initrd", entries, 32);
-        if (count < 0) {
-            return;
-        }
-        
-        for (int i = 0; i < count && appCount < 16; i++) {
-            // Check if it's an .mpk file
-            if (entries[i].type == 0) { // File
-                if (StrCmp(entries[i].name, ".") == 0 || StrCmp(entries[i].name, "..") == 0) continue;
-                if (EndsWith(entries[i].name, ".mpk")) {
-                    // Skip compositor packages - launching another compositor instance is invalid.
-                    if (StrCmp(entries[i].name, "compositor.mpk") == 0) continue;
-                    
-                    // Add to apps list
-                    BuildAppItem(entries[i].name, "/initrd/");
-                }
-            }
-        }
-        
-        // TODO: Future - also scan /usr/apps/ for installed apps from debug_disk
+        ScanDirectory("/initrd");
+        ScanDirectory("/data/apps");
     }
 
     void Draw(int screenW, int screenH) {
-        // Full screen overlay
-        // Opaque dark background for deterministic rendering on software path
-        Compositor::DrawRect(0, 0, screenW, screenH, 0xFF101418);
-        
-        // Search Bar (Rounded Rect approximation)
-        int searchW = 300;
-        int searchH = 34;
-        int searchX = (screenW - searchW) / 2;
-        int searchY = 60;
-        Compositor::DrawRect(searchX, searchY, searchW, searchH, 0xFF2A3038);
-        // Search Text
-        const char* sTxt = "Search";
-        Compositor::DrawText(searchX + 110, searchY + 9, sTxt, 0xFFBFC7D4, 1);
+        // Fast opaque Glass Dark gradient backdrop (rendered cleanly into BACK_BUFFER, zero flicker)
+        Compositor::DrawGradientV(0, 0, screenW, screenH, 0xFF0A1122, 0xFF0E162B);
+        Compositor::DrawRect(0, 28, screenW, 1, 0xFF1F2D45);
 
-        // App Grid
-        // 5 columns, centered
-        int cols = 5;
-        int iconSize = 80; // Standard icon size
-        int gapX = 60;
-        int gapY = 60;
-        
-        int totalRowW = (cols * iconSize) + ((cols - 1) * gapX);
+        // Header Title
+        const char* hdr = "Morphic App Launcher";
+        int hdrW = Compositor::MeasureText(hdr, 2);
+        Compositor::DrawText((screenW - hdrW) / 2, 54, hdr, 0xFFF1F5F9, 2);
+
+        // Glass Search Pill
+        int searchW = 380;
+        int searchH = 40;
+        int searchX = (screenW - searchW) / 2;
+        int searchY = 104;
+        Compositor::DrawRoundedRect(searchX, searchY, searchW, searchH, 20, 0xFF141D30);
+        Compositor::DrawRoundedBorder(searchX, searchY, searchW, searchH, 20, 0x4438BDF8);
+        Compositor::DrawCircle(searchX + 20, searchY + 20, 5, 0xFF38BDF8);
+        Compositor::DrawText(searchX + 36, searchY + 12, "Select an application to launch...", 0xFF94A3B8, 1);
+
+        // App Grid (up to 5 columns, centered)
+        int cols = appCount < 5 ? (appCount > 0 ? appCount : 1) : 5;
+        int cardW = 116;
+        int cardH = 124;
+        int iconSize = 68;
+        int gapX = 28;
+        int gapY = 28;
+
+        int totalRowW = (cols * cardW) + ((cols - 1) * gapX);
         int gridStartX = (screenW - totalRowW) / 2;
-        int gridStartY = 160;
+        int gridStartY = 184;
 
         for (int i = 0; i < appCount; i++) {
-            int col = i % cols;
-            int row = i / cols;
-            
-            int cx = gridStartX + col * (iconSize + gapX);
-            int cy = gridStartY + row * (iconSize + gapY);
-            
-            // Icon Background color based on app name hash
-            uint32_t iconColor = GetAppColor(apps[i].name);
-            
-            Compositor::DrawRect(cx, cy, iconSize, iconSize, iconColor);
-            
-            // Icon top highlight (opaque to avoid alpha-path artifacts)
-            Compositor::DrawRect(cx, cy, iconSize, 8, 0xFFEAEAEA);
+            int col = i % 5;
+            int row = i / 5;
+            int cx = gridStartX + col * (cardW + gapX);
+            int cy = gridStartY + row * (cardH + gapY);
 
-            // Persist exact hit-box from draw pass for consistent click behavior.
+            // Glass tile card
+            Compositor::DrawSoftShadow(cx, cy, cardW, cardH, 16, 10, 75);
+            Compositor::DrawRoundedRect(cx, cy, cardW, cardH, 16, 0xEA131C2F);
+            Compositor::DrawRoundedBorder(cx, cy, cardW, cardH, 16, 0x2EFFFFFF);
+
+            // Gradient Squircle Icon
+            int ix = cx + (cardW - iconSize) / 2;
+            int iy = cy + 14;
+            Compositor::DrawRoundedGradientV(ix, iy, iconSize, iconSize, 18, apps[i].colorTop, apps[i].colorBot);
+            Compositor::DrawRoundedBorder(ix, iy, iconSize, iconSize, 18, 0x44FFFFFF);
+
+            // Crisp 2-letter monogram
+            char mono[3] = {apps[i].name[0], apps[i].name[1] ? apps[i].name[1] : '\0', '\0'};
+            int mw = Compositor::MeasureText(mono, 2);
+            Compositor::DrawText(ix + (iconSize - mw) / 2, iy + (iconSize - 32) / 2, mono, 0xFFFFFFFF, 2);
+
+            // Hitbox covers entire card
             apps[i].x = cx;
             apps[i].y = cy;
-            apps[i].w = iconSize;
-            apps[i].h = iconSize;
-            
-            // Icon Label
-            int textLen = StrLen(apps[i].name);
-            int textW = textLen * 8; // Font size 1
-            int textX = cx + (iconSize - textW) / 2;
-            int textY = cy + iconSize + 10;
-            
-            Compositor::DrawText(textX, textY, apps[i].name, 0xFFE0E0E0, 1);
+            apps[i].w = cardW;
+            apps[i].h = cardH;
+
+            // Centered App Label
+            int textW = Compositor::MeasureText(apps[i].name, 1);
+            int textX = cx + (cardW - textW) / 2;
+            int textY = iy + iconSize + 12;
+            Compositor::DrawText(textX, textY, apps[i].name, 0xFFE2E8F0, 1);
         }
-        
-        // Pagination Dots (Bottom Center)
-        int dotsY = screenH - 120; // Above dock
-        int dotSize = 8;
-        int dotGap = 12;
-        int pages = 1; // Dynamic based on app count
-        int totalDotsW = (pages * dotSize) + ((pages - 1) * dotGap);
-        int dotX = (screenW - totalDotsW) / 2;
-        
-        // Page 1 (Active) - White
-        Compositor::DrawRect(dotX, dotsY, dotSize, dotSize, 0xFFFFFFFF);
-        
-        // Power Buttons (Bottom Right)
-        int btnW = 70;
-        int btnH = 28;
-        int btnY = screenH - 80;
-        int btnGap = 10;
-        
-        // Shutdown button (red)
-        int shutdownX = screenW - btnW - 20;
-        Compositor::DrawRect(shutdownX, btnY, btnW, btnH, 0xE0B02020);
-        Compositor::DrawText(shutdownX + 8, btnY + 8, "Apagar", 0xFFFFFFFF, 1);
-        
-        // Reboot button (blue)
+
+        // Bottom Power Controls Pill Bar
+        int btnW = 104;
+        int btnH = 34;
+        int btnY = screenH - 104;
+        int btnGap = 14;
+
+        int shutdownX = screenW - btnW - 28;
+        Compositor::DrawRoundedGradientV(shutdownX, btnY, btnW, btnH, 10, 0xFFFB7185, 0xFFE11D48);
+        Compositor::DrawRoundedBorder(shutdownX, btnY, btnW, btnH, 10, 0x44FFFFFF);
+        Compositor::DrawText(shutdownX + 28, btnY + 9, "Apagar", 0xFFFFFFFF, 1);
+
         int rebootX = shutdownX - btnW - btnGap;
-        Compositor::DrawRect(rebootX, btnY, btnW, btnH, 0xE02060A0);
-        Compositor::DrawText(rebootX + 6, btnY + 8, "Reiniciar", 0xFFFFFFFF, 1);
+        Compositor::DrawRoundedGradientV(rebootX, btnY, btnW, btnH, 10, 0xFF38BDF8, 0xFF0284C7);
+        Compositor::DrawRoundedBorder(rebootX, btnY, btnW, btnH, 10, 0x44FFFFFF);
+        Compositor::DrawText(rebootX + 16, btnY + 9, "Reiniciar", 0xFF06101C, 1);
     }
 
     bool HandleClick(int mx, int my) {
         int screenW = Compositor::GetWidth();
         int screenH = Compositor::GetHeight();
-        
-        // Power Buttons hit test
-        int btnW = 70;
-        int btnH = 28;
-        int btnY = screenH - 80;
-        int btnGap = 10;
-        
-        int shutdownX = screenW - btnW - 20;
+
+        int btnW = 104;
+        int btnH = 34;
+        int btnY = screenH - 104;
+        int btnGap = 14;
+
+        int shutdownX = screenW - btnW - 28;
         int rebootX = shutdownX - btnW - btnGap;
-        
-        // Shutdown button
+
         if (mx >= shutdownX && mx < shutdownX + btnW && my >= btnY && my < btnY + btnH) {
             sys_shutdown();
             return true;
         }
-        
-        // Reboot button  
         if (mx >= rebootX && mx < rebootX + btnW && my >= btnY && my < btnY + btnH) {
             sys_reboot();
             return true;
         }
-        
-        // App grid hit test (uses geometry generated in Draw for 1:1 mapping)
+
         for (int i = 0; i < appCount; i++) {
-            int cx = apps[i].x;
-            int cy = apps[i].y;
-            int cw = apps[i].w;
-            int ch = apps[i].h;
-
-            if (cw <= 0 || ch <= 0) {
-                continue;
-            }
-
-            if (mx >= cx && mx < cx + cw && my >= cy && my < cy + ch) {
-                // Launch! But only if not already spawning
+            if (apps[i].w <= 0 || apps[i].h <= 0) continue;
+            if (mx >= apps[i].x && mx < apps[i].x + apps[i].w &&
+                my >= apps[i].y && my < apps[i].y + apps[i].h) {
                 if (apps[i].mpk_path[0] && !spawnPending) {
-                    spawnPending = true;  // Prevent double-click spawns
+                    spawnPending = true;
                     sys_spawn(apps[i].mpk_path);
                     return true;
                 }
             }
         }
-        return false; // Not handled, or background click
+        return false;
     }
 
 private:
-    AppItem apps[16];
+    AppItem apps[20];
     int appCount;
 
-    int StrLen(const char* s) {
-        int l=0; while(s[l]) l++; return l;
+    void ScanDirectory(const char* dirPath) {
+        DirEntry entries[32];
+        int count = sys_readdir(dirPath, entries, 32);
+        if (count <= 0) return;
+
+        char base[64];
+        int p = 0;
+        for (int i = 0; dirPath[i] && p < 61; i++) base[p++] = dirPath[i];
+        if (p > 0 && base[p - 1] != '/') base[p++] = '/';
+        base[p] = '\0';
+
+        for (int i = 0; i < count && appCount < 20; i++) {
+            if (entries[i].type != 0) continue;
+            if (StrCmp(entries[i].name, ".") == 0 || StrCmp(entries[i].name, "..") == 0) continue;
+            if (!EndsWith(entries[i].name, ".mpk")) continue;
+            if (StrCmp(entries[i].name, "compositor.mpk") == 0) continue;
+            if (StrCmp(entries[i].name, "display_probe.mpk") == 0) continue;
+            if (AlreadyListed(entries[i].name)) continue;
+            BuildAppItem(entries[i].name, base);
+        }
     }
-    
+
+    bool AlreadyListed(const char* filename) {
+        char candidate[32];
+        int i = 0;
+        while (filename[i] && filename[i] != '.' && i < 31) {
+            candidate[i] = filename[i];
+            i++;
+        }
+        candidate[i] = '\0';
+        if (candidate[0] >= 'a' && candidate[0] <= 'z') candidate[0] = (char)(candidate[0] - 'a' + 'A');
+        for (int k = 0; k < appCount; k++) {
+            if (StrCmp(apps[k].name, candidate) == 0) return true;
+        }
+        return false;
+    }
+
+    int StrLen(const char* s) { int l = 0; while (s[l]) l++; return l; }
+
     bool EndsWith(const char* str, const char* suffix) {
-        int strLen = StrLen(str);
-        int sufLen = StrLen(suffix);
+        int strLen = StrLen(str), sufLen = StrLen(suffix);
         if (sufLen > strLen) return false;
-        
         for (int i = 0; i < sufLen; i++) {
             if (str[strLen - sufLen + i] != suffix[i]) return false;
         }
         return true;
     }
-    
+
     int StrCmp(const char* a, const char* b) {
         while (*a && *b && *a == *b) { a++; b++; }
-        return *a - *b;
+        return (unsigned char)*a - (unsigned char)*b;
     }
-    
+
     void BuildAppItem(const char* filename, const char* basePath) {
         AppItem& app = apps[appCount];
-        
-        // Build full path
         int i = 0;
         const char* p = basePath;
         while (*p && i < 63) app.mpk_path[i++] = *p++;
         p = filename;
         while (*p && i < 63) app.mpk_path[i++] = *p++;
-        app.mpk_path[i] = 0;
-        
-        // Extract name (remove .mpk extension and capitalize first letter)
+        app.mpk_path[i] = '\0';
+
         i = 0;
         while (filename[i] && filename[i] != '.' && i < 31) {
             app.name[i] = filename[i];
             i++;
         }
-        app.name[i] = 0;
-        
-        // Capitalize first letter
+        app.name[i] = '\0';
         if (app.name[0] >= 'a' && app.name[0] <= 'z') {
-            app.name[0] = app.name[0] - 'a' + 'A';
+            app.name[0] = (char)(app.name[0] - 'a' + 'A');
         }
-        
-        app.color = GetAppColor(app.name);
-        app.x = 0;
-        app.y = 0;
-        app.w = 0;
-        app.h = 0;
-        
+
+        AssignGradient(app.name, app.colorTop, app.colorBot);
+        app.x = app.y = app.w = app.h = 0;
         appCount++;
     }
-    
-    uint32_t GetAppColor(const char* name) {
-        // Simple hash-based color
-        uint32_t hash = 0;
-        while (*name) {
-            hash = hash * 31 + *name;
-            name++;
-        }
-        
-        // Generate color from hash (avoid too bright or too dark)
-        uint8_t r = 40 + (hash % 160);
-        uint8_t g = 40 + ((hash >> 8) % 160);
-        uint8_t b = 40 + ((hash >> 16) % 160);
-        
-        return 0xFF000000 | (r << 16) | (g << 8) | b;
+
+    void AssignGradient(const char* name, uint32_t& top, uint32_t& bot) {
+        if (name[0] == 'C') { top = 0xFF34D399; bot = 0xFF059669; }       // Calculator: Emerald
+        else if (name[0] == 'T') { top = 0xFF818CF8; bot = 0xFF4F46E5; }  // Terminal: Indigo
+        else if (name[0] == 'F') { top = 0xFFFBBF24; bot = 0xFFD97706; }  // Filemanager: Amber
+        else if (name[0] == 'I') { top = 0xFFF472B6; bot = 0xFFDB2777; }  // Installer: Rose/Pink
+        else if (name[0] == 'D') { top = 0xFF38BDF8; bot = 0xFF0284C7; }  // Desktop: Cyan
+        else { top = 0xFF2DD4BF; bot = 0xFF0D9488; }                      // Custom MPK: Teal
     }
 };

@@ -668,68 +668,59 @@ namespace Compositor {
         uint32_t lw = layer->width;
         uint32_t lh = layer->height;
 
-        // Professional Palette
-        uint32_t c_title_bg   = 0xFF121212;
-        uint32_t c_border     = 0xFF2A2A2A;
-        uint32_t c_accent     = 0xFF4080A0; // Morphic Blue
-        uint32_t c_btn_bg     = 0xFF1A1A1A;
-        uint32_t c_btn_border = 0xFF2A2A2A;
-        uint32_t c_close      = 0xFFB04040;
-        uint32_t c_max        = 0xFF4040B0;
-        uint32_t c_min        = 0xFFEAEAEA; // Indicator color
+        // Glass Dark Modern Window Chrome (matches Userspace Compositor)
+        uint32_t c_title_top  = 0xFF162033;
+        uint32_t c_title_bot  = 0xFF101827;
+        uint32_t c_border     = 0xFF28354D;
+        uint32_t c_accent     = 0xFF38BDF8; // Electric Cyan
+        uint32_t c_shadow     = 0xFF060911;
+        uint32_t c_close      = 0xFFFB7185; // Rose
+        uint32_t c_max        = 0xFF34D399; // Emerald
+        uint32_t c_min        = 0xFFFBBF24; // Amber
 
         if (ly < titleH) return; // Prevent out of bounds
 
-        // 1. Title Bar Background
-        Graphics::FillRect(lx - border, ly - titleH, lw + 2 * border, titleH, c_title_bg);
-        
-        // 2. Borders (1px)
-        Graphics::FillRect(lx - border, ly, border, lh, c_border); // Left
-        Graphics::FillRect(lx + lw, ly, border, lh, c_border);     // Right
-        Graphics::FillRect(lx - border, ly + lh, lw + 2 * border, border, c_border); // Bottom
-        
-        // 3. Accent Line (Bottom of Title Bar)
-        Graphics::FillRect(lx, ly - 2, lw, 1, c_accent);
+        // 0. Subtle drop shadow along right & bottom edges
+        Graphics::FillRect(lx + lw + border, ly - titleH + 6, 4, lh + titleH, c_shadow);
+        Graphics::FillRect(lx + 4, ly + lh + border, lw + border, 4, c_shadow);
 
-        // 4. Title Text
+        // 1. Title Bar Background (2-tone glass gradient)
+        Graphics::FillRect(lx - border, ly - titleH, lw + 2 * border, titleH / 2, c_title_top);
+        Graphics::FillRect(lx - border, ly - titleH + (titleH / 2), lw + 2 * border, titleH - (titleH / 2), c_title_bot);
+
+        // 2. Crisp 1px Glass Rim Border
+        Graphics::FillRect(lx - border, ly - titleH, lw + 2 * border, border, c_border); // Top
+        Graphics::FillRect(lx - border, ly - titleH, border, lh + titleH, c_border);     // Left
+        Graphics::FillRect(lx + lw, ly - titleH, border, lh + titleH, c_border);         // Right
+        Graphics::FillRect(lx - border, ly + lh, lw + 2 * border, border, c_border);     // Bottom
+
+        // 3. Subtle Cyan Accent Divider
+        Graphics::FillRect(lx, ly - 1, lw, 1, c_accent);
+
+        // 4. Title Text (clean left padding)
         FontRenderer::DrawText(Graphics::GetDrawBuffer(), Graphics::GetWidth(), Graphics::GetHeight(),
-                               lx + 8, ly - titleH + 6, layer->name, 0xFFE0E0E0, 0);
+                               lx + 12, ly - titleH + 6, layer->name, 0xFFF1F5F9, 0);
 
-        // 5. Window Control Buttons
+        // 5. Modern Pill Window Control Dots (matching desktop.cpp hit-boxes)
         int btnSize = 14;
         int pad = 6;
         int bx = lx + lw - pad - btnSize;
         int by = ly - titleH + (titleH - btnSize) / 2;
 
-        // Close Button [X]
-        Graphics::FillRect(bx, by, btnSize, btnSize, c_btn_bg);
-        // DrawRect manually for border
-        Graphics::FillRect(bx, by, btnSize, 1, c_btn_border);
-        Graphics::FillRect(bx, by+btnSize-1, btnSize, 1, c_btn_border);
-        Graphics::FillRect(bx, by, 1, btnSize, c_btn_border);
-        Graphics::FillRect(bx+btnSize-1, by, 1, btnSize, c_btn_border);
-        // Inner Red
-        Graphics::FillRect(bx + 4, by + 4, btnSize - 8, btnSize - 8, c_close);
+        // Helper lambda for sleek rounded-dot control
+        auto drawDot = [](uint32_t x, uint32_t y, uint32_t col) {
+            Graphics::FillRect(x + 3, y + 2, 8, 10, col);
+            Graphics::FillRect(x + 2, y + 3, 10, 8, col);
+        };
 
-        // Max Point (Visual)
+        // Close [Rose]
+        drawDot(bx, by, c_close);
+        // Max [Emerald]
         bx -= (btnSize + 6);
-        Graphics::FillRect(bx, by, btnSize, btnSize, c_btn_bg);
-        Graphics::FillRect(bx, by, btnSize, 1, c_btn_border); // Border...
-        Graphics::FillRect(bx, by+btnSize-1, btnSize, 1, c_btn_border);
-        Graphics::FillRect(bx, by, 1, btnSize, c_btn_border);
-        Graphics::FillRect(bx+btnSize-1, by, 1, btnSize, c_btn_border);
-        Graphics::FillRect(bx + 4, by + 4, btnSize - 8, btnSize - 8, c_max);
-
-        // Min Point (Visual)
+        drawDot(bx, by, c_max);
+        // Min [Amber]
         bx -= (btnSize + 6);
-        Graphics::FillRect(bx, by, btnSize, btnSize, c_btn_bg); 
-        // Border...
-        Graphics::FillRect(bx, by, btnSize, 1, c_btn_border);
-        Graphics::FillRect(bx, by+btnSize-1, btnSize, 1, c_btn_border);
-        Graphics::FillRect(bx, by, 1, btnSize, c_btn_border);
-        Graphics::FillRect(bx+btnSize-1, by, 1, btnSize, c_btn_border);
-        // Line
-        Graphics::FillRect(bx + 4, by + btnSize - 6, btnSize - 8, 2, c_min);
+        drawDot(bx, by, c_min);
     }
 
     Window* CreateWindow(uint32_t w, uint32_t h, uint32_t flags) {
@@ -752,10 +743,18 @@ namespace Compositor {
         kmemset(phys_ptr, 0, size); 
         
         // 3. Create Layer manually
-        if (layerCount >= MAX_LAYERS) { ReleaseLock(); return nullptr; }
+        if (layerCount >= MAX_LAYERS) {
+            PMM::FreePages(phys_ptr, pages);
+            ReleaseLock();
+            return nullptr;
+        }
         
         Layer* layer = (Layer*)kmalloc(sizeof(Layer));
-        if (!layer) { ReleaseLock(); return nullptr; }
+        if (!layer) {
+            PMM::FreePages(phys_ptr, pages);
+            ReleaseLock();
+            return nullptr;
+        }
         kmemset(layer, 0, sizeof(Layer));
         
         // Name
@@ -802,7 +801,9 @@ namespace Compositor {
         }
         
         // Cleanup if no window slot
-        // TODO: Free layer and phys
+        layerCount--;
+        kfree(layer);
+        PMM::FreePages(phys_ptr, pages);
         ReleaseLock();
         return nullptr;
     }
@@ -893,16 +894,47 @@ namespace Compositor {
     }
     
     void DestroyWindow(uint64_t window_id) {
+        AcquireLock();
         Window* win = GetWindow(window_id);
         if (win) {
-             // TODO: Layer destruction requires care not to free phys buffer with kfree
-             // For now we leak slightly to avoid crash or need to refactor DestroyLayer
-             // DestroyLayer(win->layer); 
-             win->layer->visible = false; // Hide it at least
-             win->layer = nullptr;
-             
+             if (win->layer) {
+                 MarkDirty(win->layer->x - BORDER_WIDTH, win->layer->y - TITLE_BAR_HEIGHT,
+                           win->width + BORDER_WIDTH * 2, win->height + TITLE_BAR_HEIGHT + BORDER_WIDTH);
+                 for (uint32_t i = 0; i < layerCount; i++) {
+                     if (layers[i] == win->layer) {
+                         for (uint32_t j = i; j < layerCount - 1; j++) {
+                             layers[j] = layers[j + 1];
+                         }
+                         layerCount--;
+                         break;
+                     }
+                 }
+                 // Free only the Layer header (allocated via kmalloc), NOT layer->buffer (allocated via PMM)!
+                 kfree(win->layer);
+                 win->layer = nullptr;
+             }
+             if (win->phys_addr != 0) {
+                 uint64_t pages = ((uint64_t)win->width * win->height * 4 + 4095) / 4096;
+                 PMM::FreePages((void*)win->phys_addr, pages);
+                 win->phys_addr = 0;
+                 win->buffer = nullptr;
+             }
+             if (dragWindow == win) {
+                 dragWindow = nullptr;
+             }
              win->id = 0;
-             windowCount--;
+             win->owner_pid = 0;
+             if (windowCount > 0) windowCount--;
+        }
+        ReleaseLock();
+    }
+
+    void DestroyWindowsByPID(uint64_t pid) {
+        if (pid == 0) return;
+        for (int i = 0; i < 16; i++) {
+            if (windows[i].id != 0 && windows[i].owner_pid == pid) {
+                DestroyWindow(windows[i].id);
+            }
         }
     }
     

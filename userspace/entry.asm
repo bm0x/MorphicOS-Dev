@@ -13,16 +13,26 @@ _start:
     ; Align stack to 16 bytes (x86-64 System V ABI)
     and rsp, -16
     
-    ; Early userspace trace: indicate app started
+    ; Preserve RDI (assets_ptr passed by kernel loader) across early trace call
+    push rdi
+    sub rsp, 8
     call user_early_trace_start
+    add rsp, 8
+    pop rdi
 
     ; Call main(assets_ptr)
-    ; RDI is already set by loader
     call main
 
-    ; Early userspace trace: main returned
+    ; Preserve main() return code across end trace
+    push rax
+    sub rsp, 8
     call user_early_trace_end
-    
-    ; If main returns, loop forever (or exit syscall)
+    add rsp, 8
+    pop rdi
+
+    ; Cleanly terminate process via SYS_EXIT (RAX = 0, RDI = exit_code)
+    xor rax, rax
+    syscall
+
 .halt:
     jmp .halt

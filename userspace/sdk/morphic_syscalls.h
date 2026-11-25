@@ -12,6 +12,9 @@ uint64_t sys_get_screen_info();
 uint64_t sys_get_time_ms();
 uint64_t sys_get_pid();
 uint64_t sys_get_compositor_pid();
+int      sys_waitpid(uint64_t pid);
+void*    sys_malloc(uint64_t size);
+int      sys_free(void* ptr);
 int      sys_get_rtc_datetime(void* out_datetime /* MorphicDateTime* */);
 int      sys_get_system_info(void* out_info /* MorphicSystemInfo* */);
 int      sys_get_event(void* ev /* OSEvent* */);
@@ -66,6 +69,11 @@ int sys_close(int fd);
 int sys_read(int fd, void* buffer, uint32_t count);
 int sys_write(int fd, const void* buffer, uint32_t count);
 int sys_read_file(const char* path, void* buffer, int max_size);
+int sys_write_file(const char* path, const void* buffer, uint32_t size);
+int sys_create_file(const char* path);
+int sys_delete_file(const char* path);
+int sys_mkdir(const char* path);
+int sys_stat(const char* path, void* out_stat);
 void sys_yield();
 
 // Mount listing
@@ -91,6 +99,10 @@ int      sys_drm_get_caps(void* out_caps /* GraphicsUapiCaps* */);
 int      sys_drm_poll_event(void* out_event /* GraphicsUapiEvent* */);
 int      sys_drm_atomic_test(uint32_t packed_pos, uint32_t packed_size, uint32_t flags);
 int      sys_drm_atomic_commit(uint32_t packed_pos, uint32_t packed_size, uint32_t flags);
+
+// MorphicVK 1.3 Real-Time Vulkan Translation Layer
+int      sys_vk_query_device(void* out_vk_device_info);
+int      sys_vk_submit(const void* vk_submit_info);
 
 #ifdef __cplusplus
 }

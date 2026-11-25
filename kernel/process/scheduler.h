@@ -20,15 +20,34 @@ struct FileDescriptor {
 };
 
 constexpr int MAX_PROCESS_FDS = 32;
+constexpr int MAX_USER_ALLOCS = 64;
+
+struct UserAlloc {
+    uint64_t virt_addr;
+    uint32_t pages;
+    bool in_use;
+};
 
 struct Task {
     uint64_t* stack_pointer; // Saved RSP
     uint64_t id;
+    uint64_t parent_id;
+    int exit_code;
     TaskState state;
     uint64_t cr3;            // Page Directory (CR3) for this task
     uint64_t wake_up_time; // For SLEEPING state (ticks)
     uint64_t kernel_stack_top; // TSS.RSP0: Thread-Specific Kernel Stack Top (for Interrupts/Syscalls)
     
+    // Per-Process Dynamic Virtual Heap (0x6000_1000_0000 .. 0x6000_2000_0000)
+    uint64_t heap_brk;
+    UserAlloc userAllocs[MAX_USER_ALLOCS];
+
+    // Per-Process FPU / SSE2 / XMM State (guaranteed 16-byte aligned for FXSAVE/FXRSTOR)
+    uint8_t fpu_raw[512 + 16];
+    inline uint8_t* GetFpuBuffer() {
+        return (uint8_t*)(((uintptr_t)fpu_raw + 15ULL) & ~15ULL);
+    }
+
     // Per-Process File Descriptors
     FileDescriptor fdTable[MAX_PROCESS_FDS];
 
@@ -45,12 +64,15 @@ struct Task {
 namespace Scheduler {
     void Init();
     
-    // Create a new kernel thread
-    void CreateTask(void (*entry_point)());
+    // Create a new kernel thread (returns Task ID, or 0 on failure)
+    uint64_t CreateTask(void (*entry_point)());
     
-    // Create a new user thread with specific Page Table
+    // Create a new user thread with specific Page Table (returns Task ID, or 0 on failure)
     // arg1 is loaded into RDI for the new process (first argument)
-    void CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3, uint64_t arg1 = 0);
+    uint64_t CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3, uint64_t arg1 = 0);
+    
+    // Wait for a child/target task to terminate and return its exit code
+    int WaitPid(uint64_t pid);
     
     // Put current task to sleep for ms milliseconds
     void Sleep(uint64_t ms);

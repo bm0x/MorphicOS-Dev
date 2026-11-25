@@ -125,6 +125,7 @@ namespace MMU {
             pdpt = AllocateTable();
             if (!pdpt) {
                 if (virt == 0x8000000000ULL) UART::Write("  FAIL: AllocTable for PDPT\n");
+                EnableWriteProtect();
                 return false;
             }
             pml4[PML4_INDEX(virt)] = ((uint64_t)pdpt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
@@ -147,6 +148,7 @@ namespace MMU {
             pd = AllocateTable();
             if (!pd) {
                 if (virt == 0x8000000000ULL) UART::Write("  FAIL: AllocTable for PD\n");
+                EnableWriteProtect();
                 return false;
             }
             pdpt[PDPT_INDEX(virt)] = ((uint64_t)pd & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
@@ -157,6 +159,7 @@ namespace MMU {
             // Check for Huge Page collision
             if (pdpt[PDPT_INDEX(virt)] & PTE_HUGE) {
                  if (virt == 0x8000000000ULL) UART::Write("  FAIL: PDPT huge page collision\n");
+                 EnableWriteProtect();
                  return false;
             }
             // FIX: Ensure existing directory entry propagates permissions
@@ -174,6 +177,7 @@ namespace MMU {
             pt = AllocateTable();
             if (!pt) {
                 if (virt == 0x8000000000ULL) UART::Write("  FAIL: AllocTable for PT\n");
+                EnableWriteProtect();
                 return false;
             }
             pd[PD_INDEX(virt)] = ((uint64_t)pt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
@@ -237,18 +241,24 @@ namespace MMU {
     }
     
     void UnmapPage(uint64_t virt) {
-        if (!kernel_pml4) return;
+        uint64_t* pml4 = (uint64_t*)(GetCurrentPageTable() & PTE_ADDR_MASK);
+        if (!pml4) return;
         
-        uint64_t* pdpt = (uint64_t*)(kernel_pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
-        if (!pdpt || !(kernel_pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return;
+        if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return;
+        uint64_t* pdpt = (uint64_t*)(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
+        if (!pdpt || (pml4[PML4_INDEX(virt)] & PTE_HUGE)) return;
         
+        if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT) || (pdpt[PDPT_INDEX(virt)] & PTE_HUGE)) return;
         uint64_t* pd = (uint64_t*)(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
-        if (!pd || !(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return;
+        if (!pd) return;
         
+        if (!(pd[PD_INDEX(virt)] & PTE_PRESENT) || (pd[PD_INDEX(virt)] & PTE_HUGE)) return;
         uint64_t* pt = (uint64_t*)(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
-        if (!pt || !(pd[PD_INDEX(virt)] & PTE_PRESENT)) return;
+        if (!pt) return;
         
+        DisableWriteProtect();
         pt[PT_INDEX(virt)] = 0;
+        EnableWriteProtect();
         FlushTLB(virt);
     }
     
@@ -271,9 +281,15 @@ namespace MMU {
         uint64_t* pdpt = (uint64_t*)(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
         
         if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return 0;
+        if (pdpt[PDPT_INDEX(virt)] & PTE_HUGE) {
+            return (pdpt[PDPT_INDEX(virt)] & 0x000FFFFFC0000000ULL) | (virt & 0x3FFFFFFFULL);
+        }
         uint64_t* pd = (uint64_t*)(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
         
         if (!(pd[PD_INDEX(virt)] & PTE_PRESENT)) return 0;
+        if (pd[PD_INDEX(virt)] & PTE_HUGE) {
+            return (pd[PD_INDEX(virt)] & 0x000FFFFFFFE00000ULL) | (virt & 0x1FFFFFULL);
+        }
         uint64_t* pt = (uint64_t*)(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
         
         if (!(pt[PT_INDEX(virt)] & PTE_PRESENT)) return 0;
@@ -315,22 +331,48 @@ namespace MMU {
         return CreatePageTable();
     }
     
+    static inline bool IsPrivateUserVirt(uint64_t virt) {
+        // Private per-process virtual ranges:
+        //   0x6000_0000_0000 - 0x6000_FFFF_FFFF : Code, .rodata, .data, .bss, heap, MPK assets
+        //   0x6002_0000_0000 - 0x6FFF_FFFF_FFFF : Private backbuffers (SYS_ALLOC_BACKBUFFER) & User Stack
+        // Excluded (shared surfaces owned by Compositor / DRM / BufferManager):
+        //   0x6001_0000_0000 - 0x6001_FFFF_FFFF : SYS_VIDEO_MAP / SYS_CREATE_WINDOW
+        //   0x7000_0000_0000 - 0x7FFF_FFFF_FFFF : SYS_MAP_WINDOW / DRM shared buffers
+        if (virt >= 0x600000000000ULL && virt < 0x600100000000ULL) return true;
+        if (virt >= 0x600200000000ULL && virt < 0x700000000000ULL) return true;
+        return false;
+    }
+
     void DestroyPageTable(uint64_t table_phys) {
         if (!table_phys) return;
         
         uint64_t* pml4 = (uint64_t*)table_phys;
         
-        // Cleanly free user-space translation tables (PML4 entries 1 to 255).
+        // Cleanly free user-space translation tables AND private physical frames (PML4 entries 1 to 255).
         // Entry 0 is kernel identity mapping; entries 256-511 are kernel higher half.
         for (int i = 1; i < 256; i++) {
             if (pml4[i] & PTE_PRESENT) {
                 uint64_t* pdpt = (uint64_t*)(pml4[i] & PTE_ADDR_MASK);
                 for (int j = 0; j < 512; j++) {
-                    if (pdpt[j] & PTE_PRESENT) {
+                    if ((pdpt[j] & PTE_PRESENT) && !(pdpt[j] & PTE_HUGE)) {
                         uint64_t* pd = (uint64_t*)(pdpt[j] & PTE_ADDR_MASK);
                         for (int k = 0; k < 512; k++) {
-                            if (pd[k] & PTE_PRESENT) {
+                            if ((pd[k] & PTE_PRESENT) && !(pd[k] & PTE_HUGE)) {
                                 uint64_t* pt = (uint64_t*)(pd[k] & PTE_ADDR_MASK);
+                                for (int m = 0; m < 512; m++) {
+                                    if (pt[m] & PTE_PRESENT) {
+                                        uint64_t virt = ((uint64_t)i << 39) |
+                                                        ((uint64_t)j << 30) |
+                                                        ((uint64_t)k << 21) |
+                                                        ((uint64_t)m << 12);
+                                        if (IsPrivateUserVirt(virt)) {
+                                            uint64_t frame = pt[m] & PTE_ADDR_MASK;
+                                            if (frame) {
+                                                PMM::FreePage((void*)frame);
+                                            }
+                                        }
+                                    }
+                                }
                                 PMM::FreePage((void*)pt);
                             }
                         }
@@ -345,11 +387,63 @@ namespace MMU {
     }
     
     bool IsMapped(uint64_t virt) {
-        return GetPhysical(virt) != 0;
+        return (GetPageFlags(virt) & PAGE_PRESENT) != 0;
     }
     
     uint32_t GetPageFlags(uint64_t virt) {
-        // TODO: Convert x86 flags back to generic
-        return 0;
+        uint64_t* pml4 = (uint64_t*)(GetCurrentPageTable() & PTE_ADDR_MASK);
+        if (!pml4) return 0;
+
+        uint64_t e4 = pml4[PML4_INDEX(virt)];
+        if (!(e4 & PTE_PRESENT)) return 0;
+
+        uint64_t* pdpt = (uint64_t*)(e4 & PTE_ADDR_MASK);
+        uint64_t e3 = pdpt[PDPT_INDEX(virt)];
+        if (!(e3 & PTE_PRESENT)) return 0;
+
+        bool user_ok = (e4 & PTE_USER) && (e3 & PTE_USER);
+        bool write_ok = (e4 & PTE_WRITABLE) && (e3 & PTE_WRITABLE);
+        bool exec_ok = !(e4 & PTE_NX) && !(e3 & PTE_NX);
+
+        if (e3 & PTE_HUGE) {
+            uint32_t f = PAGE_PRESENT;
+            if (user_ok) f |= PAGE_USER;
+            if (write_ok) f |= PAGE_WRITABLE;
+            if (exec_ok) f |= PAGE_EXECUTABLE;
+            return f;
+        }
+
+        uint64_t* pd = (uint64_t*)(e3 & PTE_ADDR_MASK);
+        uint64_t e2 = pd[PD_INDEX(virt)];
+        if (!(e2 & PTE_PRESENT)) return 0;
+
+        user_ok = user_ok && ((e2 & PTE_USER) != 0);
+        write_ok = write_ok && ((e2 & PTE_WRITABLE) != 0);
+        exec_ok = exec_ok && !(e2 & PTE_NX);
+
+        if (e2 & PTE_HUGE) {
+            uint32_t f = PAGE_PRESENT;
+            if (user_ok) f |= PAGE_USER;
+            if (write_ok) f |= PAGE_WRITABLE;
+            if (exec_ok) f |= PAGE_EXECUTABLE;
+            return f;
+        }
+
+        uint64_t* pt = (uint64_t*)(e2 & PTE_ADDR_MASK);
+        uint64_t e1 = pt[PT_INDEX(virt)];
+        if (!(e1 & PTE_PRESENT)) return 0;
+
+        user_ok = user_ok && ((e1 & PTE_USER) != 0);
+        write_ok = write_ok && ((e1 & PTE_WRITABLE) != 0);
+        exec_ok = exec_ok && !(e1 & PTE_NX);
+
+        uint32_t f = PAGE_PRESENT;
+        if (user_ok) f |= PAGE_USER;
+        if (write_ok) f |= PAGE_WRITABLE;
+        if (exec_ok) f |= PAGE_EXECUTABLE;
+        if (e1 & PTE_PCD) f |= PAGE_NOCACHE;
+        if (e1 & PTE_PWT) f |= PAGE_WRITETHROUGH;
+        if (e1 & PTE_GLOBAL) f |= PAGE_GLOBAL;
+        return f;
     }
 }

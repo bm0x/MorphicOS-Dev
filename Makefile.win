@@ -13,15 +13,15 @@
 
 all: build
 
-# Try to use WSL if available, otherwise call native make (MSYS2/MinGW)
+# Try to use WSL if available, otherwise run pure-Python native Windows builder
 build:
-	@echo [Makefile.win] Building (tries WSL then native make)...
-	@where wsl >nul 2>nul && (
+	@echo [Makefile.win] Building (tries WSL then native tools/build_win.py)...
+	@wsl --status >nul 2>nul && (
 		echo [Makefile.win] WSL detected, invoking Linux Makefile in WSL... && \
 		wsl -e bash -lc "make"
 	) || (
-		echo [Makefile.win] WSL not found, attempting native make (MSYS2/MinGW)... && \
-		make -f Makefile
+		echo [Makefile.win] Using native Python/Clang builder... && \
+		python tools/build_win.py release
 	)
 
 clean:

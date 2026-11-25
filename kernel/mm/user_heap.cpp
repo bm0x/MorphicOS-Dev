@@ -179,26 +179,23 @@ namespace UserHeap {
         
         // Coalesce with Next (current)
         if (current) {
-            // Check adjacency: (uint8_t*)block + sizeof(UHeapBlock) + block->size == (uint8_t*)current
-            uint8_t* blockEnd = (uint8_t*)block + sizeof(UHeapBlock) + block->size;
+            uint8_t* blockEnd = (uint8_t*)block + block->size;
             if (blockEnd == (uint8_t*)current) {
-                // Merge
-                block->size += sizeof(UHeapBlock) + current->size;
+                // Merge (block->size already includes sizeof(UHeapBlock))
+                block->size += current->size;
                 block->next = current->next;
                 if (current->next) current->next->prev = block;
-                // 'current' is now gone
             }
         }
         
         // Coalesce with Prev
         if (prev) {
-            uint8_t* prevEnd = (uint8_t*)prev + sizeof(UHeapBlock) + prev->size;
+            uint8_t* prevEnd = (uint8_t*)prev + prev->size;
             if (prevEnd == (uint8_t*)block) {
                 // Merge
-                prev->size += sizeof(UHeapBlock) + block->size;
+                prev->size += block->size;
                 prev->next = block->next;
                 if (block->next) block->next->prev = prev;
-                // 'block' is now gone
             }
         }
     }
@@ -227,19 +224,20 @@ namespace UserHeap {
     bool Expand(size_t bytes) {
         CRITICAL_SECTION(heapLock);
         
-        if (heapSize + bytes > UHEAP_MAX_SIZE) {
+        size_t pages = (bytes + 4095) / 4096;
+        size_t alignedBytes = pages * 4096;
+        if (heapSize + alignedBytes > UHEAP_MAX_SIZE) {
             return false;
         }
         
-        // For now, allocate from kernel heap
-        // In real implementation, would request pages from PMM
-        void* newMem = kmalloc(bytes);
+        // Strictly allocate from PMM, never KHeap (AGENTS.md §2.1)
+        void* newMem = PMM::AllocContiguous(pages);
         if (!newMem) return false;
         
         // Add as free block
         UHeapBlock* newBlock = (UHeapBlock*)newMem;
         newBlock->magic = UHEAP_MAGIC;
-        newBlock->size = bytes;
+        newBlock->size = alignedBytes;
         newBlock->priority = MEM_PRIORITY_LOW;
         newBlock->flags = 0;
         newBlock->next = freeList;
@@ -247,13 +245,13 @@ namespace UserHeap {
         if (freeList) freeList->prev = newBlock;
         freeList = newBlock;
         
-        heapSize += bytes;
+        heapSize += alignedBytes;
         stats.total_size = heapSize;
-        stats.free_size += bytes;
+        stats.free_size += alignedBytes;
         stats.expansion_count++;
         
         EarlyTerm::Print("[UserHeap] Expanded by ");
-        EarlyTerm::PrintDec(bytes / 1024);
+        EarlyTerm::PrintDec(alignedBytes / 1024);
         EarlyTerm::Print(" KB\n");
         
         return true;

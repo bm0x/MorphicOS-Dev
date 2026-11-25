@@ -57,13 +57,21 @@ namespace Graphics {
         drawBuffer = buffer;
     }
 
+    static inline uint32_t GetTargetStridePixels() {
+        if (drawBuffer == vramBuffer && screenPitch >= screenWidth * 4 && screenWidth > 0) {
+            return screenPitch / 4;
+        }
+        return screenWidth;
+    }
+
     //=========================================================================
     // Primitives
     //=========================================================================
     
     void PutPixel(uint32_t x, uint32_t y, uint32_t color) {
         if (!drawBuffer || x >= screenWidth || y >= screenHeight) return;
-        drawBuffer[y * screenWidth + x] = color;
+        uint32_t stride = GetTargetStridePixels();
+        drawBuffer[y * stride + x] = color;
     }
     
     void FillRect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
@@ -74,8 +82,9 @@ namespace Graphics {
         if (x + w > screenWidth) w = screenWidth - x;
         if (y + h > screenHeight) h = screenHeight - y;
         
+        uint32_t stride = GetTargetStridePixels();
         for (uint32_t iy = 0; iy < h; iy++) {
-            uint32_t* row = &drawBuffer[(y + iy) * screenWidth + x];
+            uint32_t* row = &drawBuffer[(y + iy) * stride + x];
             memset_fast_32(row, color, w);
         }
     }
@@ -97,8 +106,9 @@ namespace Graphics {
         if (x + copyW > screenWidth) copyW = screenWidth - x;
         if (y + copyH > screenHeight) copyH = screenHeight - y;
         
+        uint32_t stride = GetTargetStridePixels();
         for (uint32_t iy = 0; iy < copyH; iy++) {
-            uint32_t* dst = &drawBuffer[(y + iy) * screenWidth + x];
+            uint32_t* dst = &drawBuffer[(y + iy) * stride + x];
             uint32_t* src = &data[iy * w];
             blit_fast_32(dst, src, copyW);
         }
@@ -126,8 +136,9 @@ namespace Graphics {
     void BlendPixel(uint32_t x, uint32_t y, uint32_t color) {
         if (!drawBuffer || x >= screenWidth || y >= screenHeight) return;
         
-        uint32_t bg = drawBuffer[y * screenWidth + x];
-        drawBuffer[y * screenWidth + x] = BlendPixelRaw(bg, color);
+        uint32_t stride = GetTargetStridePixels();
+        uint32_t bg = drawBuffer[y * stride + x];
+        drawBuffer[y * stride + x] = BlendPixelRaw(bg, color);
     }
     
     void BlitBuffer(uint32_t* dest, uint32_t* src, uint32_t count) {

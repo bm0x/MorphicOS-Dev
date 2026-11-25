@@ -1,4 +1,5 @@
 [BITS 64]
+default rel
 
 global syscall_entry
 
@@ -66,10 +67,3 @@ syscall_entry:
     ; SYSRETQ uses RCX (RIP) and R11 (RFLAGS), and RSP must be user stack.
     mov rsp, r10
     o64 sysret
-
-section .bss
-align 16
-kernel_syscall_stack:
-    resb 16384
-kernel_syscall_stack_top:
-    resb 0

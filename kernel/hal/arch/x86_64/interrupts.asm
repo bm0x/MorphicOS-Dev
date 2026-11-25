@@ -77,8 +77,9 @@ isr_common_stub:
     ; Pass pointer to stack structure as argument
     mov rdi, rsp 
     
-    ; Call C++ Handler
+    ; Call C++ Handler (returns new RSP if Ring 3 fault killed current task, else same RSP)
     call GenericExceptionHandler
+    mov rsp, rax
     
     ; Restore Registers
     pop r15
@@ -99,7 +100,12 @@ isr_common_stub:
     
     ; Remove Error Code and Int Number
     add rsp, 16 
-    
+    ; Some hypervisors (VirtualBox/WHP) leave SS.RPL=0 after SYSRET, so the CPU pushes SS=0x18
+    ; with CS=0x23 and IRETQ raises #GP(0x18). Normalize SS.RPL to CS.RPL before returning.
+    test qword [rsp+8], 3
+    jz skip_rpl_1
+    or qword [rsp+32], 3
+skip_rpl_1:
     iretq
 
 ; Helper to load IDT
@@ -134,6 +140,14 @@ IRQ  12, 44
 IRQ  13, 45
 IRQ  14, 46
 IRQ  15, 47
+
+; Cooperative Yield Software Interrupt (Vector 0x81)
+global isr_yield
+isr_yield:
+    cli
+    push 0
+    push 0x81
+    jmp irq_common_stub
 
 extern GenericIRQHandler
 
@@ -178,6 +192,12 @@ irq_common_stub:
     pop rax
     
     add rsp, 16
+    ; Some hypervisors (VirtualBox/WHP) leave SS.RPL=0 after SYSRET, so the CPU pushes SS=0x18
+    ; with CS=0x23 and IRETQ raises #GP(0x18). Normalize SS.RPL to CS.RPL before returning.
+    test qword [rsp+8], 3
+    jz skip_rpl_2
+    or qword [rsp+32], 3
+skip_rpl_2:
     iretq
 
 ; Isr Stub Table update (must export IRQs too)

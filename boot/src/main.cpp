@@ -3,6 +3,7 @@
 #include "../../shared/boot_info.h"
 
 // --- Global Variables ---
+EFI_HANDLE         gImageHandle = nullptr;
 EFI_SYSTEM_TABLE*  gST = nullptr;
 EFI_BOOT_SERVICES* gBS = nullptr;
 
@@ -238,9 +239,25 @@ EFI_STATUS InitializeGOP(FramebufferInfo* fbInfo) {
 
 EFI_STATUS LoadFile(CHAR16* FileName, VOID** Buffer, UINTN* Size) {
     EFI_GUID sfsGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_GUID loadedImgGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* sfs = nullptr;
-    EFI_STATUS status = gBS->LocateProtocol(&sfsGuid, nullptr, (void**)&sfs);
-    if (status != EFI_SUCCESS) return status;
+    EFI_STATUS status = EFI_NOT_FOUND;
+
+    // 1. Live USB Priority: Open the EXACT SimpleFileSystem volume that booted BOOTX64.EFI!
+    // Prevents opening an internal NVMe Windows/Linux EFI partition by mistake on real PCs.
+    if (gImageHandle && gBS->HandleProtocol) {
+        EFI_LOADED_IMAGE_PROTOCOL* loadedImg = nullptr;
+        if (gBS->HandleProtocol(gImageHandle, &loadedImgGuid, (void**)&loadedImg) == EFI_SUCCESS &&
+            loadedImg && loadedImg->DeviceHandle) {
+            status = gBS->HandleProtocol(loadedImg->DeviceHandle, &sfsGuid, (void**)&sfs);
+        }
+    }
+
+    // 2. Fallback: first available SimpleFileSystem protocol
+    if (status != EFI_SUCCESS || !sfs) {
+        status = gBS->LocateProtocol(&sfsGuid, nullptr, (void**)&sfs);
+        if (status != EFI_SUCCESS || !sfs) return status;
+    }
 
     EFI_FILE_PROTOCOL* root = nullptr;
     status = sfs->OpenVolume(sfs, &root);
@@ -248,7 +265,27 @@ EFI_STATUS LoadFile(CHAR16* FileName, VOID** Buffer, UINTN* Size) {
 
     EFI_FILE_PROTOCOL* file = nullptr;
     status = root->Open(root, &file, FileName, EFI_FILE_MODE_READ, 0);
-    if (status != EFI_SUCCESS) return status;
+    if (status != EFI_SUCCESS) {
+        // Fallback: try leading backslash or \boot\ subdirectory for ISO/USB layouts
+        CHAR16 altPath[64];
+        UINTN pos = 0;
+        altPath[pos++] = u'\\';
+        for (UINTN k = 0; FileName[k] && pos < 62; k++) altPath[pos++] = FileName[k];
+        altPath[pos] = 0;
+        status = root->Open(root, &file, altPath, EFI_FILE_MODE_READ, 0);
+        if (status != EFI_SUCCESS) {
+            const char16_t* bootPrefix = u"\\boot\\";
+            pos = 0;
+            for (UINTN k = 0; bootPrefix[k] && pos < 62; k++) altPath[pos++] = bootPrefix[k];
+            for (UINTN k = 0; FileName[k] && pos < 62; k++) altPath[pos++] = FileName[k];
+            altPath[pos] = 0;
+            status = root->Open(root, &file, altPath, EFI_FILE_MODE_READ, 0);
+            if (status != EFI_SUCCESS) {
+                root->Close(root);
+                return status;
+            }
+        }
+    }
 
     // Get Size
     // We allocate a small buffer for Info first
@@ -373,6 +410,9 @@ EFI_STATUS LoadKernel(BootInfo* bootInfo, void** kernelEntry) {
         relocationOffset = (INTN)allocAddr - (INTN)originalMinAddr;
         *kernelEntry = (void*)((INTN)ehdr->e_entry + relocationOffset);
     }
+
+    bootInfo->kernelBasePhys = allocAddr;
+    bootInfo->kernelSize = totalPages * 0x1000;
     
     // 3. Zero Out Memory (BSS handling implicitly covered if we zero everything first)
     // Manually clearing memory (simple memset)
@@ -455,6 +495,7 @@ EFI_STATUS LoadInitRD(BootInfo* bootInfo) {
 // --- Entry Point ---
 
 extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
+    gImageHandle = ImageHandle;
     gST = SystemTable;
     gBS = SystemTable->BootServices;
 
@@ -467,6 +508,9 @@ extern "C" EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *S
     // 1. Alloc BootInfo
     BootInfo* bootInfo = nullptr;
     gBS->AllocatePool(EfiLoaderData, sizeof(BootInfo), (void**)&bootInfo);
+    for (UINTN i = 0; i < sizeof(BootInfo); i++) {
+        ((UINT8*)bootInfo)[i] = 0;
+    }
     bootInfo->magic = 0xDEADBEEFCAFEBABE;
     
     // 2. Setup Graphics

@@ -13,6 +13,7 @@ SECTIONS
      * Requires the VM to have > 1GB RAM (recommend -m 4G).
      */
     . = 0x40000000;
+    _kernel_start = .;
 
     .text : ALIGN(4096)
     {
@@ -38,4 +39,7 @@ SECTIONS
         *(.bss.*)
         *(COMMON)
     }
+
+    . = ALIGN(4096);
+    _kernel_end = .;
 }

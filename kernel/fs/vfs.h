@@ -2,8 +2,9 @@
 
 #include <stdint.h>
 
-// Forward declaration
+// Forward declarations
 struct VFSNode;
+struct IFileSystem;
 
 // Node type enumeration
 enum class NodeType {
@@ -40,6 +41,11 @@ struct VFSNode {
     // Function pointers for polymorphic FS operations
     ReadFunc read;
     WriteFunc write;
+
+    // Mounted filesystem binding (non-null for dynamic mount-backed nodes)
+    IFileSystem* mounted_fs;
+    char mount_rel_path[128];
+    bool is_transient;
 };
 
 // VFS Namespace - Core API
@@ -82,4 +88,8 @@ namespace VFS {
     
     // List directory contents
     VFSNode** ListDir(VFSNode* dir, uint32_t* outCount);
+    void FreeDirList(VFSNode** list, uint32_t count);
+
+    // Ensure a mount-point directory stub exists in the root namespace
+    void EnsureMountStub(const char* mountPath);
 }

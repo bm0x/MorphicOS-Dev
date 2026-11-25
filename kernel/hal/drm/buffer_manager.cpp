@@ -1,8 +1,8 @@
 #include "buffer_manager.h"
-#include "../../mm/heap.h"
+#include "../../mm/pmm.h"
 #include "../serial/uart.h"
 #include "../../utils/std.h"
-#include "../../arch/common/mmu.h" // For memset/memcpy if needed
+#include "../../arch/common/mmu.h"
 
 namespace BufferManager {
 
@@ -52,11 +52,14 @@ namespace BufferManager {
     void Shutdown() {
         UART::Write("[BufferManager] Shutting down...\n");
         
-        // Free all buffers
+        // Free all buffers (allocated via PMM, never kfree)
         for (uint32_t i = 0; i < MAX_BUFFERS; i++) {
-            if (buffers[i].id != 0 && buffers[i].kernel_addr) {
-                KHeap::Free(buffers[i].kernel_addr);
+            if (buffers[i].id != 0 && buffers[i].phys_addr != 0) {
+                uint64_t pages = ((uint64_t)buffers[i].pitch * buffers[i].height + 4095) / 4096;
+                PMM::FreePages((void*)buffers[i].phys_addr, pages);
                 buffers[i].kernel_addr = nullptr;
+                buffers[i].phys_addr = 0;
+                buffers[i].user_addr = 0;
                 buffers[i].id = 0;
             }
         }
@@ -91,13 +94,14 @@ namespace BufferManager {
             return nullptr;
         }
         
-        // Allocate physical memory (kernel heap for now, mapped)
+        // Allocate page-aligned physical pages from PMM (zero KHeap exposure to Ring 3)
         uint32_t pitch = w * 4; // ARGB32
         uint64_t size = (uint64_t)pitch * h;
+        uint64_t pages = (size + 4095) / 4096;
         
-        void* mem = KHeap::Allocate(size);
+        void* mem = PMM::AllocContiguous(pages);
         if (!mem) {
-            UART::Write("[BufferManager] Alloc failed\n");
+            UART::Write("[BufferManager] PMM::AllocContiguous failed\n");
             ReleaseLock();
             return nullptr;
         }
@@ -107,9 +111,9 @@ namespace BufferManager {
         buf->width = w;
         buf->height = h;
         buf->pitch = pitch;
-        buf->kernel_addr = mem;
-        buf->phys_addr = 0; // TODO: Get physical address if mapping to user needs it explicitly
-        buf->user_addr = 0; // Will be set by mmap syscall
+        buf->kernel_addr = mem; // Identity-mapped physical address for Ring 0
+        buf->phys_addr = (uint64_t)mem;
+        buf->user_addr = 0; // Set by MapToUser
         buf->owner_pid = owner_pid;
         
         // Default position
@@ -149,16 +153,29 @@ namespace BufferManager {
         
         AcquireLock();
         
-        // Free memory
-        if (buffer->kernel_addr) {
-            KHeap::Free(buffer->kernel_addr);
+        // Free PMM pages (never kfree on PMM allocations)
+        if (buffer->phys_addr != 0) {
+            uint64_t pages = ((uint64_t)buffer->pitch * buffer->height + 4095) / 4096;
+            PMM::FreePages((void*)buffer->phys_addr, pages);
+            buffer->phys_addr = 0;
             buffer->kernel_addr = nullptr;
+            buffer->user_addr = 0;
         }
         
         buffer->id = 0;
-        active_buffer_count--;
+        buffer->owner_pid = 0;
+        if (active_buffer_count > 0) active_buffer_count--;
         
         ReleaseLock();
+    }
+
+    void DestroyBuffersByPID(uint64_t pid) {
+        if (pid == 0) return;
+        for (uint32_t i = 0; i < MAX_BUFFERS; i++) {
+            if (buffers[i].id != 0 && buffers[i].owner_pid == pid) {
+                DestroyBuffer(&buffers[i]);
+            }
+        }
     }
     
     SharedBuffer* GetBuffer(uint64_t id) {
@@ -300,27 +317,27 @@ namespace BufferManager {
     }
     
     void* MapToUser(SharedBuffer* buf, uint64_t pid) {
-        if (!buf || !buf->kernel_addr) return nullptr;
+        (void)pid;
+        if (!buf || buf->phys_addr == 0) return nullptr;
         if (buf->user_addr != 0) return (void*)buf->user_addr;
         
         uint64_t size = (uint64_t)buf->pitch * buf->height;
         uint64_t pages = (size + 4095) / 4096;
         
-        // Fixed mapping region: 0x80000000 + (id * 16MB)
-        uint64_t user_base = 0x80000000ULL + (buf->id * 0x1000000);
+        // Canonical shared surface region in process space (outside shared pml4[0]):
+        // 0x7080_0000_0000 + (id * 16MB)
+        uint64_t user_base = 0x708000000000ULL + (buf->id * 0x1000000ULL);
         
-        for(uint64_t i=0; i<pages; i++) {
-             uint64_t k_vaddr = (uint64_t)buf->kernel_addr + i*4096;
-             uint64_t p_addr = MMU::GetPhysical(k_vaddr);
-             
-             if(!p_addr) {
-                 UART::Write("[BufferManager] MapToUser failed: heap page not present\n");
-                 return nullptr;
-             }
-             
-             MMU::MapPage(p_addr, user_base + i*4096, 0x07);
+        for (uint64_t i = 0; i < pages; i++) {
+            uint64_t u_vaddr = user_base + i * 4096;
+            uint64_t p_addr  = buf->phys_addr + i * 4096;
+            if (!MMU::MapPage(u_vaddr, p_addr, PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT)) {
+                UART::Write("[BufferManager] MapToUser failed in MMU::MapPage\n");
+                return nullptr;
+            }
         }
         
+        MMU::FlushTLBAll();
         buf->user_addr = user_base;
         return (void*)user_base;
     }

@@ -35,12 +35,25 @@ namespace Sync {
     }
 }
 
-// RAII lock guard
+// RAII lock guard (IRQ-safe + SMP-safe: equivalent to spin_lock_irqsave)
 class LockGuard {
     Spinlock* lock_;
+    uint64_t saved_flags_;
 public:
-    LockGuard(Spinlock* l) : lock_(l) { Sync::Lock(lock_); }
-    ~LockGuard() { Sync::Unlock(lock_); }
+    LockGuard(Spinlock* l) : lock_(l), saved_flags_(0) {
+        #if defined(__x86_64__)
+        __asm__ volatile("pushfq; pop %0; cli" : "=r"(saved_flags_) :: "memory");
+        #endif
+        Sync::Lock(lock_);
+    }
+    ~LockGuard() {
+        Sync::Unlock(lock_);
+        #if defined(__x86_64__)
+        if (saved_flags_ & 0x200) {
+            __asm__ volatile("sti" ::: "memory");
+        }
+        #endif
+    }
 };
 
 #define CRITICAL_SECTION(lock) LockGuard _guard_(&(lock))

@@ -23,6 +23,7 @@
 #include "system_info.h"
 #include "../../drm/drm.h"
 #include "../../drm/buffer_manager.h"
+#include "../../video/vulkan_layer.h"
 
 extern "C" uint64_t PIT_GetTicks();
 
@@ -206,9 +207,70 @@ static inline uint32_t ClampU32(uint32_t v, uint32_t lo, uint32_t hi) {
   return v;
 }
 
-static constexpr uint64_t kUserSpaceMin = 0x600000000000ULL;
-static constexpr uint64_t kUserSpaceMax = 0x7FFFFFFFFFFFULL;
-static inline bool IsUserPtr(uint64_t ptr) { return ptr >= kUserSpaceMin && ptr <= kUserSpaceMax; }
+static constexpr uint64_t kUserSpaceMin = 0x0000000040000000ULL;
+static constexpr uint64_t kUserSpaceMax = 0x00007FFFFFFFFFFFULL;
+
+static inline bool IsUserPtr(uint64_t ptr) {
+  return ptr >= kUserSpaceMin && ptr <= kUserSpaceMax;
+}
+
+static bool IsValidUserRange(uint64_t addr, size_t size, bool requireWritable = false) {
+  if (size == 0) return true;
+  if (addr < kUserSpaceMin) return false;
+  uint64_t end = addr + (uint64_t)size - 1ULL;
+  if (end < addr || end > kUserSpaceMax) return false;
+
+  uint32_t reqFlags = PAGE_PRESENT | PAGE_USER;
+  if (requireWritable) reqFlags |= PAGE_WRITABLE;
+
+  uint64_t firstPage = addr & ~0xFFFULL;
+  uint64_t lastPage  = end & ~0xFFFULL;
+  for (uint64_t page = firstPage; page <= lastPage; page += 0x1000ULL) {
+    if ((MMU::GetPageFlags(page) & reqFlags) != reqFlags) {
+      return false;
+    }
+    if (page == lastPage) break;
+  }
+  return true;
+}
+
+static bool CopyFromUser(void *dst, uint64_t userSrc, size_t size) {
+  if (!dst) return false;
+  if (size == 0) return true;
+  if (!IsValidUserRange(userSrc, size, false)) return false;
+  kmemcpy(dst, (const void *)userSrc, size);
+  return true;
+}
+
+static bool CopyToUser(uint64_t userDst, const void *src, size_t size) {
+  if (!src) return false;
+  if (size == 0) return true;
+  if (!IsValidUserRange(userDst, size, true)) return false;
+  kmemcpy((void *)userDst, src, size);
+  return true;
+}
+
+static bool CopyStringFromUser(char *dst, size_t maxLen, uint64_t userStr) {
+  if (!dst || maxLen == 0) return false;
+  if (userStr < kUserSpaceMin || userStr > kUserSpaceMax) return false;
+
+  uint64_t curPageChecked = ~0ULL;
+  for (size_t i = 0; i < maxLen - 1; i++) {
+    uint64_t addr = userStr + i;
+    if (addr < userStr || addr > kUserSpaceMax) return false;
+    uint64_t page = addr & ~0xFFFULL;
+    if (page != curPageChecked) {
+      uint32_t req = PAGE_PRESENT | PAGE_USER;
+      if ((MMU::GetPageFlags(page) & req) != req) return false;
+      curPageChecked = page;
+    }
+    char c = *(const char *)addr;
+    dst[i] = c;
+    if (c == '\0') return true;
+  }
+  dst[maxLen - 1] = '\0';
+  return true;
+}
 
 #ifdef MOUSE_DEBUG
 static uint64_t g_sysGetEventDelivered = 0;
@@ -371,10 +433,11 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
   case SYS_WRITE: {
     // POSIX-lite: arg1 = fd, arg2 = user buffer, arg3 = count
-    // Legacy fallback: arg1 = user buffer, arg3 = count
     uint64_t fd = arg1;
+    if (arg3 > 64 * 1024 * 1024) return (uint64_t)-1;
     if (fd == 1 || fd == 2) {
-      if (!arg2 || !IsUserPtr(arg2)) return (uint64_t)-1;
+      if (arg3 == 0) return 0;
+      if (!IsValidUserRange(arg2, (size_t)arg3, false)) return (uint64_t)-1;
       const char* buf = (const char*)arg2;
       for (uint64_t i = 0; i < arg3; i++) {
         EarlyTerm::PutChar(buf[i]);
@@ -384,13 +447,14 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     if (fd >= 3 && fd < MAX_PROCESS_FDS) {
       Task* cur = Scheduler::GetCurrentTask();
       if (!cur || !cur->fdTable[fd].in_use || !cur->fdTable[fd].node) return (uint64_t)-1;
-      if (!arg2 || !IsUserPtr(arg2)) return (uint64_t)-1;
+      if (arg3 == 0) return 0;
+      if (!IsValidUserRange(arg2, (size_t)arg3, false)) return (uint64_t)-1;
       uint32_t written = VFS::Write(cur->fdTable[fd].node, cur->fdTable[fd].offset, (uint32_t)arg3, (uint8_t*)arg2);
       cur->fdTable[fd].offset += written;
       return written;
     }
     // Legacy fallback: arg1 is user buffer pointer
-    if (arg1 >= 0x600000000000ULL && IsUserPtr(arg1)) {
+    if (arg1 >= 0x600000000000ULL && IsValidUserRange(arg1, (size_t)arg3, false)) {
       for (uint64_t i = 0; i < arg3; i++) {
         EarlyTerm::PutChar(((const char*)arg1)[i]);
       }
@@ -402,8 +466,10 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
   case SYS_READ: {
     // POSIX-lite: arg1 = fd, arg2 = user buffer, arg3 = count
     uint64_t fd = arg1;
+    if (arg3 > 64 * 1024 * 1024) return (uint64_t)-1;
     if (fd == 0) { // stdin
-      if (!arg2 || !IsUserPtr(arg2) || arg3 == 0) return 0;
+      if (arg3 == 0) return 0;
+      if (!IsValidUserRange(arg2, (size_t)arg3, true)) return (uint64_t)-1;
       char* out = (char*)arg2;
       uint64_t count = 0;
       char c = Keyboard::GetChar();
@@ -420,7 +486,8 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     if (fd >= 3 && fd < MAX_PROCESS_FDS) {
       Task* cur = Scheduler::GetCurrentTask();
       if (!cur || !cur->fdTable[fd].in_use || !cur->fdTable[fd].node) return (uint64_t)-1;
-      if (!arg2 || !IsUserPtr(arg2)) return (uint64_t)-1;
+      if (arg3 == 0) return 0;
+      if (!IsValidUserRange(arg2, (size_t)arg3, true)) return (uint64_t)-1;
       uint32_t bytesRead = VFS::Read(cur->fdTable[fd].node, cur->fdTable[fd].offset, (uint32_t)arg3, (uint8_t*)arg2);
       cur->fdTable[fd].offset += bytesRead;
       return bytesRead;
@@ -429,34 +496,96 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
   }
 
   case SYS_MALLOC: {
-    // Allocate user memory mapped with PAGE_USER in user address space (no KHeap exposure)
+    // Per-process dynamic user heap mapped with PAGE_USER in [0x6000_1000_0000, 0x6000_2000_0000)
     size_t size = (size_t)arg1;
-    if (size == 0 || size > 64 * 1024 * 1024) return 0;
+    if (size == 0 || size > 16 * 1024 * 1024) return 0;
+    Task* cur = Scheduler::GetCurrentTask();
+    if (!cur) return 0;
+
     size_t pages = (size + 4095) / 4096;
-    
-    static uint64_t s_userHeapBump = 0x600010000000ULL;
-    uint64_t user_virt = s_userHeapBump;
-    
-    for (size_t i = 0; i < pages; i++) {
-        void* phys = PMM::AllocPage();
-        if (!phys) return 0;
-        kmemset(phys, 0, 4096);
-        MMU::MapPage(user_virt + (i * 4096), (uint64_t)phys,
-                     PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT);
+    constexpr uint64_t USER_HEAP_MIN = 0x600010000000ULL;
+    constexpr uint64_t USER_HEAP_MAX = 0x600020000000ULL;
+    if (cur->heap_brk < USER_HEAP_MIN) cur->heap_brk = USER_HEAP_MIN;
+
+    if (cur->heap_brk + (pages * 4096ULL) > USER_HEAP_MAX) return 0;
+
+    int slot = -1;
+    for (int i = 0; i < MAX_USER_ALLOCS; i++) {
+      if (!cur->userAllocs[i].in_use) {
+        slot = i;
+        break;
+      }
     }
-    s_userHeapBump += pages * 4096;
+    if (slot == -1) return 0;
+
+    uint64_t user_virt = cur->heap_brk;
+    for (size_t i = 0; i < pages; i++) {
+      void* phys = PMM::AllocPage();
+      if (!phys) {
+        for (size_t r = 0; r < i; r++) {
+          uint64_t v = user_virt + (r * 4096ULL);
+          uint64_t p = MMU::GetPhysical(v);
+          MMU::UnmapPage(v);
+          if (p) PMM::FreePage((void*)p);
+        }
+        return 0;
+      }
+      kmemset(phys, 0, 4096);
+      if (!MMU::MapPage(user_virt + (i * 4096ULL), (uint64_t)phys,
+                        PAGE_USER | PAGE_WRITABLE | PAGE_PRESENT)) {
+        PMM::FreePage(phys);
+        for (size_t r = 0; r < i; r++) {
+          uint64_t v = user_virt + (r * 4096ULL);
+          uint64_t p = MMU::GetPhysical(v);
+          MMU::UnmapPage(v);
+          if (p) PMM::FreePage((void*)p);
+        }
+        return 0;
+      }
+    }
+
+    cur->heap_brk += pages * 4096ULL;
+    cur->userAllocs[slot].virt_addr = user_virt;
+    cur->userAllocs[slot].pages = (uint32_t)pages;
+    cur->userAllocs[slot].in_use = true;
     MMU::FlushTLBAll();
     return user_virt;
   }
 
-  case SYS_FREE:
-    return 0;
+  case SYS_FREE: {
+    uint64_t ptr = arg1;
+    if (ptr == 0) return 0;
+    Task* cur = Scheduler::GetCurrentTask();
+    if (!cur) return (uint64_t)-1;
+
+    for (int i = 0; i < MAX_USER_ALLOCS; i++) {
+      if (cur->userAllocs[i].in_use && cur->userAllocs[i].virt_addr == ptr) {
+        uint32_t pages = cur->userAllocs[i].pages;
+        for (uint32_t p = 0; p < pages; p++) {
+          uint64_t v = ptr + ((uint64_t)p * 4096ULL);
+          uint64_t phys = MMU::GetPhysical(v);
+          MMU::UnmapPage(v);
+          if (phys) PMM::FreePage((void*)phys);
+        }
+        cur->userAllocs[i].in_use = false;
+        cur->userAllocs[i].virt_addr = 0;
+        cur->userAllocs[i].pages = 0;
+        if (ptr + ((uint64_t)pages * 4096ULL) == cur->heap_brk) {
+          cur->heap_brk = ptr;
+        }
+        return 0;
+      }
+    }
+    return (uint64_t)-1;
+  }
 
   case SYS_OPEN: {
     // arg1 = user path, arg2 = flags
-    if (!arg1 || !IsUserPtr(arg1)) return (uint64_t)-1;
     Task* cur = Scheduler::GetCurrentTask();
     if (!cur) return (uint64_t)-1;
+
+    char path_buf[256];
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1)) return (uint64_t)-1;
 
     int free_fd = -1;
     for (int i = 3; i < MAX_PROCESS_FDS; i++) {
@@ -467,18 +596,9 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     }
     if (free_fd == -1) return (uint64_t)-1;
 
-    char path_buf[256];
-    const char* user_path = (const char*)arg1;
-    int i = 0;
-    while (i < 255) {
-      path_buf[i] = user_path[i];
-      if (path_buf[i] == 0) break;
-      i++;
-    }
-    path_buf[i] = 0;
-
     VFSNode* node = VFS::Open(path_buf);
     if (!node || node->type != NodeType::FILE) {
+      if (node) VFS::Close(node);
       return (uint64_t)-1;
     }
 
@@ -533,17 +653,13 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
   }
 
   case SYS_GET_EVENT: {
-    // Reduced logging: avoid noisy periodic GET_EVENT prints in normal runs.
-    if (arg1 == 0)
-      return 0;
-    // Basic sanity check just in case
-    if (!IsUserPtr(arg1))
+    if (!IsValidUserRange(arg1, sizeof(OSEvent), true))
       return 0;
 
     OSEvent kEv;
     if (InputManager::GetNextOSEvent(&kEv)) {
-      OSEvent *uEv = (OSEvent *)arg1;
-      *uEv = kEv;
+      if (!CopyToUser(arg1, &kEv, sizeof(OSEvent)))
+        return 0;
 
 #ifdef MOUSE_DEBUG
       g_sysGetEventDelivered++;
@@ -589,25 +705,24 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
   case SYS_GET_COMPOSITOR_PID:
     return InputManager::GetCompositorPID();
 
+  case SYS_WAITPID:
+    return (uint64_t)(int64_t)Scheduler::WaitPid(arg1);
+
   case 55: // SYS_GET_RTC_DATETIME
   {
-    if (arg1 == 0)
-      return 0;
-    if (!IsUserPtr(arg1))
+    if (!IsValidUserRange(arg1, sizeof(MorphicDateTime), true))
       return 0;
 
     MorphicDateTime dt = {};
     bool ok = ReadRtcStable(&dt);
-    MorphicDateTime *u = (MorphicDateTime *)arg1;
-    *u = dt;
+    if (!CopyToUser(arg1, &dt, sizeof(MorphicDateTime)))
+      return 0;
     return ok ? 1 : 0;
   }
 
   case 56: // SYS_GET_SYSTEM_INFO
   {
-    if (arg1 == 0)
-      return 0;
-    if (!IsUserPtr(arg1))
+    if (!IsValidUserRange(arg1, sizeof(MorphicSystemInfo), true))
       return 0;
 
     MorphicSystemInfo si = {};
@@ -634,8 +749,8 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     si.disk_total_bytes = max_size;
     si.disk_free_bytes = 0; // TODO: Implement FS free space check
 
-    MorphicSystemInfo *u = (MorphicSystemInfo *)arg1;
-    *u = si;
+    if (!CopyToUser(arg1, &si, sizeof(MorphicSystemInfo)))
+      return 0;
     return 1;
   }
 
@@ -693,7 +808,12 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
   case 50: // SYS_VIDEO_MAP
   {
-    // SYS_VIDEO_MAP called by userspace to map kernel backbuffer (silent)
+    // Privilege check: only the registered Compositor (or before registration) may map the DRM backbuffer
+    uint64_t compPid = InputManager::GetCompositorPID();
+    uint64_t callerPid = Scheduler::GetCurrentTaskId();
+    if (compPid != 0 && callerPid != compPid && Scheduler::GetTaskById(compPid) != nullptr) {
+      return 0;
+    }
 
     // For Desktop (compositor), we need to share the SAME backbuffer as the
     // kernel. This ensures Desktop's drawing and ComposeAppWindowsOnly()
@@ -829,15 +949,20 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     if (y + h > fb_h)
       h = fb_h - y;
 
+    size_t totalSrcBytes = (size_t)fb_w * (size_t)fb_h * 4;
+    if (!IsValidUserRange(arg1, totalSrcBytes, false))
+      return 0;
+
     uint32_t *src = (uint32_t *)arg1;
 
     // VSync wait with short timeout for smooth rendering
     // 2ms timeout prevents hanging in VNC while still reducing tearing
     bool vsynced = WaitVBlankTimeoutMs(2);
 
-    // Copy only the rectangle.
+    // Copy only the rectangle (respect byte pitch vs pixel stride!)
+    uint32_t dst_stride = (dest == Graphics::GetVRAM() && pitch >= fb_w * 4) ? (pitch / 4) : fb_w;
     for (uint32_t row = 0; row < h; row++) {
-      uint64_t dst_off = (uint64_t)(y + row) * pitch + x;
+      uint64_t dst_off = (uint64_t)(y + row) * dst_stride + x;
       uint64_t src_off = (uint64_t)(y + row) * fb_w + x;
       blit_fast_32(&dest[dst_off], &src[src_off], w);
     }
@@ -852,16 +977,14 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     // NOTE: We assume userspace uses sys_get_event instead.
     return 0;
 
-  case 65: // SYS_POST_MESSAGE (targetPid, eventPtr)
+  case SYS_POST_MESSAGE: // (targetPid, eventPtr)
   {
     uint64_t targetPid = arg1;
-    uint64_t msgPtr = arg2;
-    if (msgPtr < 0x600000000000ULL)
+    OSEvent ev;
+    if (!CopyFromUser(&ev, arg2, sizeof(OSEvent)))
       return 0;
 
-    OSEvent ev = *(OSEvent *)msgPtr; // Copy from user
-    Scheduler::PushEventToTask(targetPid, ev);
-    return 1;
+    return Scheduler::PushEventToTask(targetPid, ev) ? 1 : 0;
   }
 
   case 66:                                   // SYS_COMPOSE_LAYERS
@@ -869,7 +992,15 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     return 0;
 
   case 67: // SYS_GET_WINDOW_LIST (buffer, max)
-    return Compositor::GetWindowList((void *)arg1, (uint32_t)arg2);
+  {
+    uint32_t max_count = (uint32_t)arg2;
+    if (max_count == 0) return 0;
+    if (max_count > 64) max_count = 64;
+    // Each WindowInfo entry is 64 bytes
+    if (!IsValidUserRange(arg1, (size_t)max_count * 64ULL, true))
+      return 0;
+    return Compositor::GetWindowList((void *)arg1, max_count);
+  }
 
   case 68: // SYS_UPDATE_WINDOW (id, pos, size)
     Compositor::UpdateWindow(
@@ -880,23 +1011,16 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
   case 70: // SYS_SET_KEYMAP
   {
-    uint64_t ptr = arg1;
-    if (ptr < 0x600000000000ULL)
-      return 0; // Sanity check user pointer
-
-    char id[4];
-    char *user_id = (char *)ptr;
-    // Copy safely
-    for (int i = 0; i < 3; i++)
-      id[i] = user_id[i];
-    id[3] = 0;
+    char id[8];
+    if (!CopyStringFromUser(id, sizeof(id), arg1))
+      return 0;
 
     if (KeymapHAL::SetKeymap(id))
       return 1;
     return 0;
   }
 
-  case 62: // SYS_CREATE_WINDOW (width, height, flags)
+  case SYS_CREATE_WINDOW: // (width, height, flags)
   {
     UART::Write("[SYS_CREATE_WINDOW] Entry - caller task: ");
     UART::WriteDec(Scheduler::GetCurrentTaskId());
@@ -941,26 +1065,16 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
   }
 
   case SYS_SPAWN: {
-    const char *user_path = (const char *)arg1;
-    // Copy path to kernel stack buffer (256 chars max)
-    // This is crucial because user_path is in the Caller's address space (e.g.
-    // 0x6000...) Once we switch CR3 to the new process, that address space is
-    // GONE.
     char path_buf[256];
-    int i = 0;
-    while (i < 255) {
-      path_buf[i] = user_path[i];
-      if (path_buf[i] == 0)
-        break;
-      i++;
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1)) {
+      return (uint64_t)-1;
     }
-    path_buf[i] = 0; // Ensure null termination
 
     // 1. Create a new Process Address Space (PML4)
     uint64_t newCR3 = MMU::CreatePageTable();
     if (!newCR3) {
       UART::Write("[Syscall] Spawn failed: Cannot create Page Table\n");
-      return -1;
+      return (uint64_t)-1;
     }
 
     // 2. Switch to new Address Space temporarily
@@ -973,10 +1087,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     MMU::SwitchPageTable(newCR3);
 
     // 3. Load App at FIXED Base Address (Standard Morphic App Base)
-    // Since we are in a new address space, we can reuse 0x600000000000
     const uint64_t APP_BASE = 0x600000000000ULL;
-    // Use path_buf which is on Kernel Stack (mapped in Identity/Kernel Space,
-    // so visible in newCR3)
     LoadedProcess proc = PackageLoader::Load(path_buf, APP_BASE);
 
     // 4. Switch back to Kernel/Caller Address Space
@@ -986,31 +1097,44 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
       HAL::Platform::EnableInterrupts();
 
     if (proc.error_code == 0) {
-      // 5. Register Task with the NEW CR3
-      // The Scheduler will switch to newCR3 when running this task
-      Scheduler::CreateUserTask((void (*)())proc.entry_point,
-                                (void *)proc.stack_top, newCR3, proc.arg1);
-      return 0; // Success
+      // 5. Register Task with the NEW CR3 and return its PID (> 0)
+      uint64_t newPid = Scheduler::CreateUserTask(
+          (void (*)())proc.entry_point, (void *)proc.stack_top, newCR3,
+          proc.arg1);
+      if (newPid == 0) {
+        MMU::DestroyPageTable(newCR3);
+        return (uint64_t)-1;
+      }
+      return newPid;
     } else {
       UART::Write("[Syscall] Spawn failed: Loader error ");
       UART::WriteDec(proc.error_code);
       UART::Write("\n");
       MMU::DestroyPageTable(newCR3);
-      return (uint64_t)proc.error_code;
+      return (uint64_t)(int64_t)proc.error_code;
     }
   }
 
-  case SYS_DEBUG_PRINT:
-    UART::Write((const char *)arg1);
+  case SYS_DEBUG_PRINT: {
+    char dbg_buf[512];
+    if (!CopyStringFromUser(dbg_buf, sizeof(dbg_buf), arg1))
+      return (uint64_t)-1;
+    UART::Write(dbg_buf);
     return 0;
+  }
 
-  case SYS_REGISTER_COMPOSITOR:
-    // arg1: Unused (Registers Current Process)
-    InputManager::SetCompositorPID(Scheduler::GetCurrentTaskId());
+  case SYS_REGISTER_COMPOSITOR: {
+    uint64_t existingComp = InputManager::GetCompositorPID();
+    uint64_t callerPid = Scheduler::GetCurrentTaskId();
+    if (existingComp != 0 && existingComp != callerPid &&
+        Scheduler::GetTaskById(existingComp) != nullptr) {
+      return (uint64_t)-1; // Reject unauthorized hijack of compositor slot
+    }
+    InputManager::SetCompositorPID(callerPid);
     Compositor::EnableUserspaceMode();
-    // Disable kernel terminal output - Desktop now owns the display
     EarlyTerm::Disable();
     return 0;
+  }
 
   case SYS_MAP_WINDOW: {
     // arg1: WindowID
@@ -1046,40 +1170,37 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
   case SYS_READDIR: // arg1=path, arg2=entries buffer, arg3=max_entries
   {
-    const char *user_path = (const char *)arg1;
-    if (!user_path || arg1 < 0x600000000000ULL)
-      return 0;
-    if (!arg2 || arg2 < 0x600000000000ULL)
-      return 0;
-
-    // Copy path from userspace
-    char path_buf[128];
-    for (int i = 0; i < 127; i++) {
-      path_buf[i] = user_path[i];
-      if (path_buf[i] == 0)
-        break;
-    }
-    path_buf[127] = 0;
-
-    // Open directory via VFS
-    VFSNode *dir = VFS::Open(path_buf);
-    if (!dir || dir->type != NodeType::DIRECTORY)
-      return 0;
-
-    uint32_t count = 0;
-    VFSNode **children = VFS::ListDir(dir, &count);
-    if (!children)
-      return 0;
-
-    // Define entry struct matching userspace
     struct DirEntry {
       char name[64];
       uint32_t type; // 0=file, 1=directory
       uint32_t size;
     };
 
-    DirEntry *user_entries = (DirEntry *)arg2;
     uint32_t max_entries = (uint32_t)arg3;
+    if (max_entries == 0) return 0;
+    if (max_entries > 256) max_entries = 256;
+
+    char path_buf[256];
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1))
+      return 0;
+    if (!IsValidUserRange(arg2, (size_t)max_entries * sizeof(DirEntry), true))
+      return 0;
+
+    // Open directory via VFS (handles both InitRD and mounted filesystems)
+    VFSNode *dir = VFS::Open(path_buf);
+    if (!dir || dir->type != NodeType::DIRECTORY) {
+      if (dir) VFS::Close(dir);
+      return 0;
+    }
+
+    uint32_t count = 0;
+    VFSNode **children = VFS::ListDir(dir, &count);
+    if (!children) {
+      VFS::Close(dir);
+      return 0;
+    }
+
+    DirEntry *user_entries = (DirEntry *)arg2;
     uint32_t written = 0;
 
     for (uint32_t i = 0; i < count && written < max_entries; i++) {
@@ -1087,7 +1208,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
       if (!node)
         continue;
 
-      // Copy name
+      kmemset(&user_entries[written], 0, sizeof(DirEntry));
       for (int j = 0; j < 63 && node->name[j]; j++) {
         user_entries[written].name[j] = node->name[j];
         user_entries[written].name[j + 1] = 0;
@@ -1097,7 +1218,8 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
       written++;
     }
 
-    kfree(children);
+    VFS::FreeDirList(children, count);
+    VFS::Close(dir);
     return written;
   }
 
@@ -1159,53 +1281,121 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
   case SYS_READ_FILE: // arg1=path, arg2=buffer, arg3=max_size
   {
-    const char *user_path = (const char *)arg1;
-    if (!user_path || arg1 < 0x600000000000ULL)
+    if (arg3 == 0 || arg3 > 64 * 1024 * 1024)
       return (uint64_t)-1;
-    if (!arg2 || arg2 < 0x600000000000ULL)
-      return (uint64_t)-1;
-
     char path_buf[256];
-    for (int i = 0; i < 255; i++) {
-      path_buf[i] = user_path[i];
-      if (path_buf[i] == 0)
-        break;
-    }
-    path_buf[255] = 0;
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1))
+      return (uint64_t)-1;
+    if (!IsValidUserRange(arg2, (size_t)arg3, true))
+      return (uint64_t)-1;
 
     VFSNode *node = VFS::Open(path_buf);
-    if (!node || node->type != NodeType::FILE)
+    if (!node || node->type != NodeType::FILE) {
+      if (node) VFS::Close(node);
       return (uint64_t)-1;
+    }
 
     uint64_t max_size = arg3;
     if (max_size > node->size)
       max_size = node->size;
 
     uint8_t *user_buf = (uint8_t *)arg2;
-    uint64_t read = VFS::Read(node, 0, max_size, user_buf);
+    uint64_t read = VFS::Read(node, 0, (uint32_t)max_size, user_buf);
+    VFS::Close(node);
     return read;
   }
 
-  case SYS_YIELD: // Voluntarily yield CPU time
+  case SYS_WRITE_FILE: // arg1=path, arg2=buffer, arg3=size
   {
-    // Force a context switch by calling scheduler
-    // For now just return immediately to allow other tasks to run
-    __asm__ volatile("pause"); // CPU hint for spin-wait
+    if (arg3 > 64 * 1024 * 1024)
+      return (uint64_t)-1;
+    char path_buf[256];
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1))
+      return (uint64_t)-1;
+    if (arg3 > 0 && !IsValidUserRange(arg2, (size_t)arg3, false))
+      return (uint64_t)-1;
+
+    VFSNode *node = VFS::Open(path_buf);
+    if (!node) {
+      node = VFS::CreateFile(path_buf);
+    }
+    if (!node || node->type != NodeType::FILE) {
+      if (node) VFS::Close(node);
+      return (uint64_t)-1;
+    }
+
+    uint32_t written = (arg3 > 0) ? VFS::Write(node, 0, (uint32_t)arg3, (uint8_t *)arg2) : 0;
+    VFS::Close(node);
+    return written;
+  }
+
+  case SYS_CREATE_FILE: // arg1=path
+  {
+    char path_buf[256];
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1))
+      return (uint64_t)-1;
+    VFSNode *node = VFS::CreateFile(path_buf);
+    if (!node) return (uint64_t)-1;
+    VFS::Close(node);
+    return 0;
+  }
+
+  case SYS_DELETE_FILE: // arg1=path
+  {
+    char path_buf[256];
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1))
+      return (uint64_t)-1;
+    if (VFS::Delete(path_buf) || VFS::Rmdir(path_buf))
+      return 0;
+    return (uint64_t)-1;
+  }
+
+  case SYS_MKDIR: // arg1=path
+  {
+    char path_buf[256];
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1))
+      return (uint64_t)-1;
+    VFSNode *node = VFS::Mkdir(path_buf);
+    if (!node) return (uint64_t)-1;
+    VFS::Close(node);
+    return 0;
+  }
+
+  case SYS_STAT: // arg1=path, arg2=FileStat*
+  {
+    char path_buf[256];
+    if (!CopyStringFromUser(path_buf, sizeof(path_buf), arg1))
+      return (uint64_t)-1;
+    if (!IsValidUserRange(arg2, sizeof(FileStat), true))
+      return (uint64_t)-1;
+    FileStat st = {};
+    if (!VFS::Stat(path_buf, &st))
+      return (uint64_t)-1;
+    if (!CopyToUser(arg2, &st, sizeof(FileStat)))
+      return (uint64_t)-1;
+    return 0;
+  }
+
+  case SYS_YIELD: // Voluntarily yield CPU timeslice to scheduler
+  {
+    Scheduler::Yield();
     return 0;
   }
 
   case SYS_LIST_MOUNTS: // arg1=buffer, arg2=max_entries
   {
-    if (!arg1 || arg1 < 0x600000000000ULL)
-      return 0;
-
     struct MountEntry {
       char path[32];
       char fstype[16];
     };
 
-    MountEntry *entries = (MountEntry *)arg1;
     uint32_t max_entries = (uint32_t)arg2;
+    if (max_entries == 0) return 0;
+    if (max_entries > 32) max_entries = 32;
+    if (!IsValidUserRange(arg1, (size_t)max_entries * sizeof(MountEntry), true))
+      return 0;
+
+    MountEntry *entries = (MountEntry *)arg1;
     uint32_t count = 0;
 
     // Use MountManager for dynamic mount enumeration
@@ -1302,30 +1492,26 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
     case 97: // sys_drm_get_caps(out_caps)
     {
-      if (!arg1 || !IsUserPtr(arg1))
+      if (!IsValidUserRange(arg1, sizeof(GraphicsUapiCaps), true))
         return 0;
 
       GraphicsUapiCaps caps = {};
       if (!DRM::GetUapiCaps(&caps))
         return 0;
 
-      GraphicsUapiCaps* out_caps = (GraphicsUapiCaps*)arg1;
-      *out_caps = caps;
-      return 1;
+      return CopyToUser(arg1, &caps, sizeof(GraphicsUapiCaps)) ? 1 : 0;
     }
 
     case 98: // sys_drm_poll_event(out_event)
     {
-      if (!arg1 || !IsUserPtr(arg1))
+      if (!IsValidUserRange(arg1, sizeof(GraphicsUapiEvent), true))
         return 0;
 
       GraphicsUapiEvent ev = {};
       if (!DRM::PollUapiEvent(&ev))
         return 0;
 
-      GraphicsUapiEvent* out_event = (GraphicsUapiEvent*)arg1;
-      *out_event = ev;
-      return 1;
+      return CopyToUser(arg1, &ev, sizeof(GraphicsUapiEvent)) ? 1 : 0;
     }
 
     case SYS_GET_INPUT_DROP_COUNT:
@@ -1357,6 +1543,68 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
       req.full_update = (arg3 & 2) != 0;
       req.has_damage = (req.w > 0 && req.h > 0);
       return DRM::AtomicCommit(req) ? 1 : 0;
+    }
+
+    case SYS_VK_QUERY_DEVICE:
+    {
+      if (!IsValidUserRange(arg1, sizeof(MorphicVkPhysicalDeviceInfo), true))
+        return 0;
+      MorphicVkPhysicalDeviceInfo info = {};
+      if (!VulkanLayer::QueryDevice(&info))
+        return 0;
+      return CopyToUser(arg1, &info, sizeof(MorphicVkPhysicalDeviceInfo)) ? 1 : 0;
+    }
+
+    case SYS_VK_SUBMIT:
+    {
+      MorphicVkSubmitInfo sub = {};
+      if (!CopyFromUser(&sub, arg1, sizeof(MorphicVkSubmitInfo)))
+        return (uint64_t)-1;
+      if (sub.cmd_count == 0)
+        return 0;
+      if (sub.cmd_count > 4096)
+        return (uint64_t)-1;
+
+      size_t pktBytes = (size_t)sub.cmd_count * sizeof(MorphicVkCmdPacket);
+      if (!IsValidUserRange(sub.cmd_packets_ptr, pktBytes, false))
+        return (uint64_t)-1;
+
+      uint32_t* targetPtr = nullptr;
+      uint32_t tw = 0, th = 0, tstride = 0;
+      bool trackDrm = false;
+
+      if (sub.target_surface_virt == 0) {
+        // Render to DRM primary compositor buffer (restricted to registered compositor)
+        uint64_t compPid = InputManager::GetCompositorPID();
+        uint64_t callerPid = Scheduler::GetCurrentTaskId();
+        if (compPid != 0 && callerPid != compPid && Scheduler::GetTaskById(compPid) != nullptr)
+          return (uint64_t)-1;
+        targetPtr = DRM::GetCompositorBuffer();
+        tw = Graphics::GetWidth();
+        th = Graphics::GetHeight();
+        tstride = tw;
+        trackDrm = (sub.flags & 1u) != 0;
+      } else {
+        if (sub.target_width == 0 || sub.target_height == 0 ||
+            sub.target_width > 4096 || sub.target_height > 4096)
+          return (uint64_t)-1;
+        tw = sub.target_width;
+        th = sub.target_height;
+        tstride = (sub.target_stride_px >= tw) ? sub.target_stride_px : tw;
+        size_t surfBytes = (size_t)tstride * (size_t)th * sizeof(uint32_t);
+        if (!IsValidUserRange(sub.target_surface_virt, surfBytes, true))
+          return (uint64_t)-1;
+        targetPtr = (uint32_t*)sub.target_surface_virt;
+      }
+
+      if (!targetPtr)
+        return (uint64_t)-1;
+
+      int done = VulkanLayer::ExecuteCommandPackets(
+          targetPtr, tw, th, tstride,
+          (const MorphicVkCmdPacket*)sub.cmd_packets_ptr,
+          sub.cmd_count, trackDrm);
+      return (done >= 0) ? (uint64_t)done : (uint64_t)-1;
     }
 
   default:

@@ -98,6 +98,7 @@ namespace BufferManager {
      * @param buffer Buffer to destroy
      */
     void DestroyBuffer(SharedBuffer* buffer);
+    void DestroyBuffersByPID(uint64_t pid);
     
     /**
      * Get buffer by ID

@@ -332,12 +332,21 @@ Structs compartidos (kernel ↔ userspace):
 - `54 SYS_VIDEO_FLIP_RECT(arg1=backbuffer_ptr, arg2=(x<<32)|y, arg3=(w<<32)|h)` → presenta solo rectángulo (dirty-rect)
 - `55 SYS_GET_RTC_DATETIME(arg1=MorphicDateTime*)` → `1` si OK (lectura de CMOS/RTC)
 - `56 SYS_GET_SYSTEM_INFO(arg1=MorphicSystemInfo*)` → `1` si OK (CPU, memoria total/libre)
-- `60 SYS_SPAWN(arg1=path)` → lanza un paquete `.mpk` en un nuevo proceso
-- `61 SYS_DEBUG_PRINT(arg1=str)` → envía traza de depuración a COM1 (serial)
+- `60 SYS_SPAWN(arg1=path)` → lanza un paquete `.mpk` en un nuevo proceso y devuelve su `PID` (>0)
+- `61 SYS_DEBUG_PRINT(arg1=str)` → envía traza de depuración validada a COM1 (serial)
 - `62 SYS_CREATE_WINDOW(arg1=w, arg2=h, arg3=flags)` → crea superficie de ventana para app cliente
 - `63 SYS_REGISTER_COMPOSITOR` → registra el proceso actual como gestor exclusivo de pantalla
+- `64 SYS_MAP_WINDOW(arg1=win_id)` → mapea superficie de ventana cliente en `0x7000...`
 - `65 SYS_POST_MESSAGE(arg1=pid, arg2=ev)` → IPC entre procesos (Compositor <-> Clientes)
 - `70 SYS_SET_KEYMAP(arg1=char* map_code)` → cambia layout ("US", "ES", "LA")
+- `71 SYS_READDIR(arg1=path, arg2=entries, arg3=max)` → lista directorio en VFS o montaje FAT32
+- `74 SYS_READ_FILE(arg1=path, arg2=buf, arg3=max)` → lee archivo desde VFS o unidad montada
+- `75 SYS_WRITE_FILE(arg1=path, arg2=buf, arg3=size)` → escribe/crea archivo en VFS o FAT32
+- `76..79 SYS_CREATE_FILE / SYS_DELETE_FILE / SYS_MKDIR / SYS_STAT` → gestión persistente de archivos
+- `80 SYS_YIELD` → cede voluntariamente el cuanto de CPU al scheduler (`int 0x81`)
+- `83..85 SYS_GET_PID / SYS_GET_COMPOSITOR_PID / SYS_WAITPID` → gestión y sincronización de procesos
+- `90..101 SYS_DRM_*` → buffers compartidos DRM (`PMM` + `PAGE_USER`) y commit atómico
+- `102..103 SYS_VK_QUERY_DEVICE / SYS_VK_SUBMIT` → reconocimiento PCI GPU (NVIDIA/AMD/Intel/VirtIO) y capa de traducción Vulkan 1.3 en tiempo real (`MorphicVK`)
 
 ## Rendimiento: qué se optimiza y por qué
 

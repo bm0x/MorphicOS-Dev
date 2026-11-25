@@ -114,8 +114,23 @@ void* operator new(size_t size) {
         current = current->next;
     }
     
-    // Out of memory - should call sys_panic but we're in userspace
+    // Dynamic expansion via kernel SYS_MALLOC (PAGE_USER pages in 0x6000_1000_0000)
+    size_t growBytes = (totalSize > 65536) ? ((totalSize + 4095) & ~size_t(4095)) : 65536;
+    void* newChunk = sys_malloc(growBytes);
+    if (newChunk) {
+        BlockHeader* chunkBlock = reinterpret_cast<BlockHeader*>(newChunk);
+        chunkBlock->size = growBytes;
+        chunkBlock->magic = 0xDEADBEEF;
+        chunkBlock->next = nullptr;
+        operator delete(reinterpret_cast<uint8_t*>(chunkBlock) + sizeof(BlockHeader));
+        return operator new(size);
+    }
+
     return nullptr;
+}
+
+void* operator new[](size_t size) {
+    return operator new(size);
 }
 
 void operator delete(void* ptr) noexcept {
@@ -154,6 +169,14 @@ void operator delete(void* ptr) noexcept {
 
 void operator delete(void* ptr, size_t) noexcept {
     operator delete(ptr);  // Delegate to standard delete
+}
+
+void operator delete[](void* ptr) noexcept {
+    operator delete(ptr);
+}
+
+void operator delete[](void* ptr, size_t) noexcept {
+    operator delete(ptr);
 }
 
 extern "C" {

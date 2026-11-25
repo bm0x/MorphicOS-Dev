@@ -21,16 +21,16 @@ void GDT::Init() {
     for (int i = 0; i < 8; i++) gdt[i] = 0;
     
     // 1: Kernel Code (0x08) - Ring 0, Execute/Read
-    SetGDTEntry(gdt, 1, 0x9A, 0xAF);
+    SetGDTEntry(gdt, 1, 0x9B, 0xAF);
     
     // 2: Kernel Data (0x10) - Ring 0, Read/Write
-    SetGDTEntry(gdt, 2, 0x92, 0xCF);
+    SetGDTEntry(gdt, 2, 0x93, 0xCF);
     
     // 3: User Data (0x18) - Ring 3, Read/Write
-    SetGDTEntry(gdt, 3, 0xF2, 0xCF);
+    SetGDTEntry(gdt, 3, 0xF3, 0xCF);
     
     // 4: User Code (0x20) - Ring 3, Execute/Read
-    SetGDTEntry(gdt, 4, 0xFA, 0xAF);
+    SetGDTEntry(gdt, 4, 0xFB, 0xAF);
     
     // 5-6: TSS (0x28) - Will be set by LoadTSS()
     for (int i = 40; i < 56; i++) gdt[i] = 0;

@@ -34,6 +34,8 @@
 namespace UART {
     static uint32_t activePort = COM1_BASE;
     static bool initialized = false;
+    // Panic-proof log: RAM ring (visible from debugger / crash dump) + QEMU/VirtualBox debugcon (0xE9)
+    extern "C" { char morphic_klog[16384]; volatile uint32_t morphic_klog_pos = 0; }
     
     void Init() {
         UARTConfig config = UART_CONFIG_DEFAULT;
@@ -74,8 +76,10 @@ namespace UART {
         IO::outb(port_base + UART_DATA, 0xAE); // Send test byte
         
         if (IO::inb(port_base + UART_DATA) != 0xAE) {
-            // Serial port failed, unusable
-            initialized = false;
+            // Loopback failed (no 16550 / emulated differently): keep TX usable anyway,
+            // output is also mirrored to debugcon 0xE9 and the RAM ring.
+            IO::outb(port_base + UART_MCR, 0x0F);
+            initialized = true;
             return;
         }
         
@@ -90,11 +94,12 @@ namespace UART {
     }
     
     void PutChar(char c) {
-        if (!initialized) return;
-        
-        // Wait for transmit buffer empty
-        while (!(IO::inb(activePort + UART_LSR) & LSR_TX_EMPTY));
-        
+        morphic_klog[morphic_klog_pos++ & (sizeof(morphic_klog) - 1)] = c;
+        IO::outb(0xE9, (uint8_t)c);
+        // Always attempt COM1 (even before Init) with bounded wait: never silent, never hangs
+        for (uint32_t spin = 0; spin < 100000; spin++) {
+            if (IO::inb(activePort + UART_LSR) & LSR_TX_EMPTY) break;
+        }
         IO::outb(activePort + UART_DATA, c);
     }
     
@@ -112,7 +117,7 @@ namespace UART {
     }
     
     void Write(const char* str) {
-        if (!initialized || !str) return;
+        if (!str) return;
         
         while (*str) {
             if (*str == '\n') PutChar('\r');  // CR before LF

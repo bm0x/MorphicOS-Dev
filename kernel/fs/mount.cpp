@@ -1,4 +1,5 @@
 #include "mount.h"
+#include "vfs.h"
 #include "../hal/video/early_term.h"
 #include "../utils/std.h"
 
@@ -97,6 +98,7 @@ namespace Mount {
         mp->fs = fs;
         mp->active = true;
         mountCount++;
+        VFS::EnsureMountStub(mp->path);
         
         EarlyTerm::Print("[Mount] Mounted ");
         EarlyTerm::Print(fs_type);
@@ -218,6 +220,7 @@ namespace Mount {
         mp->fs = fs;
         mp->active = true;
         mountCount++;
+        VFS::EnsureMountStub(mp->path);
         
         return true;
     }

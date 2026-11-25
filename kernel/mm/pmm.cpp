@@ -1,5 +1,11 @@
 #include "pmm.h"
+#include "../arch/common/spinlock.h"
 #include "../hal/video/early_term.h"
+
+extern "C" uint8_t _kernel_start[];
+extern "C" uint8_t _kernel_end[];
+
+static Spinlock pmmLock = SPINLOCK_INIT;
 
 // Static members
 Bitmap PMM::bitmap;
@@ -114,57 +120,83 @@ void PMM::Init(BootInfo* bootInfo) {
     }
 
 
-    // 6. Protect Critical Regions (Mark as Used)
-    
+    // 6. Protect Critical Regions (Mark as Used with exact freeRAM accounting)
     // A. Bitmap Itself
-    uint64_t bitmapStartPage = (uint64_t)bitmapBuffer / 4096;
-    uint64_t bitmapPages = (bitmapSize + 4095) / 4096;
-    bitmap.SetRange(bitmapStartPage, bitmapPages, true);
-    // freeRAM update is tricky with range, let's just ignore precise freeRAM count adjustment for reserved areas 
-    // or recalculate. It's fine, strict accounting isn't critical for boot speed, safety is.
-    // Actually we should subtract.
-    // Approximating freeRAM subtraction:
-    if (freeRAM >= bitmapPages * 4096) freeRAM -= bitmapPages * 4096;
+    ReserveRange((uint64_t)bitmapBuffer, bitmapSize);
 
-    // B. Kernel Reserved Zone (0 - 256MB)
-    constexpr uint64_t LOW_RESERVED_SIZE = 0x10000000; // 256MB
-    uint64_t lowPages = LOW_RESERVED_SIZE / 4096;
-    bitmap.SetRange(0, lowPages, true);
-     if (freeRAM >= lowPages * 4096) freeRAM -= lowPages * 4096;
+    // B. Kernel Low Reserved Zone (0 - 256MB)
+    constexpr uint64_t LOW_RESERVED_SIZE = 0x10000000ULL; // 256MB
+    ReserveRange(0, LOW_RESERVED_SIZE);
     
-    // C. The Actual Kernel (Loaded at 1GB = 0x40000000)
-    // We reserve 16MB for Kernel Code/Data/BSS/Stack
-    constexpr uint64_t KERNEL_PHYS_BASE = 0x40000000;
-    constexpr uint64_t KERNEL_SIZE_MAX = 0x01000000; // 16MB
-    
-    uint64_t kernelStartPage = KERNEL_PHYS_BASE / 4096;
-    uint64_t kernelPages = KERNEL_SIZE_MAX / 4096;
-    
-    bitmap.SetRange(kernelStartPage, kernelPages, true);
-    if (freeRAM >= kernelPages * 4096) freeRAM -= kernelPages * 4096;
+    // C. The Actual Kernel (Default 1GB region + linker symbols + relocated kernel if any)
+    constexpr uint64_t KERNEL_PHYS_BASE = 0x40000000ULL;
+    constexpr uint64_t KERNEL_SIZE_MAX  = 0x01000000ULL; // 16MB baseline guard
+    ReserveRange(KERNEL_PHYS_BASE, KERNEL_SIZE_MAX);
+
+    uint64_t kStart = (uint64_t)_kernel_start;
+    uint64_t kEnd   = (uint64_t)_kernel_end;
+    if (kEnd > kStart) {
+        ReserveRange(kStart, kEnd - kStart);
+    }
+    if (bootInfo->kernelBasePhys != 0 && bootInfo->kernelSize != 0) {
+        ReserveRange(bootInfo->kernelBasePhys, bootInfo->kernelSize);
+    }
+
+    // D. BootInfo, UEFI Memory Map, and InitRD (allocated as EfiLoaderData by bootloader)
+    ReserveRange((uint64_t)bootInfo, sizeof(BootInfo));
+    if (bootInfo->memoryMap != nullptr && bootInfo->memoryMapSize > 0) {
+        ReserveRange((uint64_t)bootInfo->memoryMap, bootInfo->memoryMapSize);
+    }
+    if (bootInfo->initrdAddr != 0 && bootInfo->initrdSize > 0) {
+        ReserveRange(bootInfo->initrdAddr, bootInfo->initrdSize);
+    }
+}
+
+void PMM::ReserveRange(uint64_t physAddr, uint64_t byteSize) {
+    if (byteSize == 0) return;
+    uint64_t maxPages = highestAddr / 4096;
+    uint64_t startPage = physAddr / 4096;
+    if (startPage >= maxPages) return;
+
+    uint64_t endAddr = physAddr + byteSize;
+    if (endAddr < physAddr || endAddr > highestAddr) {
+        endAddr = highestAddr;
+    }
+    uint64_t endPage = (endAddr + 4095) / 4096;
+    if (endPage > maxPages) endPage = maxPages;
+
+    for (uint64_t p = startPage; p < endPage; p++) {
+        if (!bitmap.Get(p)) {
+            bitmap.Set(p, true);
+            if (freeRAM >= 4096) freeRAM -= 4096;
+        }
+    }
 }
 
 // Optimization: Start search from last known free index
 static uint64_t lastFreeIndex = 0;
 
 void* PMM::AllocPage() {
+    CRITICAL_SECTION(pmmLock);
     uint64_t limit = highestAddr / 4096;
+    constexpr uint64_t minPage = 0x10000000ULL / 4096; // Never hand out < 256MB
+    uint64_t searchStart = (lastFreeIndex >= minPage) ? lastFreeIndex : minPage;
     
     // Quick search starting from hint
-    for (uint64_t i = lastFreeIndex; i < limit; i++) {
+    for (uint64_t i = searchStart; i < limit; i++) {
         if (!bitmap.Get(i)) {
             bitmap.Set(i, true);
-            freeRAM -= 4096;
+            if (freeRAM >= 4096) freeRAM -= 4096;
             lastFreeIndex = i + 1; // Update hint
             return (void*)(i * 4096);
         }
     }
     
-    // Fallback: search from beginning
-    for (uint64_t i = 0; i < lastFreeIndex; i++) {
+    // Fallback: search from 256MB boundary
+    for (uint64_t i = minPage; i < searchStart && i < limit; i++) {
         if (!bitmap.Get(i)) {
             bitmap.Set(i, true);
-            freeRAM -= 4096;
+            if (freeRAM >= 4096) freeRAM -= 4096;
             lastFreeIndex = i + 1;
             return (void*)(i * 4096);
         }
@@ -174,13 +206,14 @@ void* PMM::AllocPage() {
 }
 
 void* PMM::AllocContiguous(size_t pages) {
+    if (pages == 0) return nullptr;
+    CRITICAL_SECTION(pmmLock);
+
     // Find a contiguous block of 'pages' free pages
     // Start searching after the kernel reserved zone (256MB)
     uint64_t limit = highestAddr / 4096;
-    uint64_t start_search = 0x10000000 / 4096; // Start at 256MB
-    
-    // Optimization: Use lastFreeIndex if it's beyond reserved zone
-    if (lastFreeIndex > start_search) start_search = lastFreeIndex;
+    if (pages > limit) return nullptr;
+    uint64_t start_search = 0x10000000ULL / 4096; // Start at 256MB
     
     for (uint64_t start = start_search; start <= limit - pages; start++) {
         bool found = true;
@@ -197,9 +230,8 @@ void* PMM::AllocContiguous(size_t pages) {
             // Mark all pages as used
             for (uint64_t i = 0; i < pages; i++) {
                 bitmap.Set(start + i, true);
-                freeRAM -= 4096;
+                if (freeRAM >= 4096) freeRAM -= 4096;
             }
-            // Update hint
             if (start + pages > lastFreeIndex) lastFreeIndex = start + pages;
             return (void*)((start) * 4096);
         }
@@ -209,10 +241,23 @@ void* PMM::AllocContiguous(size_t pages) {
 }
 
 void PMM::FreePage(void* address) {
-    uint64_t page = (uint64_t)address / 4096;
+    if (!address) return;
+    CRITICAL_SECTION(pmmLock);
+    uint64_t addr = (uint64_t)address;
+    if (addr < 0x10000000ULL || addr >= highestAddr) return; // Protect reserved low zone
+    uint64_t page = addr / 4096;
     if (bitmap.Get(page)) {
         bitmap.Set(page, false);
         freeRAM += 4096;
+        if (page < lastFreeIndex) lastFreeIndex = page;
+    }
+}
+
+void PMM::FreePages(void* address, size_t pages) {
+    if (!address || pages == 0) return;
+    uint64_t base = (uint64_t)address;
+    for (size_t i = 0; i < pages; i++) {
+        FreePage((void*)(base + i * 4096));
     }
 }
 

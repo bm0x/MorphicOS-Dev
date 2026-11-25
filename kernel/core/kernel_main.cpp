@@ -25,6 +25,8 @@
 #include "shell.h"
 #include "bootconfig.h"
 #include "loader.h"
+#include "selftest.h"
+#include "../hal/video/vulkan_layer.h"
 #include "../process/scheduler.h"
 #include "../utils/std.h"
 
@@ -82,14 +84,22 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
         while(1) __asm__("hlt");
     }
 
+    // 0.5 Serial FIRST: every later fault/panic must be loggable
+    UART::Init();
+    UART::Write("[BOOT] kernel_main entered, BootInfo="); UART::WriteHex((uint64_t)bootInfo); UART::Write("\n");
+
     // 1. Initialize Display (Early Terminal for emergency logs)
     EarlyTerm::Init(&bootInfo->framebuffer);
     
     // ... Platform Init ...
+    UART::Write("[BOOT] Platform::Init...\n");
     HAL::Platform::Init();
     
+    UART::Write("[BOOT] PMM::Init...\n");
     PMM::Init(bootInfo);
+    UART::Write("[BOOT] MMU::Init...\n");
     MMU::Init(); 
+    UART::Write("[BOOT] Core systems OK\n");
 
     EarlyTerm::Print("[OK] Core Systems Validated.\n");
     
@@ -142,9 +152,10 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     Verbose::Init();
     UART::Write("[BOOT-TRACE] After Verbose::Init\n");
     
-    // Initialize PCI Subsystem
+    // Initialize PCI Subsystem + Real-Time Vulkan Translation Layer (NVIDIA/AMD/Intel/VirtIO)
     HAL::PCI::Init();
-    UART::Write("[BOOT-TRACE] After PCI::Init\n");
+    VulkanLayer::Init();
+    UART::Write("[BOOT-TRACE] After PCI::Init + VulkanLayer::Init\n");
     
     // NOTE: BGA is already initialized in Graphics::Init() above
     // Do NOT create another BGADriver instance here - it would corrupt the hardware state
@@ -226,6 +237,9 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     
     BootScreen::Finish(); 
     UART::Write("[BOOT-TRACE] BootScreen::Finish() done\n");
+
+    // Run automated internal self-tests before launching userspace compositor
+    SelfTest::RunAll();
 
     EarlyTerm::Print("--------------------------------------------------\n");
     EarlyTerm::Print("Morphic OS Kernel (v0.6)\n");

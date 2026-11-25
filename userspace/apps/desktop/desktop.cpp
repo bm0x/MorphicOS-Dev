@@ -5,6 +5,7 @@
 #include "morphic_syscalls.h"
 #include "graphics_uapi.h"
 #include "../../sdk/compositor_protocol.h"
+#include "../../sdk/morphic_vulkan.h"
 
 // Syscall stubs not covered by compositor.h
 // Syscall stubs are now in morphic_syscalls.h
@@ -43,9 +44,9 @@ static const MouseProfile& GetMouseProfile() {
     return k_mouse_profiles[g_mouse_profile_index];
 }
 
-static constexpr int CURSOR_W = 12;
-static constexpr int CURSOR_H = 18;
-static constexpr int CURSOR_PAD = 2;
+static constexpr int CURSOR_W = 16;
+static constexpr int CURSOR_H = 22;
+static constexpr int CURSOR_PAD = 3;
 static constexpr int CURSOR_DIRTY_W = CURSOR_W + (CURSOR_PAD * 2);
 static constexpr int CURSOR_DIRTY_H = CURSOR_H + (CURSOR_PAD * 2);
 
@@ -61,6 +62,8 @@ static uint64_t g_last_menu_toggle_ms = 0;
 
 static MorphicDateTime g_rtc = {};
 static MorphicSystemInfo g_sys = {};
+static MorphicVkPhysicalDeviceInfo g_vk = {};
+static bool g_vk_valid = false;
 static uint64_t g_last_rtc_ms = 0;
 static uint32_t g_last_clock_sec = 0;
 static uint64_t g_last_render_time = 0;
@@ -110,7 +113,7 @@ int drag_offset_x = 0;
 int drag_offset_y = 0;
 
 void InitWindows() {
-    windows[0] = {160, 160, 520, 260, 0xFF4080A0, "System", false, false, false, 0,0,0,0};
+    windows[0] = {80, 76, 460, 344, 0xFF38BDF8, "System Monitor", false, false, false, 0,0,0,0};
     window_count = 1;
 }
 
@@ -175,6 +178,7 @@ static void RefreshTimeAndSysinfo() {
 
     if (g_last_drop_poll_ms == 0 || (now - g_last_drop_poll_ms) >= 1000) {
         g_last_input_drop_count = sys_get_input_drop_count();
+        g_vk_valid = MorphicVK::QueryPhysicalDevice(&g_vk);
         g_last_drop_poll_ms = now;
     }
 }
@@ -392,11 +396,13 @@ static void CleanupStaleProtocolSurfaces(uint64_t now_ms) {
             continue;
         }
 
-        bool has_window = (surface.bound_window_id != 0 &&
-                           FindExternalWindowIndexById(surface.bound_window_id) >= 0);
-        bool stale_commit = (surface.last_commit_ms != 0 && (now_ms - surface.last_commit_ms) > 5000);
+        int ext_idx = (surface.bound_window_id != 0)
+            ? FindExternalWindowIndexById(surface.bound_window_id)
+            : -1;
+        bool has_visible_window = (ext_idx >= 0 && externalWindows[(uint32_t)ext_idx].flags != 0);
+        bool stale_commit = (surface.last_commit_ms != 0 && (now_ms - surface.last_commit_ms) > 1200);
 
-        if (!has_window && stale_commit) {
+        if (!has_visible_window && (ext_idx < 0 || stale_commit)) {
             surface = {};
             changed = true;
         }
@@ -440,6 +446,9 @@ static void BindProtocolSurfacesToExternalWindows() {
 }
 
 static void DrawProtocolSurfaceBadges() {
+    if (menu_open) {
+        return;
+    }
     for (int i = 0; i < MAX_PROTOCOL_CLIENTS; i++) {
         const ProtocolSurface& surface = g_protocol_surfaces[i];
         if (!surface.active || surface.bound_window_id == 0) {
@@ -452,12 +461,19 @@ static void DrawProtocolSurfaceBadges() {
         }
 
         const WindowInfo& w = externalWindows[(uint32_t)ext_idx];
-        int bx = (int)w.x + 6;
-        int by = (int)w.y - 22;
+        // Never draw orphaned badges for hidden, minimized, or closed windows
+        if (w.flags == 0 || w.pid != surface.client_pid) {
+            continue;
+        }
+
+        int bx = (int)w.x + (int)w.w - 108;
+        int by = (int)w.y - 21;
+        if (bx < (int)w.x + 80) bx = (int)w.x + 80;
         if (by < 2) by = 2;
 
-        Compositor::DrawRect(bx, by, 14, 14, 0xFF2B4A66);
-        Compositor::DrawText(bx + 4, by + 3, "P", 0xFFEAF2FF, 1);
+        Compositor::DrawRoundedRect(bx, by, 34, 16, 8, 0x3334D399);
+        Compositor::DrawRoundedBorder(bx, by, 34, 16, 8, 0x8834D399);
+        Compositor::DrawText(bx + 5, by + 0, "IPC", 0xFF34D399, 1);
     }
 }
 
@@ -691,21 +707,22 @@ void HandleEvent(const OSEvent& ev) {
         }
 
         // ========================================
-        // PRIORITY 2: Taskbar
+        // PRIORITY 2: Floating Glass Dock
         // ========================================
-        const int taskH = 40;
+        const int taskH = 54;
+        const int dockY = Compositor::GetHeight() - 44 - 8;
         const int taskY = Compositor::GetHeight() - taskH;
         if (click_y >= taskY) {
             int width = Compositor::GetWidth();
-            
-            // Keymap Toggle
-            if (HitRect(click_x, click_y, width - 130, taskY + 10, 40, 30)) {
+
+            // Keymap Toggle (near clock pill)
+            if (HitRect(click_x, click_y, width - 200, dockY + 6, 40, 32)) {
                 CycleKeymap();
                 return;
             }
 
-            // Menu button (toggle launcher)
-            if (HitRect(click_x, click_y, 10, taskY + 8, 28, 24)) {
+            // Apps Launcher button (x=26..118)
+            if (HitRect(click_x, click_y, 26, dockY + 6, 92, 32)) {
                 uint64_t now_toggle_ms = sys_get_time_ms();
                 if ((now_toggle_ms - g_last_menu_toggle_ms) < 160) {
                     return;
@@ -714,6 +731,7 @@ void HandleEvent(const OSEvent& ev) {
                 g_last_menu_toggle_ms = now_toggle_ms;
                 if (menu_open) {
                     g_menu_open_ms = now_toggle_ms;
+                    g_launcher.ScanApps(); // Refresh installed .mpk packages dynamically
                     sys_debug_print("[Desktop] Launcher opened\n");
                 }
                 ui_dirty = true;
@@ -721,18 +739,18 @@ void HandleEvent(const OSEvent& ev) {
                 return;
             }
 
-            // Window icons
-            int iconX = 48;
+            // Window pills (start at x=138, stride=40)
+            int iconX = 138;
             for (int i = 0; i < window_count; i++) {
-                if (HitRect(click_x, click_y, iconX, taskY + 8, 24, 24)) {
+                if (HitRect(click_x, click_y, iconX, dockY + 6, 32, 32)) {
                     windows[i].minimized = !windows[i].minimized;
                     ui_dirty = true;
                     if (!windows[i].minimized) BringToFront(i);
                     return;
                 }
-                iconX += 30;
+                iconX += 40;
             }
-            return; // Consumed by taskbar
+            return; // Consumed by dock
         }
 
         // ========================================
@@ -761,10 +779,18 @@ void HandleEvent(const OSEvent& ev) {
                      closeEv.buttons = 0;
                      sys_post_message(w.pid, &closeEv);
                      
-                     // Also hide the window immediately
+                     // Also hide the window immediately and detach its IPC badge/surface
                      uint64_t xy = ((uint64_t)w.x << 32) | w.y;
                      uint64_t wh_flags = ((uint64_t)w.w << 40) | ((uint64_t)w.h << 16) | 0; 
                      sys_update_window(w.id, xy, wh_flags);
+                     for (int s = 0; s < MAX_PROTOCOL_CLIENTS; s++) {
+                         if (g_protocol_surfaces[s].active && g_protocol_surfaces[s].bound_window_id == w.id) {
+                             g_protocol_surfaces[s] = {};
+                             RecountProtocolSurfaces();
+                             break;
+                         }
+                     }
+                     ui_dirty = true;
                      return;
                  }
                  
@@ -1051,7 +1077,7 @@ extern "C" int main(void* asset_ptr) {
     g_menu_open_ms       = g_startup_time_ms;
     g_last_menu_toggle_ms = g_startup_time_ms;
 
-    if (sys_spawn("/initrd/desktop.mpk") == 0) {
+    if (sys_spawn("/initrd/desktop.mpk") > 0) {
         sys_debug_print("[Desktop] Spawned desktop client\n");
     }
 
@@ -1105,7 +1131,11 @@ extern "C" int main(void* asset_ptr) {
 
         // Decide flush strategy early so render clip matches the copy strategy.
         bool hasExternalWindows = (externalWindowCount > 0);
-        bool needsFullFlush = menu_open || (!menu_open && prev_menu_open) || hasExternalWindows;
+        bool externalJustClosed = (prevExternalWindowCount > 0 && !hasExternalWindows);
+        bool menuStateChanged = (menu_open != prev_menu_open);
+        // Only do a full flush when launcher opens/closes, or when desktop has external windows.
+        // While launcher stays open, BACK_BUFFER retains the launcher image and only cursor dirty rects flush!
+        bool needsFullFlush = menuStateChanged || (!menu_open && (hasExternalWindows || externalJustClosed));
 
         // If we'll do a full flush, force full dirty so we don't copy stale backbuffer regions.
         if (needsFullFlush) {
@@ -1154,9 +1184,12 @@ extern "C" int main(void* asset_ptr) {
             }
         }
 
-        // Cursor dirty (old + new)
-        DirtyAdd(g_dirty, prev_mouse_x - CURSOR_PAD, prev_mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
-        DirtyAdd(g_dirty, mouse_x - CURSOR_PAD, mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
+        // Cursor dirty (ONLY when mouse actually moved!)
+        bool mouseMoved = (mouse_x != prev_mouse_x) || (mouse_y != prev_mouse_y);
+        if (mouseMoved) {
+            DirtyAdd(g_dirty, prev_mouse_x - CURSOR_PAD, prev_mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
+            DirtyAdd(g_dirty, mouse_x - CURSOR_PAD, mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
+        }
 
         // Window moves (drag/max/min)
         for (int i = 0; i < window_count; i++) {
@@ -1176,48 +1209,66 @@ extern "C" int main(void* asset_ptr) {
         // Taskbar/menu changes
         uint32_t now_sec = GetClockSeconds();
         if (now_sec != prev_clock_sec || menu_open != prev_menu_open) {
-            int taskH = 40;
+            int taskH = 56;
             DirtyAdd(g_dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
-            // NOTE: Launcher is fullscreen, so when it changes state we mark full dirty
-            // But this only triggers the full flush in Present(), not here
-            // The flush decision is now in the Present() call
         }
 
-        // If RTC second changed, update the taskbar clock.
+        // If RTC second changed, update the dock clock.
         if (now_sec != g_last_clock_sec) {
-            int taskH = 40;
+            int taskH = 56;
             DirtyAdd(g_dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
             g_last_clock_sec = now_sec;
         }
 
-        // Any UI reorder/state change: repaint taskbar only
-        // Full screen dirty is now handled by PresentFullDirty() when launcher closes
+        // Any UI reorder/state change: repaint dock + top bar
         if (ui_dirty) {
-            int taskH = 40;
+            int taskH = 56;
             DirtyAdd(g_dirty, 0, Compositor::GetHeight() - taskH, Compositor::GetWidth(), taskH);
+            DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), 30);
         }
         
-        // C. Render
-        // If nothing marked dirty (rare), still redraw cursor region.
-        if (!g_dirty.valid) {
-            DirtyAdd(g_dirty, mouse_x - CURSOR_PAD, mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
+        // C. Render (skip redundant idle frames so Flips stay <= 60/s active, ~1/s idle)
+        bool frameChanged = first_frame || needsFullFlush || ui_dirty || g_dirty.valid;
+        if (!frameChanged) {
+            uint64_t end_idle = sys_get_time_ms();
+            uint64_t elapsed_idle = end_idle - start_time;
+            if (elapsed_idle < (uint64_t)FRAME_TIME_MS) {
+                sys_sleep((uint32_t)(FRAME_TIME_MS - elapsed_idle));
+            }
+            continue;
         }
 
-        // Redraw only dirty region: background + UI + windows + cursor.
-        // (Compositor is clip-aware internally.)
-        // Set clip via SwapBuffersRect usage: we redraw full but clipped.
-        // We reuse RenderScene for windows/cursor and draw taskbar/menu explicitly.
         if (needsFullFlush) {
             Compositor::SetClip(0, 0, Compositor::GetWidth(), Compositor::GetHeight());
         } else {
             Compositor::SetClip(g_dirty.x, g_dirty.y, g_dirty.w, g_dirty.h);
         }
-        // Full render within clip
-        // Background is drawn inside RenderScene
-        Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
-        Compositor::RenderTaskbar(windows, window_count, 
-                                externalWindows, externalWindowCount, 
-                                menu_open, g_rtc);
+
+        if (menu_open) {
+            // Render Launcher cleanly into BACK_BUFFER (only full redraw on open or UI update)
+            if (menuStateChanged || first_frame || ui_dirty) {
+                Compositor::SetClip(0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+                g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
+                Compositor::RenderTaskbar(windows, window_count,
+                                          externalWindows, externalWindowCount,
+                                          menu_open, g_rtc);
+                needsFullFlush = true;
+            } else if (now_sec != prev_clock_sec) {
+                int taskH = 60;
+                int dockTop = Compositor::GetHeight() - taskH;
+                Compositor::SetClip(0, dockTop, Compositor::GetWidth(), taskH);
+                // Clear dock strip cleanly before redrawing translucent glass dock + clock
+                Compositor::DrawRect(0, dockTop, Compositor::GetWidth(), taskH, 0xFF0E162B);
+                Compositor::RenderTaskbar(windows, window_count,
+                                          externalWindows, externalWindowCount,
+                                          menu_open, g_rtc);
+            }
+        } else {
+            Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
+            Compositor::RenderTaskbar(windows, window_count,
+                                    externalWindows, externalWindowCount,
+                                    menu_open, g_rtc);
+        }
         
         // D. Swap / Present Logic (Moved to end of frame)
         // NOTE: Removed sys_yield() here - it was causing unnecessary context switches
@@ -1229,272 +1280,120 @@ extern "C" int main(void* asset_ptr) {
                 Compositor::Window& w = windows[i];
                 if (w.minimized) continue;
                 if (!w.title) continue;
-                // Match "System"
+                // Match "System Monitor"
                 if (w.title[0] == 'S') {
                     int pad = 16;
-                    int titleH = 26;
-                    int x = w.x + pad;
-                    int y = w.y + titleH + pad;
+                    int titleH = 30;
+                    int cardX = w.x + pad;
+                    int cardW = w.width - (pad * 2);
+                    int y = w.y + titleH + 14;
 
-                    char vendor[13];
-                    for (int k = 0; k < 13; k++) vendor[k] = g_sys.cpu_vendor[k];
-                    vendor[12] = '\0';
-                    UppercaseInplace(vendor);
-
-                    char line1[64];
-                    // "MORPHIC OS"
-                    const char* hdr = "MORPHIC OS";
-                    // Draw header
-                    Compositor::DrawText(x, y, hdr, 0xFFEAEAEA, 1);
-                    y += 14;
-
-                    // CPU vendor
-                    // Build "CPU VENDOR: <vendor>"
-                    int idx = 0;
-                    const char* p = "CPU VENDOR: ";
-                    while (*p && idx < 63) line1[idx++] = *p++;
-                    for (int k = 0; vendor[k] && idx < 63; k++) line1[idx++] = vendor[k];
-                    line1[idx] = '\0';
-                    Compositor::DrawText(x, y, line1, 0xFFCCCCCC, 1);
-                    y += 12;
-
-                    // RAM
-                    uint64_t totalMiB = g_sys.total_mem_bytes / (1024ULL * 1024ULL);
-                    uint64_t freeMiB  = g_sys.free_mem_bytes / (1024ULL * 1024ULL);
-                    char line2[64];
-                    // "RAM: TTTTMB FREE: FFFMB"
-                    // Minimal integer formatting
                     auto write_u64 = [](char* out, int& pos, uint64_t v) {
                         char tmp[24];
                         int n = 0;
                         if (v == 0) tmp[n++] = '0';
                         while (v && n < 23) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
-                        for (int i = n - 1; i >= 0; i--) out[pos++] = tmp[i];
+                        for (int k = n - 1; k >= 0; k--) out[pos++] = tmp[k];
+                    };
+                    auto append_str = [](char* out, int& pos, int maxL, const char* s) {
+                        while (*s && pos < maxL - 1) out[pos++] = *s++;
                     };
 
+                    // Card 1: Hardware & GPU Telemetry
+                    Compositor::DrawRoundedRect(cardX, y, cardW, 134, 10, 0xFF172033);
+                    Compositor::DrawRoundedBorder(cardX, y, cardW, 134, 10, 0x26FFFFFF);
+                    int tx = cardX + 14;
+                    int ty = y + 10;
+
+                    Compositor::DrawText(tx, ty, "HARDWARE & GRAPHICS", 0xFF38BDF8, 1);
+                    ty += 22;
+
+                    char buf[64];
                     int pos = 0;
-                    const char* a = "RAM: ";
-                    while (*a && pos < 63) line2[pos++] = *a++;
-                    write_u64(line2, pos, totalMiB);
-                    const char* b = "MB FREE: ";
-                    while (*b && pos < 63) line2[pos++] = *b++;
-                    write_u64(line2, pos, freeMiB);
-                    const char* c = "MB";
-                    while (*c && pos < 63) line2[pos++] = *c++;
-                    line2[pos] = '\0';
-                    UppercaseInplace(line2);
-                    Compositor::DrawText(x, y, line2, 0xFFCCCCCC, 1);
-                    y += 12;
+                    append_str(buf, pos, 64, "CPU: ");
+                    for (int k = 0; k < 12 && g_sys.cpu_vendor[k] && pos < 63; k++) buf[pos++] = g_sys.cpu_vendor[k];
+                    buf[pos] = '\0';
+                    Compositor::DrawText(tx, ty, buf, 0xFFE2E8F0, 1);
+                    ty += 20;
 
-                    // Video
-                    char line3[64];
+                    uint64_t totalMiB = g_sys.total_mem_bytes / (1024ULL * 1024ULL);
+                    uint64_t freeMiB  = g_sys.free_mem_bytes / (1024ULL * 1024ULL);
                     pos = 0;
-                    const char* v0 = "VIDEO: ";
-                    while (*v0 && pos < 63) line3[pos++] = *v0++;
-                    write_u64(line3, pos, g_sys.fb_width);
-                    line3[pos++] = 'X';
-                    write_u64(line3, pos, g_sys.fb_height);
-                    const char* v1 = " PITCH: ";
-                    while (*v1 && pos < 63) line3[pos++] = *v1++;
-                    write_u64(line3, pos, g_sys.fb_pitch);
-                    line3[pos] = '\0';
-                    UppercaseInplace(line3);
-                    Compositor::DrawText(x, y, line3, 0xFFCCCCCC, 1);
-                    y += 12;
+                    append_str(buf, pos, 64, "RAM: ");
+                    write_u64(buf, pos, totalMiB);
+                    append_str(buf, pos, 64, " MB   Free: ");
+                    write_u64(buf, pos, freeMiB);
+                    append_str(buf, pos, 64, " MB");
+                    buf[pos] = '\0';
+                    Compositor::DrawText(tx, ty, buf, 0xFF94A3B8, 1);
+                    ty += 20;
 
-                    // Disk Info
-                    char lineDisk[64];
                     pos = 0;
-                    const char* d0 = "DISK: ";
-                    while (*d0 && pos < 63) lineDisk[pos++] = *d0++;
-                    
-                    // Convert to GB if > 1GB, else MB
-                    if (g_sys.disk_total_bytes >= 1024*1024*1024) {
-                        uint64_t gb = g_sys.disk_total_bytes / (1024*1024*1024);
-                        uint64_t rem = (g_sys.disk_total_bytes % (1024*1024*1024)) * 10 / (1024*1024*1024);
-                        write_u64(lineDisk, pos, gb);
-                        lineDisk[pos++] = '.';
-                        write_u64(lineDisk, pos, rem);
-                        const char* unit = " GB";
-                        while (*unit && pos < 63) lineDisk[pos++] = *unit++;
+                    append_str(buf, pos, 64, "Display: ");
+                    write_u64(buf, pos, g_sys.fb_width);
+                    append_str(buf, pos, 64, "x");
+                    write_u64(buf, pos, g_sys.fb_height);
+                    append_str(buf, pos, 64, "  @ 60Hz");
+                    buf[pos] = '\0';
+                    Compositor::DrawText(tx, ty, buf, 0xFF94A3B8, 1);
+                    ty += 20;
+
+                    pos = 0;
+                    append_str(buf, pos, 64, "GPU: ");
+                    if (g_vk_valid) {
+                        append_str(buf, pos, 64, g_vk.vendor_name);
+                        append_str(buf, pos, 64, " (MorphicVK 1.3)");
                     } else {
-                        uint64_t mb = g_sys.disk_total_bytes / (1024*1024);
-                        write_u64(lineDisk, pos, mb);
-                        const char* unit = " MB";
-                        while (*unit && pos < 63) lineDisk[pos++] = *unit++;
+                        append_str(buf, pos, 64, "Framebuffer Software");
                     }
-                    
-                    // Free space (Placeholder)
-                    const char* d1 = " (RAW)";
-                    while (*d1 && pos < 63) lineDisk[pos++] = *d1++;
-                    
-                    lineDisk[pos] = '\0';
-                    UppercaseInplace(lineDisk);
-                    Compositor::DrawText(x, y, lineDisk, 0xFFCCCCCC, 1);
-                    y += 12;
+                    buf[pos] = '\0';
+                    Compositor::DrawText(tx, ty, buf, 0xFF34D399, 1);
 
-                    // RTC time/date
-                    if (g_rtc.valid) {
-                        char line4[64];
-                        pos = 0;
-                        const char* r0 = "RTC: ";
-                        while (*r0 && pos < 63) line4[pos++] = *r0++;
-                        write_u64(line4, pos, g_rtc.year);
-                        line4[pos++] = '-';
-                        line4[pos++] = (char)('0' + (g_rtc.month / 10) % 10);
-                        line4[pos++] = (char)('0' + (g_rtc.month % 10));
-                        line4[pos++] = '-';
-                        line4[pos++] = (char)('0' + (g_rtc.day / 10) % 10);
-                        line4[pos++] = (char)('0' + (g_rtc.day % 10));
-                        line4[pos++] = ' ';
-                        line4[pos++] = (char)('0' + (g_rtc.hour / 10) % 10);
-                        line4[pos++] = (char)('0' + (g_rtc.hour % 10));
-                        line4[pos++] = ':';
-                        line4[pos++] = (char)('0' + (g_rtc.minute / 10) % 10);
-                        line4[pos++] = (char)('0' + (g_rtc.minute % 10));
-                        line4[pos++] = ':';
-                        line4[pos++] = (char)('0' + (g_rtc.second / 10) % 10);
-                        line4[pos++] = (char)('0' + (g_rtc.second % 10));
-                        line4[pos] = '\0';
-                        UppercaseInplace(line4);
-                        Compositor::DrawText(x, y, line4, 0xFFCCCCCC, 1);
-                        y += 12;
+                    // Card 2: Compositor & Runtime Metrics
+                    int y2 = y + 146;
+                    Compositor::DrawRoundedRect(cardX, y2, cardW, 138, 10, 0xFF172033);
+                    Compositor::DrawRoundedBorder(cardX, y2, cardW, 138, 10, 0x26FFFFFF);
+                    ty = y2 + 10;
 
-                        // Frame Time (Phase 3 Requirement)
-                        char lineFT[32];
-                        pos = 0;
-                        const char* ft = "FT: ";
-                        while (*ft) lineFT[pos++] = *ft++;
-                        write_u64(lineFT, pos, g_last_render_time);
-                        lineFT[pos++] = 'm'; lineFT[pos++] = 's';
-                        lineFT[pos] = 0;
-                        Compositor::DrawText(x, y, lineFT, 0xFF88CC88, 1);
-                        y += 12;
+                    Compositor::DrawText(tx, ty, "COMPOSITOR & RUNTIME", 0xFF818CF8, 1);
+                    ty += 22;
 
-                        char lineEv[32];
-                        pos = 0;
-                        const char* evs = "EV: ";
-                        while (*evs) lineEv[pos++] = *evs++;
-                        write_u64(lineEv, pos, g_last_polled_events);
-                        lineEv[pos] = 0;
-                        Compositor::DrawText(x, y, lineEv, 0xFF88AAAA, 1);
-                        y += 12;
+                    pos = 0;
+                    append_str(buf, pos, 64, "Frame: ");
+                    write_u64(buf, pos, g_last_render_time);
+                    append_str(buf, pos, 64, "ms   Flips: ");
+                    write_u64(buf, pos, g_last_flip_sequence);
+                    buf[pos] = '\0';
+                    Compositor::DrawText(tx, ty, buf, 0xFF34D399, 1);
+                    ty += 20;
 
-                        char lineMouse[48];
-                        pos = 0;
-                        const char* mp = "MOUSE: ";
-                        while (*mp && pos < 47) lineMouse[pos++] = *mp++;
-                        const char* mname = GetMouseProfile().name;
-                        while (*mname && pos < 47) lineMouse[pos++] = *mname++;
-                        const char* mh = " (M)";
-                        while (*mh && pos < 47) lineMouse[pos++] = *mh++;
-                        lineMouse[pos] = 0;
-                        Compositor::DrawText(x, y, lineMouse, 0xFF88AAAA, 1);
-                        y += 12;
+                    pos = 0;
+                    append_str(buf, pos, 64, "Mouse: ");
+                    append_str(buf, pos, 64, GetMouseProfile().name);
+                    append_str(buf, pos, 64, " (M)   Drops: ");
+                    write_u64(buf, pos, g_last_input_drop_count);
+                    buf[pos] = '\0';
+                    Compositor::DrawText(tx, ty, buf, 0xFF94A3B8, 1);
+                    ty += 20;
 
-                        char lineDrop[40];
-                        pos = 0;
-                        const char* dr = "DROP: ";
-                        while (*dr) lineDrop[pos++] = *dr++;
-                        write_u64(lineDrop, pos, g_last_input_drop_count);
-                        lineDrop[pos] = 0;
-                        uint32_t dropColor = (g_last_input_drop_count > 0) ? 0xFF4040C0 : 0xFF88CC88;
-                        Compositor::DrawText(x, y, lineDrop, dropColor, 1);
-                        y += 12;
+                    pos = 0;
+                    append_str(buf, pos, 64, "Clients: ");
+                    write_u64(buf, pos, g_registered_client_count);
+                    append_str(buf, pos, 64, "   Surfaces: ");
+                    write_u64(buf, pos, g_active_surface_count);
+                    buf[pos] = '\0';
+                    Compositor::DrawText(tx, ty, buf, 0xFFE2E8F0, 1);
+                    ty += 20;
 
-                        char lineClients[40];
-                        pos = 0;
-                        const char* cl = "CLIENTS: ";
-                        while (*cl) lineClients[pos++] = *cl++;
-                        write_u64(lineClients, pos, g_registered_client_count);
-                        lineClients[pos] = 0;
-                        Compositor::DrawText(x, y, lineClients, 0xFF88AAAA, 1);
-                        y += 12;
-
-                        char lineClientPid[40];
-                        pos = 0;
-                        const char* cp = "LAST PID: ";
-                        while (*cp && pos < 39) lineClientPid[pos++] = *cp++;
-                        write_u64(lineClientPid, pos, g_last_client_pid);
-                        lineClientPid[pos] = 0;
-                        Compositor::DrawText(x, y, lineClientPid, 0xFF88AAAA, 1);
-                        y += 12;
-
-                        char lineSurf[40];
-                        pos = 0;
-                        const char* sf = "SURF: ";
-                        while (*sf) lineSurf[pos++] = *sf++;
-                        write_u64(lineSurf, pos, g_active_surface_count);
-                        lineSurf[pos] = 0;
-                        Compositor::DrawText(x, y, lineSurf, 0xFF88AAAA, 1);
-                        y += 12;
-
-                        char lineCommit[40];
-                        pos = 0;
-                        const char* sc = "SCOM: ";
-                        while (*sc) lineCommit[pos++] = *sc++;
-                        write_u64(lineCommit, pos, g_total_surface_commits);
-                        lineCommit[pos] = 0;
-                        Compositor::DrawText(x, y, lineCommit, 0xFF88CC88, 1);
-                        y += 12;
-
-                        char lineAck[40];
-                        pos = 0;
-                        const char* sa = "SACK: ";
-                        while (*sa) lineAck[pos++] = *sa++;
-                        write_u64(lineAck, pos, g_total_surface_acks);
-                        lineAck[pos] = 0;
-                        Compositor::DrawText(x, y, lineAck, 0xFF88CC88, 1);
-                        y += 12;
-
-                        char lineTo[40];
-                        pos = 0;
-                        const char* st = "STO: ";
-                        while (*st) lineTo[pos++] = *st++;
-                        write_u64(lineTo, pos, g_total_surface_timeouts);
-                        lineTo[pos] = 0;
-                        uint32_t toColor = (g_total_surface_timeouts > 0) ? 0xFF4040C0 : 0xFF88AAAA;
-                        Compositor::DrawText(x, y, lineTo, toColor, 1);
-                        y += 12;
-
-                        char lineOv[40];
-                        pos = 0;
-                        const char* so = "SOVR: ";
-                        while (*so) lineOv[pos++] = *so++;
-                        write_u64(lineOv, pos, g_total_surface_overruns);
-                        lineOv[pos] = 0;
-                        uint32_t ovColor = (g_total_surface_overruns > 0) ? 0xFF4040C0 : 0xFF88AAAA;
-                        Compositor::DrawText(x, y, lineOv, ovColor, 1);
-                        y += 12;
-
-                        char lineDe[32];
-                        pos = 0;
-                        const char* de = "DE: ";
-                        while (*de) lineDe[pos++] = *de++;
-                        write_u64(lineDe, pos, g_last_display_events);
-                        lineDe[pos] = 0;
-                        Compositor::DrawText(x, y, lineDe, 0xFF88AAAA, 1);
-                        y += 12;
-
-                        char lineFlip[40];
-                        pos = 0;
-                        const char* fl = "FLIP: ";
-                        while (*fl) lineFlip[pos++] = *fl++;
-                        write_u64(lineFlip, pos, g_last_flip_sequence);
-                        lineFlip[pos] = 0;
-                        Compositor::DrawText(x, y, lineFlip, 0xFF88CC88, 1);
-                    }
-                }
-                // Match "MPK Installer"
-                else if (w.title[0] == 'M') {
-                    int x = w.x + 10;
-                    int y = w.y + 40;
-                    Compositor::DrawText(x, y, "MPK Installer", 0xFFFFFFFF, 2);
-                    y += 30;
-                    Compositor::DrawText(x, y, "Select .mpk file to install...", 0xFFCCCCCC, 1);
-                    // Placeholder UI
-                    Compositor::DrawRect(x, y + 20, 200, 30, 0xFF202020);
-                    Compositor::DrawText(x + 10, y + 28, "Browse...", 0xFFAAAAAA, 1);
+                    pos = 0;
+                    append_str(buf, pos, 64, "IPC Sync: ");
+                    write_u64(buf, pos, g_total_surface_commits);
+                    append_str(buf, pos, 64, "/");
+                    write_u64(buf, pos, g_total_surface_acks);
+                    append_str(buf, pos, 64, "   Timeouts: ");
+                    write_u64(buf, pos, g_total_surface_timeouts);
+                    buf[pos] = '\0';
+                    Compositor::DrawText(tx, ty, buf, 0xFF38BDF8, 1);
                 }
             }
         }
@@ -1531,28 +1430,29 @@ extern "C" int main(void* asset_ptr) {
         // the background buffer (Shared) is clean of the OLD cursor.
         // We copy the clean background from Scratch -> Shared at the OLD position.
         // We do this BEFORE sys_compose_layers to avoid overwriting the NEW cursor if they overlap.
-        if (prev_mouse_x != mouse_x || prev_mouse_y != mouse_y) {
-               Compositor::FlushRect(prev_mouse_x, prev_mouse_y, CURSOR_W, CURSOR_H);
+        // [CRITICAL FIX] 1b. Clear Previous Cursor Area with Padding
+        // Ensures zero cursor pixel trails even near edges or stationary window overlaps
+        if (!needsFullFlush) {
+            Compositor::FlushRect(prev_mouse_x - CURSOR_PAD,
+                                  prev_mouse_y - CURSOR_PAD,
+                                  CURSOR_DIRTY_W,
+                                  CURSOR_DIRTY_H);
         }
 
-        // 2. Compose Apps (Kernel Overlay) 
-        // Kernel draws apps ON TOP of the shared buffer
-        sys_compose_layers();
-
-           // 3. Post-Compose Overlay (Launcher + Cursor)
-           // Draw overlays directly to the shared front buffer so they are above APP_WINDOW layers.
-           Compositor::SetRenderTarget(Compositor::RenderTarget::FRONT_BUFFER);
-
-           // 3a. Draw Launcher (if open) - On top of app windows.
-        if (menu_open) {
-             g_launcher.Draw(Compositor::GetWidth(), Compositor::GetHeight());
+        // 2. Compose Apps (Kernel Overlay) — skipped while fullscreen Launcher is open
+        if (!menu_open) {
+            sys_compose_layers();
         }
 
-              // 3a.1 Protocol surface badges over bound client windows.
-              DrawProtocolSurfaceBadges();
+        // 3. Post-Compose Overlay (Badges + Cursor)
+        Compositor::SetRenderTarget(Compositor::RenderTarget::FRONT_BUFFER);
 
-           // 3b. Draw Cursor (userspace-owned)
-           Compositor::DrawCursorToFront(mouse_x, mouse_y);
+        if (!menu_open) {
+            DrawProtocolSurfaceBadges();
+        }
+
+        // 3b. Draw Cursor (userspace-owned, always on top)
+        Compositor::DrawCursorToFront(mouse_x, mouse_y);
         
         // Measure Render Time (CPU) before VSync wait
         uint64_t time_render_done = sys_get_time_ms();
@@ -1599,14 +1499,11 @@ extern "C" int main(void* asset_ptr) {
         // Restore rendering to back buffer for next frame UI
         Compositor::SetRenderTarget(Compositor::RenderTarget::BACK_BUFFER);
         
-        // E. Sync
-        // If present already waited for VSync, don't add extra sleep (avoids 1-frame lag).
-        if (!vsynced) {
-            uint64_t end_time = sys_get_time_ms();
-            uint64_t elapsed = end_time - start_time;
-            if (elapsed < (uint64_t)FRAME_TIME_MS) {
-                sys_sleep((uint32_t)(FRAME_TIME_MS - elapsed));
-            }
+        // E. 60 Hz Frame Pacing (always cap even when VMSVGA/OVMF VSync returns immediately)
+        uint64_t end_time = sys_get_time_ms();
+        uint64_t elapsed = end_time - start_time;
+        if (elapsed < (uint64_t)FRAME_TIME_MS) {
+            sys_sleep((uint32_t)(FRAME_TIME_MS - elapsed));
         }
 
         // Update prev state

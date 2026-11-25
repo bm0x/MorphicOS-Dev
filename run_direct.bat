@@ -1,69 +1,77 @@
 @echo off
-REM Morphic OS Direct Runner for Windows (QEMU)
-REM Usage: run_direct.bat [morphic_os.iso] [additional qemu args]
-REM See run_direct_windows.md for common OVMF locations, required packages and
-REM troubleshooting steps.
+REM Morphic OS Direct Runner for Windows (QEMU, UEFI/OVMF)
+REM Usage: run_direct.bat [morphic_os.iso|morphic.img] [extra qemu args]
+REM Logs (always written, survive panics / triple faults):
+REM   build\serial.log    COM1 serial output
+REM   build\debugcon.log  port 0xE9 mirror of the kernel log
+REM   build\qemu_cpu.log  QEMU CPU resets / guest errors (triple fault details)
 
-setlocal enabledelayedexpansion
+setlocal EnableDelayedExpansion
+cd /d "%~dp0"
+if not exist build mkdir build
 
-if "%~1"=="" (
-  set "ISO=morphic_os.iso"
-) else (
-  set "ISO=%~1"
+set "IMG="
+if not "%~1"=="" (
+  set "IMG=%~1"
   shift
+) else if exist "morphic_os.iso" (
+  set "IMG=morphic_os.iso"
+) else if exist "morphic.img" (
+  set "IMG=morphic.img"
+)
+if "!IMG!"=="" (
+  echo [ERROR] No morphic_os.iso / morphic.img found. Run build_windows.bat first.
+  exit /b 1
 )
 
-REM Common OVMF locations (user may need to adjust)
-set "OVMF_CANDIDATES=%ProgramFiles%\qemu\share\ovmf\OVMF.fd;%ProgramFiles%\qemu\share\ovmf\OVMF_CODE.fd;%ProgramFiles(x86)%\qemu\share\ovmf\OVMF.fd;%ProgramFiles(x86)%\qemu\share\ovmf\OVMF_CODE.fd;%LOCALAPPDATA%\Programs\qemu\share\ovmf\OVMF.fd"
-set "OVMF="
-for %%P in (%OVMF_CANDIDATES%) do (
-  if exist "%%~P" if "!OVMF!"=="" set "OVMF=%%~P"
-)
-
-echo ========================================
-echo Morphic OS - Debug Mode (Windows)
-echo ========================================
-echo Serial output: ENABLED (COM1 -> stdio)
-echo Type 'desktop' to trigger package loader
-echo Mouse grab: click QEMU window (Ctrl+Alt to release)
-echo To save log: run_direct.bat morphic_os.iso 2^>^&1 ^| tee boot.log
-echo ========================================
-
-REM Create debug_disk.img (2GB) if not exists
-if not exist debug_disk.img (
-  echo Creating 2GB debug_disk.img...
-  where qemu-img >nul 2>nul
-  if %ERRORLEVEL%==0 (
-    qemu-img create -f raw debug_disk.img 2G
+REM ---- QEMU ----
+set "QEMU=qemu-system-x86_64"
+where qemu-system-x86_64 >nul 2>nul
+if errorlevel 1 (
+  if exist "%ProgramFiles%\qemu\qemu-system-x86_64.exe" (
+    set "QEMU=%ProgramFiles%\qemu\qemu-system-x86_64.exe"
   ) else (
-    echo qemu-img not found, creating sparse file via PowerShell...
-    powershell -Command "Try { $s=[int64](2*1024*1024*1024); $f=Get-Item -LiteralPath 'debug_disk.img' -ErrorAction SilentlyContinue; if ($f -eq $null) { [System.IO.File]::WriteAllBytes('debug_disk.img', (New-Object byte[] 1)) ; $fs=[System.IO.File]::Open('debug_disk.img','Open','Write'); $fs.SetLength($s); $fs.Close(); } } Catch { Exit 1 }"
+    echo [ERROR] qemu-system-x86_64 not found. Run: powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
+    exit /b 1
   )
 )
 
-if "%OVMF%"=="" (
-  echo WARNING: OVMF not found in common locations. Set OVMF variable inside run_direct.bat to your OVMF.fd path.
+REM ---- OVMF (UEFI firmware) ----
+set "OVMF="
+if exist "OVMF.fd" set "OVMF=%CD%\OVMF.fd"
+if "!OVMF!"=="" if exist "%ProgramFiles%\qemu\share\edk2-x86_64-code.fd" set "OVMF=%ProgramFiles%\qemu\share\edk2-x86_64-code.fd"
+if "!OVMF!"=="" if exist "%ProgramFiles%\qemu\share\ovmf\OVMF.fd" set "OVMF=%ProgramFiles%\qemu\share\ovmf\OVMF.fd"
+if "!OVMF!"=="" (
+  echo [ERROR] OVMF.fd not found. Put OVMF.fd in the repo root.
+  exit /b 1
+)
+
+REM ---- Drive ----
+if /I "!IMG:~-4!"==".iso" (
+  set "DRIVE=-cdrom "!IMG!""
 ) else (
-  echo Using OVMF: %OVMF%
+  set "DRIVE=-drive format=raw,file="!IMG!",index=0,media=disk"
 )
 
-REM Build QEMU command
-set "QEMU_BASE=qemu-system-x86_64"
-set "QEMU_ARGS=-m 2048M -vga std -display sdl -machine pc -serial stdio"
+REM ---- Display backend: gtk if available, else sdl ----
+set "DISP=sdl"
+"!QEMU!" -display help 2>&1 | findstr /I /C:"gtk" >nul && set "DISP=gtk"
 
-if not "%OVMF%"=="" (
-  set "QEMU_ARGS=-bios "%OVMF%" %QEMU_ARGS%"
-)
+echo ========================================
+echo Morphic OS - QEMU UEFI (Windows)
+echo Image   : !IMG!
+echo Firmware: !OVMF!
+echo Display : !DISP!
+echo Logs    : build\serial.log  build\debugcon.log  build\qemu_cpu.log
+echo ========================================
 
-set "QEMU_DRIVES=-cdrom "%ISO%""
-if exist debug_disk.img (
-  set "QEMU_DRIVES=%QEMU_DRIVES% -drive format=raw,file=debug_disk.img,if=ide,index=3,media=disk"
-)
+REM -serial mon:stdio would hide logs on crash; use file + debugcon so nothing is lost.
+"!QEMU!" -bios "!OVMF!" !DRIVE! -m 2048M -smp 2 -vga std -display !DISP! -machine pc ^
+  -serial file:build\serial.log ^
+  -debugcon file:build\debugcon.log -global isa-debugcon.iobase=0xe9 ^
+  -d guest_errors,cpu_reset -D build\qemu_cpu.log -no-reboot -no-shutdown %1 %2 %3 %4 %5 %6 %7 %8 %9
 
-echo Running QEMU:
-echo %QEMU_BASE% %QEMU_ARGS% %QEMU_DRIVES% %*
-
-REM Execute QEMU
-%QEMU_BASE% %QEMU_ARGS% %QEMU_DRIVES% %*
-
+echo.
+echo ===== QEMU exited. Last serial lines =====
+if exist build\serial.log powershell -NoProfile -Command "Get-Content build\serial.log -Tail 40"
 endlocal

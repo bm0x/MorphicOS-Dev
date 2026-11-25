@@ -1,6 +1,8 @@
 #include <stdint.h>
+#include "keyboard.h"
 #include "../../hal/arch/x86_64/io.h"
 #include "../../hal/input/input_device.h"
+#include "../../hal/input/mouse.h"
 #include "../../hal/input/keymap.h"
 #include "../../hal/device_registry.h"
 #include "../../hal/video/compositor.h"
@@ -36,36 +38,43 @@ namespace PS2Keyboard {
     static bool capsLock = false;
     static bool ctrlPressed = false;
     static bool altPressed = false;
+    static bool extendedPrefix = false;
 
-    // Interrupt handler (HAL function pointer)  
-    static void OnInterrupt() {
-        uint8_t status = IO::inb(0x64);
-        if (!(status & 1)) return;
-        
-        uint8_t scancode = IO::inb(0x60);
+    static void ProcessScancode(uint8_t scancode) {
+        if (scancode == 0xE0) {
+            extendedPrefix = true;
+            return;
+        }
+        if (scancode == 0xFA || scancode == 0xFE) {
+            return; // Ignore controller ACK/RESEND bytes
+        }
+
+        bool isExtended = extendedPrefix;
+        extendedPrefix = false;
+
         bool keyRelease = (scancode & 0x80) != 0;
         uint8_t keyCode = scancode & 0x7F;
         
         // Handle modifier keys
-        if (keyCode == 0x2A || keyCode == 0x36) {  // Left/Right Shift
+        if (!isExtended && (keyCode == 0x2A || keyCode == 0x36)) {  // Left/Right Shift
             shiftPressed = !keyRelease;
             return;
         }
-        if (keyCode == 0x1D) {  // Ctrl
+        if (keyCode == 0x1D) {  // Left/Right Ctrl
             ctrlPressed = !keyRelease;
             return;
         }
-        if (keyCode == 0x38) {  // Alt
+        if (keyCode == 0x38) {  // Left Alt / AltGr
             altPressed = !keyRelease;
             return;
         }
-        if (keyCode == 0x3A && !keyRelease) {  // Caps Lock toggle
+        if (!isExtended && keyCode == 0x3A && !keyRelease) {  // Caps Lock toggle
             capsLock = !capsLock;
             return;
         }
         
         // F12 key (scancode 0x58) - Toggle debug overlay
-        if (scancode == 0x58) {
+        if (!isExtended && scancode == 0x58) {
             Compositor::ToggleDebugOverlay();
             Compositor::UpdateDebugOverlay();
         }
@@ -75,7 +84,7 @@ namespace PS2Keyboard {
         event.mouse_x = 0;
         event.mouse_y = 0;
         event.mouse_buttons = 0;
-        event.keycode = keyCode;
+        event.keycode = isExtended ? (uint8_t)(keyCode | 0x80) : keyCode;
         event.scancode_raw = scancode;
         
         if (keyRelease) {
@@ -83,9 +92,13 @@ namespace PS2Keyboard {
             event.ascii = 0;
         } else {
             event.type = InputEventType::KEY_PRESS;
-            // Use KeymapHAL for translation with shift/caps support
-            uint16_t translated = KeymapHAL::Translate(keyCode, shiftPressed, altPressed, capsLock);
-            event.ascii = (translated < 256) ? (char)translated : 0;
+            if (isExtended) {
+                // Extended navigation keys (Arrows, Delete, Home, End) do not map to keypad digits
+                event.ascii = 0;
+            } else {
+                uint16_t translated = KeymapHAL::Translate(keyCode, shiftPressed, altPressed, capsLock);
+                event.ascii = (translated < 256) ? (char)translated : 0;
+            }
         }
         
         // Push OSEvent for Userspace
@@ -94,7 +107,7 @@ namespace PS2Keyboard {
         osEv.dx = 0;
         osEv.dy = 0;
         osEv.buttons = (shiftPressed ? 1 : 0) | (ctrlPressed ? 2 : 0) | (altPressed ? 4 : 0);
-        osEv.scancode = keyCode;
+        osEv.scancode = event.keycode;
         osEv.ascii = event.ascii;
         InputManager::PushEvent(osEv);
 
@@ -103,6 +116,20 @@ namespace PS2Keyboard {
         if (next != read_ptr) {
             eventBuffer[write_ptr] = event;
             write_ptr = next;
+        }
+    }
+
+    // Interrupt handler: strictly demuxes i8042 AUX bit (0x20) so mouse bytes are NEVER eaten as keys!
+    static void OnInterrupt() {
+        for (int i = 0; i < 16; i++) {
+            uint8_t status = IO::inb(0x64);
+            if (!(status & 0x01)) return;
+            uint8_t data = IO::inb(0x60);
+            if (status & 0x20) {
+                Mouse::ProcessByte(data);
+            } else {
+                ProcessScancode(data);
+            }
         }
     }
 
@@ -133,6 +160,10 @@ namespace PS2Keyboard {
 namespace Keyboard {
     void Init() {
         DeviceRegistry::Register(DeviceType::INPUT, PS2Keyboard::GetDevice());
+    }
+
+    void ProcessByte(uint8_t scancode) {
+        PS2Keyboard::ProcessScancode(scancode);
     }
     
     void OnInterrupt() {

@@ -4,6 +4,10 @@ build/
 *.elf
 *.img
 *.iso
+*.vhd
+*.vdi
+*.vmdk
+__pycache__/
 *.mpk
 *_mpk.cpp
 *.bin

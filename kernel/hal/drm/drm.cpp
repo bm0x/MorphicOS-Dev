@@ -145,9 +145,10 @@ namespace DRM {
         screen_height = height;
         screen_pitch = pitch;
         
-        // Allocate compositor buffer (userspace renders here)
+        // Allocate page-aligned compositor buffer from PMM (NEVER KHeap: mapped to Ring 3 via SYS_VIDEO_MAP!)
         uint64_t buffer_size = (uint64_t)width * height * 4;
-        compositor_buffer = (uint32_t*)KHeap::Allocate(buffer_size);
+        uint64_t buffer_pages = (buffer_size + 4095) / 4096;
+        compositor_buffer = (uint32_t*)PMM::AllocContiguous(buffer_pages);
         
         if (!compositor_buffer) {
             UART::Write("[DRM] ERROR: Failed to allocate compositor buffer!\n");
@@ -204,7 +205,8 @@ namespace DRM {
     
     void Shutdown() {
         if (compositor_buffer) {
-            KHeap::Free(compositor_buffer);
+            uint64_t pages = ((uint64_t)screen_width * screen_height * 4 + 4095) / 4096;
+            PMM::FreePages(compositor_buffer, pages);
             compositor_buffer = nullptr;
         }
         framebuffer_count = 0;
@@ -525,18 +527,31 @@ namespace DRM {
         
         AcquireLock();
         
+        uint32_t vram_stride = (screen_pitch >= screen_width * 4 && screen_width > 0)
+                                   ? (screen_pitch / 4)
+                                   : screen_width;
+
         if (full_dirty) {
-            // Full screen copy
-            blit_fast_32(vram_buffer, compositor_buffer, screen_width * screen_height);
+            // Respect hardware GOP scanline pitch on real GPUs (NVIDIA/AMD/Intel)
+            if (vram_stride == screen_width) {
+                blit_fast_32(vram_buffer, compositor_buffer, screen_width * screen_height);
+            } else {
+                for (uint32_t y = 0; y < screen_height; y++) {
+                    blit_fast_32(&vram_buffer[(uint64_t)y * vram_stride],
+                                 &compositor_buffer[(uint64_t)y * screen_width],
+                                 screen_width);
+                }
+            }
         } else if (dirty_count > 0) {
-            // Copy only dirty regions
+            // Copy only dirty regions with independent src/dst row strides
             for (uint32_t i = 0; i < MAX_DIRTY_RECTS; i++) {
                 if (!dirty_rects[i].active) continue;
                 
                 DirtyRect& r = dirty_rects[i];
                 for (int32_t y = 0; y < r.h; y++) {
-                    uint32_t offset = (r.y + y) * screen_width + r.x;
-                    blit_fast_32(&vram_buffer[offset], &compositor_buffer[offset], r.w);
+                    uint64_t dst_off = (uint64_t)(r.y + y) * vram_stride + (uint64_t)r.x;
+                    uint64_t src_off = (uint64_t)(r.y + y) * screen_width + (uint64_t)r.x;
+                    blit_fast_32(&vram_buffer[dst_off], &compositor_buffer[src_off], r.w);
                 }
             }
         }

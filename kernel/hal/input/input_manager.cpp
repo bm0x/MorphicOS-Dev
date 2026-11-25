@@ -142,18 +142,14 @@ namespace InputManager {
         return Scheduler::PopEventFromCurrentTask(outEv);
     }
 
-    // Called by IRQ dispatcher to notify all input devices
+    // Called by IRQ dispatcher: drain shared i8042 FIFO once with strict AUX-bit routing
     void DispatchInterrupt(uint32_t irq) {
-        // IRQ1 = Keyboard, IRQ12 = Mouse (PS/2)
-#ifdef MOUSE_DEBUG
-        EarlyTerm::Print("[InputManager] DispatchInterrupt irq="); EarlyTerm::PrintDec(irq); EarlyTerm::Print(" devCount="); EarlyTerm::PrintDec(deviceCount); EarlyTerm::Print("\n");
-#endif
+        (void)irq;
         for (uint32_t i = 0; i < deviceCount; i++) {
             if (devices[i] && devices[i]->on_interrupt) {
-#ifdef MOUSE_DEBUG
-                EarlyTerm::Print("[InputManager] Calling on_interrupt for device: "); EarlyTerm::Print(devices[i]->name); EarlyTerm::Print("\n");
-#endif
                 devices[i]->on_interrupt();
+                // Both PS/2 handlers demux the entire shared i8042 FIFO safely; one pass drains all pending bytes.
+                break;
             }
         }
     }

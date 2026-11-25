@@ -62,6 +62,7 @@ namespace MCL {
             
             if (dir->type != NodeType::DIRECTORY) {
                 EarlyTerm::Print("[ERROR] Not a directory\n");
+                VFS::Close(dir);
                 return -1;
             }
             
@@ -97,7 +98,8 @@ namespace MCL {
                 EarlyTerm::Print("\n");
             }
             
-            if (children) kfree(children);
+            if (children) VFS::FreeDirList(children, count);
+            VFS::Close(dir);
             return 0;
         }
 
@@ -170,12 +172,14 @@ namespace MCL {
             
             if (file->type != NodeType::FILE) {
                 EarlyTerm::Print("[ERROR] Not a file\n");
+                VFS::Close(file);
                 return -1;
             }
             
             uint8_t* buffer = (uint8_t*)kmalloc(file->size + 1);
             if (!buffer) {
                 EarlyTerm::Print("[ERROR] Out of memory\n");
+                VFS::Close(file);
                 return -1;
             }
             
@@ -186,6 +190,7 @@ namespace MCL {
             EarlyTerm::Print("\n");
             
             kfree(buffer);
+            VFS::Close(file);
             return 0;
         }
         
@@ -207,6 +212,7 @@ namespace MCL {
             if (filename) {
                 VFSNode* node = VFS::CreateFile(filename);
                 if (node) {
+                    VFS::Close(node);
                     EarlyTerm::Print("[OK] File created: ");
                     EarlyTerm::Print(filename);
                     EarlyTerm::Print("\n");
@@ -219,6 +225,7 @@ namespace MCL {
             if (foldername) {
                 VFSNode* node = VFS::Mkdir(foldername);
                 if (node) {
+                    VFS::Close(node);
                     EarlyTerm::Print("[OK] Directory created: ");
                     EarlyTerm::Print(foldername);
                     EarlyTerm::Print("\n");

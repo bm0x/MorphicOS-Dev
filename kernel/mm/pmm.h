@@ -18,6 +18,8 @@ public:
     static void* AllocContiguous(size_t pages);
     
     static void FreePage(void* address);
+    static void FreePages(void* address, size_t pages);
+    static void ReserveRange(uint64_t physAddr, uint64_t byteSize);
     
     static size_t GetTotalMemory();
     static size_t GetFreeMemory();

@@ -1,0 +1,3 @@
+NAME=Morphic Package Installer
+VERSION=1.0
+DESCRIPTION=Install and validate .mpk apps

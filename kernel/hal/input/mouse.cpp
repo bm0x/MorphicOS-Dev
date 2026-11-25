@@ -2,6 +2,7 @@
 #include "input_device.h"
 #include "input_event.h"
 #include "evdev.h"
+#include "../../drivers/x86/keyboard.h"
 #include "../arch/x86_64/io.h"
 #include "../video/graphics.h"
 #include "../video/compositor.h"
@@ -157,197 +158,92 @@ namespace Mouse {
     // Legacy Overlay Functions Removed (Cleanup)
     void InitOverlay(uint32_t*, uint32_t) {}
     
+    void ProcessByte(uint8_t data) {
+        // First byte of PS/2 3-byte packet MUST have bit 3 (0x08) set; ignore stray ACK (0xFA) at start
+        if (cycle == 0) {
+            if (!(data & 0x08) || data == 0xFA || data == 0xAA) {
+                return;
+            }
+        }
+
+        packet[cycle] = data;
+        cycle++;
+        if (cycle < 3) {
+            return;
+        }
+
+        cycle = 0;
+        if (!(packet[0] & 0x08) || (packet[0] & 0xC0)) {
+            return; // Desync or hardware X/Y overflow: drop malformed packet cleanly
+        }
+
+        bool x_negative = (packet[0] & 0x10) != 0;
+        bool y_negative = (packet[0] & 0x20) != 0;
+
+        int16_t rel_x = packet[1];
+        int16_t rel_y = packet[2];
+        if (x_negative) rel_x |= (int16_t)0xFF00;
+        if (y_negative) rel_y |= (int16_t)0xFF00;
+
+        buttons = packet[0] & 0x07;
+
+        if (buttons != lastButtons) {
+            OSEvent click = {};
+            click.type = OSEvent::MOUSE_CLICK;
+            click.buttons = buttons;
+            InputManager::PushEvent(click);
+
+            uint8_t changed = buttons ^ lastButtons;
+            if (changed & 0x01) Evdev::PushButton(Input::BTN_LEFT, (buttons & 0x01) != 0);
+            if (changed & 0x02) Evdev::PushButton(Input::BTN_RIGHT, (buttons & 0x02) != 0);
+            if (changed & 0x04) Evdev::PushButton(Input::BTN_MIDDLE, (buttons & 0x04) != 0);
+            Evdev::PushSync();
+
+            lastButtons = buttons;
+        }
+
+        FocusManager::HandleMouse((int32_t)rel_x, -(int32_t)rel_y, buttons);
+        auto fState = FocusManager::GetState();
+        posX = (int16_t)fState.mouse_x;
+        posY = (int16_t)fState.mouse_y;
+
+        if (Compositor::ProcessMouseEvent(posX, posY, buttons)) {
+            lastButtons = buttons;
+            return;
+        }
+
+        if (rel_x != 0 || rel_y != 0) {
+            OSEvent ev = {};
+            ev.type = OSEvent::MOUSE_MOVE;
+            ev.dx = (int32_t)rel_x;
+            ev.dy = -(int32_t)rel_y;
+            ev.buttons = buttons;
+            InputManager::PushEvent(ev);
+
+            Evdev::PushRelativeMotion(rel_x, -rel_y);
+            Evdev::PushSync();
+        }
+    }
+
     void OnInterrupt() {
 #ifdef MOUSE_DEBUG
         irq12IrqCount++;
-        // Print the first few IRQs, then ~every 4096 IRQs to avoid spamming.
-        if (irq12IrqCount <= 3 || ((irq12IrqCount & 0xFFF) == 0)) {
-            uint8_t st = IO::inb(0x64);
-            UART::Write("[Mouse] IRQ12 enter count="); UART::WriteDec((int64_t)irq12IrqCount);
-            UART::Write(" status="); UART::WriteHex(st);
-            UART::Write("\n");
-        }
 #endif
-        // ========================================================================
-        // [FIX] Robust PS/2 Packet Processing - Linux evdev-inspired
-        // Process ONE complete packet per IRQ for synchronization stability.
-        // Check AUX bit (0x20) to filter keyboard data from mouse data.
-        // ========================================================================
-        
-        // Maximum bytes to drain per IRQ (prevent infinite loop on bad hardware)
-        const int MAX_DRAIN = 16;
-        int bytesRead = 0;
-        
-        while (bytesRead < MAX_DRAIN) {
+        const int MAX_DRAIN = 24;
+        for (int bytesRead = 0; bytesRead < MAX_DRAIN; bytesRead++) {
             uint8_t status = IO::inb(0x64);
-            
-            // No data available - exit
             if (!(status & 0x01)) {
                 return;
             }
-            
-            // [FIX] Check AUX bit (0x20) - if not set, this is keyboard data, skip it
-            // Some emulators don't set this reliably, so we also rely on packet sync
             bool isMouseData = (status & 0x20) != 0;
-            
             uint8_t data = IO::inb(0x60);
-            bytesRead++;
-            
-            // If definitely keyboard data, discard and continue
-            if (!isMouseData && cycle == 0) {
-                // Only skip at cycle 0 to avoid breaking mid-packet
-                continue;
-            }
-            
-#ifdef MOUSE_DEBUG
-            UART::Write("[Mouse] data=0x"); UART::WriteHex(data); 
-            UART::Write(" aux="); UART::WriteDec(isMouseData ? 1 : 0);
-            UART::Write(" cycle="); UART::WriteDec(cycle);
-            UART::Write("\n");
-#endif
 
-            // [FIX] Robust Resync: First byte of packet MUST have bit 3 set
-            // If not, this byte is garbage or we're desynchronized
-            if (cycle == 0) {
-                if (!(data & 0x08)) {
-                    // Not a valid packet start - skip this byte entirely
-                    // Do NOT advance cycle, keep waiting for valid start byte
-                    continue;
-                }
+            // Strictly route keyboard bytes to Keyboard and AUX bytes to Mouse (zero cross-corruption!)
+            if (isMouseData) {
+                ProcessByte(data);
+            } else {
+                Keyboard::ProcessByte(data);
             }
-
-            // Store byte in packet buffer
-            packet[cycle] = data;
-            cycle++;
-            
-            // [FIX] Process packet only when complete (3 bytes)
-            if (cycle < 3) {
-                // Packet incomplete - continue reading
-                continue;
-            }
-            
-            // Packet complete - reset cycle for next packet
-            cycle = 0;
-
-            // [ENGINEER-FIX] 1. Sync Validation
-            // Bit 3 of Byte 0 must ALWAYS be 1. If not, we are desynchronized.
-            if (!(packet[0] & 0x08)) {
-                cycle = 0; // Reset state machine to prevent garbage interpretation
-                continue;
-            }
-
-            // Optional safety: discard packets with overflow bits set (common PS/2 spec)
-            if (packet[0] & 0xC0) {
-                cycle = 0;
-                continue;
-            }
-
-#ifdef MOUSE_DEBUG
-            // Log assembled packet bytes
-            UART::Write("[Mouse] packet="); UART::WriteHex(packet[0]); UART::Write(" "); UART::WriteHex(packet[1]); UART::Write(" "); UART::WriteHex(packet[2]); UART::Write("\n");
-#endif
-            
-            // [ENGINEER-FIX] 2. Signed Packet Decoding (9-bit)
-            // PS/2 Bytes are uint8, but represent parts of a 9-bit signed integer.
-            // Byte 0 holds the 9th bit (Sign Bit) for X and Y.
-            
-            bool x_negative = packet[0] & 0x10;
-            bool y_negative = packet[0] & 0x20;
-            
-            // Start with base 8-bit value (unsigned)
-            int16_t rel_x = packet[1];
-            int16_t rel_y = packet[2]; // PS/2 Y is positive=Up
-            
-            // Apply Sign Extension if negative bit is set
-            if (x_negative) rel_x |= 0xFF00; // e.g. 0xFF + 0xFF00 = 0xFFFF (-1)
-            if (y_negative) rel_y |= 0xFF00;
-            
-            // Extract Buttons
-            buttons = packet[0] & 0x07; // Left=1, Right=2, Middle=4
-
-            // Push click event on button state changes (press/release).
-            // This makes userspace dragging reliable even if the press happens without movement.
-            if (buttons != lastButtons) {
-                OSEvent click;
-                click.type = OSEvent::MOUSE_CLICK;
-                click.dx = 0;
-                click.dy = 0;
-                click.buttons = buttons;
-                click.scancode = 0;
-                InputManager::PushEvent(click);
-                
-                // [NEW] Also push to evdev subsystem
-                // Generate individual button events for each changed button
-                uint8_t changed = buttons ^ lastButtons;
-                if (changed & 0x01) {  // Left button
-                    Evdev::PushButton(Input::BTN_LEFT, (buttons & 0x01) != 0);
-                }
-                if (changed & 0x02) {  // Right button
-                    Evdev::PushButton(Input::BTN_RIGHT, (buttons & 0x02) != 0);
-                }
-                if (changed & 0x04) {  // Middle button
-                    Evdev::PushButton(Input::BTN_MIDDLE, (buttons & 0x04) != 0);
-                }
-                Evdev::PushSync();
-                
-                lastButtons = buttons;
-            }
-            
-            // Debug Trace (Critical for verifying hardware response)
-            // UART::Write("[MOUSE] dx:"); UART::WriteDec(rel_x); 
-            // UART::Write(" dy:"); UART::WriteDec(rel_y);
-            // UART::Write("\n");
-            
-            // Centralized Focus/Cursor Management
-            // Forward delta to FocusManager which tracks absolute position and focus
-            FocusManager::HandleMouse((int32_t)rel_x, -(int32_t)rel_y, buttons);
-            
-            // Sync local state for legacy consumers
-            auto fState = FocusManager::GetState();
-            posX = (int16_t)fState.mouse_x;
-            posY = (int16_t)fState.mouse_y;
-            
-            // Forward to Compositor (Window Manager)
-            if (Compositor::ProcessMouseEvent(posX, posY, buttons)) {
-                // If handled by Compositor (dragging, buttons), do NOT send to Userspace.
-                // This prevents "Ghost Clicks" on the underlying Desktop.
-                lastButtons = buttons; // Still update internal state
-                return;
-            }
-
-            // Push to Userspace
-            OSEvent ev;
-            ev.type = OSEvent::MOUSE_MOVE;
-            ev.dx = (int32_t)rel_x;
-            ev.dy = -(int32_t)rel_y; // Invert here for userspace consistency (Up=Negative Delta)
-            ev.buttons = buttons;
-            ev.scancode = 0;
-            
-            InputManager::PushEvent(ev);
-            
-            // [NEW] Also push to evdev subsystem for Linux-style input handling
-            // This produces standardized InputEvent structs with timestamps
-            Evdev::PushRelativeMotion(rel_x, -rel_y);  // Y inverted for screen coords
-            Evdev::PushSync();  // Mark end of event batch
-
-#ifdef MOUSE_DEBUG
-            irq12Samples++;
-            if ((irq12Samples & 0xFF) == 1) {
-                UART::Write("[Mouse] sample dx="); UART::WriteDec(rel_x);
-                UART::Write(" dy="); UART::WriteDec(-(int32_t)rel_y);
-                UART::Write(" btn="); UART::WriteHex(buttons);
-                UART::Write(" x="); UART::WriteDec(posX);
-                UART::Write(" y="); UART::WriteDec(posY);
-                UART::Write("\n");
-            }
-#endif
-            
-            // === ATOMIC UPDATE ===
-            // Just update coordinates. Rendering is handled by Atomic Loop (post-flip).
-            // No saving/restoring background needed in IRQ.
-            
-            // Legacy Fast Path block removed to ensure "Golden Path" architecture.
-            // (Cursor drawing is now strictly synchronized with V-Sync in widgets.cpp)
         }
     }
     

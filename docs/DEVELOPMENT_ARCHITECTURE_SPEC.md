@@ -120,8 +120,9 @@ static inline bool IsValidUserRange(uint64_t addr, size_t size) {
 | `0` | `SYS_EXIT` | `rdi = exit_code` | Nunca retorna | Termina el proceso actual y libera sus recursos. |
 | `1` | `SYS_WRITE` | `rdi = fd, rsi = buf, rdx = count` | bytes escritos / error | Escritura a consola o descriptor de archivo. |
 | `2` | `SYS_READ` | `rdi = fd, rsi = buf, rdx = count` | bytes leídos / error | Lectura desde stdin o descriptor de archivo. |
-| `4` | `SYS_MALLOC` | `rdi = size_bytes` | Dirección virtual de usuario | Reserva memoria virtual de usuario mapeada con PAGE_USER. |
-| `5` | `SYS_OPEN` | `rdi = const char* path, rsi = flags` | `fd` / error (-1) | Abre un archivo en el VFS y devuelve su descriptor. |
+| `3` | `SYS_MALLOC` | `rdi = size_bytes` | Dirección virtual de usuario | Reserva memoria virtual de usuario por proceso (`PAGE_USER`). |
+| `4` | `SYS_FREE` | `rdi = user_ptr` | `0` / error (-1) | Desmapea y libera páginas dinámicas reservadas por `SYS_MALLOC`. |
+| `5` | `SYS_OPEN` | `rdi = const char* path, rsi = flags` | `fd` / error (-1) | Abre un archivo en el VFS (InitRD o montajes FAT32). |
 | `6` | `SYS_CLOSE` | `rdi = int fd` | `0` / error (-1) | Cierra un descriptor de archivo abierto. |
 | `10`| `SYS_UPDATE_SCREEN` | Ninguno | `0` | Presentación del backbuffer global. |
 | `11`| `SYS_GET_SCREEN_INFO`| Ninguno | `(width << 32) \| height` | Obtiene dimensiones actuales de la pantalla. |
@@ -130,16 +131,39 @@ static inline bool IsValidUserRange(uint64_t addr, size_t size) {
 | `20`| `SYS_GET_TIME_MS` | Ninguno | Uptime en milisegundos | Marca de tiempo monotónica desde arranque. |
 | `21`| `SYS_GET_EVENT` | `rdi = OSEvent*` | `1` si hay evento, `0` si vacío | Extracción sin bloqueo de la cola de eventos del proceso. |
 | `50`| `SYS_VIDEO_MAP` | Ninguno | Puntero virtual al framebuffer | Mapeo directo del backbuffer de DRM (solo Compositor). |
-| `51`| `SYS_VIDEO_FLIP` | `rdi = buffer_virt` | `1` (VSync OK) / `0` | Intercambio de pantalla con sincronización vertical. |
+| `51`| `SYS_VIDEO_FLIP` | `rdi = buffer_virt, rsi = flags` | `1` (VSync OK) / `0` | Intercambio de pantalla o notificación de capa lista. |
 | `53`| `SYS_ALLOC_BACKBUFFER` | `rdi = size_bytes` | Puntero virtual a buffer RAM | Reserva memoria RAM cacheable para renderizado gráfico. |
 | `54`| `SYS_VIDEO_FLIP_RECT` | `rdi = buf, rsi = pack(x,y), rdx = pack(w,h)` | `1` / `0` | Volcado parcial acelerado por región sucia (*dirty rect*). |
 | `55`| `SYS_GET_RTC_DATETIME`| `rdi = MorphicDateTime*` | `1` / `0` | Lectura segura del reloj CMOS / RTC del sistema. |
 | `56`| `SYS_GET_SYSTEM_INFO` | `rdi = MorphicSystemInfo*` | `1` / `0` | Información de hardware (CPU, memoria total/libre). |
-| `60`| `SYS_SPAWN` | `rdi = const char* mpk_path` | `PID` / error | Carga y ejecución de un paquete `.mpk` en nuevo proceso. |
+| `60`| `SYS_SPAWN` | `rdi = const char* mpk_path` | `PID` (>0) / error | Carga y ejecución de un paquete `.mpk` en nuevo proceso. |
+| `61`| `SYS_DEBUG_PRINT` | `rdi = const char* msg` | `0` / error | Envía traza validada a puerto serie COM1. |
 | `62`| `SYS_CREATE_WINDOW` | `rdi = w, rsi = h, rdx = flags` | Puntero a buffer de ventana | Reserva superficie de renderizado para app cliente. |
-| `63`| `SYS_REGISTER_COMPOSITOR`| Ninguno | `0` | Registra el PID llamante como gestor exclusivo de pantalla. |
-| `65`| `SYS_POST_MESSAGE` | `rdi = dest_pid, rsi = OSEvent*` | `0` / error | IPC entre procesos (Compositor <-> Clientes). |
-| `70`| `SYS_SET_KEYMAP` | `rdi = const char* code` | `0` / error | Cambia mapa de teclado activo ("US", "ES", "LA"). |
+| `63`| `SYS_REGISTER_COMPOSITOR`| Ninguno | `0` / error (-1) | Registra el PID llamante como gestor exclusivo de pantalla. |
+| `64`| `SYS_MAP_WINDOW` | `rdi = window_id` | Puntero virtual (`0x7000...`) | Mapea superficie de cliente en el espacio del Compositor. |
+| `65`| `SYS_POST_MESSAGE` | `rdi = dest_pid, rsi = OSEvent*` | `1` / `0` | IPC entre procesos (Compositor <-> Clientes). |
+| `66`| `SYS_COMPOSE_LAYERS` | Ninguno | `0` | Superpone capas `APP_WINDOW` sobre el backbuffer. |
+| `67`| `SYS_GET_WINDOW_LIST` | `rdi = WindowInfo*, rsi = max` | Cantidad escrita | Lista ventanas activas registradas en el kernel. |
+| `68`| `SYS_UPDATE_WINDOW` | `rdi = id, rsi = pos, rdx = size_flags` | `0` | Actualiza geometría y visibilidad de ventana. |
+| `70`| `SYS_SET_KEYMAP` | `rdi = const char* code` | `1` / `0` | Cambia mapa de teclado activo ("US", "ES", "LA"). |
+| `71`| `SYS_READDIR` | `rdi = path, rsi = DirEntry*, rdx = max` | Entradas leídas | Lista contenido de directorio en VFS o partición montada. |
+| `72`| `SYS_SHUTDOWN` | Ninguno | Nunca retorna | Apagado ACPI / QEMU. |
+| `73`| `SYS_REBOOT` | Ninguno | Nunca retorna | Reinicio por controlador 8042 / IDT nula. |
+| `74`| `SYS_READ_FILE` | `rdi = path, rsi = buf, rdx = max` | Bytes leídos / -1 | Lectura completa de archivo por ruta. |
+| `75`| `SYS_WRITE_FILE` | `rdi = path, rsi = buf, rdx = size` | Bytes escritos / -1 | Escritura/creación atómica de archivo en VFS o FAT32. |
+| `76`| `SYS_CREATE_FILE` | `rdi = path` | `0` / -1 | Crea archivo vacío en VFS o unidad montada. |
+| `77`| `SYS_DELETE_FILE` | `rdi = path` | `0` / -1 | Elimina archivo o directorio vacío. |
+| `78`| `SYS_MKDIR` | `rdi = path` | `0` / -1 | Crea directorio en VFS o unidad FAT32. |
+| `79`| `SYS_STAT` | `rdi = path, rsi = FileStat*` | `0` / -1 | Obtiene metadatos de archivo o directorio. |
+| `80`| `SYS_YIELD` | Ninguno | `0` | Cede voluntariamente el cuanto de CPU (`int 0x81`). |
+| `81`| `SYS_LIST_MOUNTS` | `rdi = MountEntry*, rsi = max` | Cantidad de montajes | Enumera puntos de montaje activos (`/initrd`, `/data`, etc.). |
+| `82`| `SYS_GET_MOUSE_STATE` | Ninguno | Estado empaquetado | Botones y posición actual del cursor. |
+| `83`| `SYS_GET_PID` | Ninguno | `PID` actual | Devuelve el identificador de tarea del proceso llamante. |
+| `84`| `SYS_GET_COMPOSITOR_PID`| Ninguno | `PID` del compositor | Devuelve el PID del proceso compositor activo. |
+| `85`| `SYS_WAITPID` | `rdi = target_pid` | `exit_code` / -1 | Suspende al llamante hasta que termine `target_pid`. |
+| `90`–`101` | `SYS_DRM_*` | Varios (`id`, `caps`, `atomic`) | Estado / dirección | Subsistema DRM de buffers compartidos (`0x7080...`) y commit atómico. |
+| `102` | `SYS_VK_QUERY_DEVICE` | `rdi = MorphicVkPhysicalDeviceInfo*` | `1` / `0` | Descubre GPU PCI (NVIDIA/AMD/Intel/VirtIO) y telemetría `MorphicVK 1.3`. |
+| `103` | `SYS_VK_SUBMIT` | `rdi = const MorphicVkSubmitInfo*` | Comandos traducidos / -1 | Traducción en tiempo real de command buffers Vulkan sobre SIMD/GOP. |
 
 > [!CAUTION]
 > El archivo `kernel/api/morphic_api.cpp` y sus definiciones huérfanas quedan formalmente **deprecados y marcados para eliminación**. No deben agregarse nuevas funciones en dicho módulo.

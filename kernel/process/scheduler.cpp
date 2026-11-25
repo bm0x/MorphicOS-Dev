@@ -2,6 +2,8 @@
 #include "../mm/heap.h"
 #include "../utils/std.h"
 #include "../hal/video/early_term.h"
+#include "../hal/video/compositor.h"
+#include "../hal/drm/buffer_manager.h"
 #include "../hal/arch/x86_64/tss.h"
 #include "../hal/platform.h"
 #include "../arch/common/mmu.h"
@@ -17,6 +19,19 @@ namespace Scheduler {
     static volatile uint64_t g_eventPushCount = 0;
     static volatile uint64_t g_eventPopCount = 0;
     static volatile uint64_t g_eventDropCount = 0;
+
+    static uint8_t s_cleanFpuRaw[512 + 16];
+    static inline uint8_t* GetCleanFpuTemplate() {
+        return (uint8_t*)(((uintptr_t)s_cleanFpuRaw + 15ULL) & ~15ULL);
+    }
+
+    struct ExitedTaskRecord {
+        uint64_t pid;
+        int exit_code;
+    };
+    static constexpr int EXIT_HISTORY_SIZE = 32;
+    static ExitedTaskRecord s_exitHistory[EXIT_HISTORY_SIZE] = {};
+    static int s_exitHistoryIdx = 0;
     
     // Idle Task Entry Point - runs when no other tasks are ready
     // Uses HLT to reduce CPU power consumption and heat
@@ -61,8 +76,19 @@ namespace Scheduler {
             EarlyTerm::Print("[Scheduler] FATAL: Cannot allocate main task!\n");
             while(1);
         }
+        kmemset(mainTask, 0, sizeof(Task));
+
+        // Capture clean baseline FPU/SSE state template
+        __asm__ volatile("fninit");
+        uint32_t defaultMxcsr = 0x1F80;
+        __asm__ volatile("ldmxcsr %0" :: "m"(defaultMxcsr));
+        __asm__ volatile("fxsave (%0)" :: "r"(GetCleanFpuTemplate()) : "memory");
+        kmemcpy(mainTask->GetFpuBuffer(), GetCleanFpuTemplate(), 512);
         
         mainTask->id = 0;
+        mainTask->parent_id = 0;
+        mainTask->exit_code = 0;
+        mainTask->heap_brk = 0x600010000000ULL;
         mainTask->stack_pointer = nullptr; // Will be set on first Schedule call
         // Ensure event queue indices are initialized for the main task
         mainTask->eventHead = 0;
@@ -106,15 +132,19 @@ namespace Scheduler {
     // Halt wrapper
     // namespace HAL { namespace Platform { void Halt(); void EnableInterrupts(); } }
 
-    void CreateTask(void (*entry_point)()) {
+    uint64_t CreateTask(void (*entry_point)()) {
         Task* newTask = (Task*)kmalloc(sizeof(Task));
         if (!newTask) {
             EarlyTerm::Print("[Scheduler] ERROR: Cannot allocate new task!\n");
-            return;
+            return 0;
         }
         kmemset(newTask, 0, sizeof(Task));
+        kmemcpy(newTask->GetFpuBuffer(), GetCleanFpuTemplate(), 512);
         
         newTask->id = nextTaskId++;
+        newTask->parent_id = currentTask ? currentTask->id : 0;
+        newTask->exit_code = 0;
+        newTask->heap_brk = 0x600010000000ULL;
         newTask->wake_up_time = 0;
         
         // Use current CR3 for kernel tasks
@@ -127,7 +157,7 @@ namespace Scheduler {
         if (!stackBase) {
             EarlyTerm::Print("[Scheduler] ERROR: Cannot allocate stack!\n");
             kfree(newTask);
-            return;
+            return 0;
         }
         kmemset(stackBase, 0, 16384);  // Zero the stack for safety
         
@@ -171,20 +201,25 @@ namespace Scheduler {
         EarlyTerm::Print(" StackTop: ");
         EarlyTerm::PrintHex((uint64_t)stackTop);
         EarlyTerm::Print("\n");
+        return newTask->id;
     }
 
-    void CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3, uint64_t arg1) {
+    uint64_t CreateUserTask(void (*entry_point)(), void* user_stack, uint64_t cr3, uint64_t arg1) {
         Task* newTask = (Task*)kmalloc(sizeof(Task));
-        if (!newTask) return;
+        if (!newTask) return 0;
         kmemset(newTask, 0, sizeof(Task));
+        kmemcpy(newTask->GetFpuBuffer(), GetCleanFpuTemplate(), 512);
         
         newTask->id = nextTaskId++;
+        newTask->parent_id = currentTask ? currentTask->id : 0;
+        newTask->exit_code = 0;
+        newTask->heap_brk = 0x600010000000ULL;
         newTask->wake_up_time = 0;
         newTask->cr3 = cr3;
         
         // Allocate Kernel Stack for this task (used when interrupt occurs in Ring 3)
         uint64_t* kstackBase = (uint64_t*)kmalloc(16384);
-        if (!kstackBase) { kfree(newTask); return; }
+        if (!kstackBase) { kfree(newTask); return 0; }
         
         uint64_t* kstackTop = (uint64_t*)((uint64_t)kstackBase + 16384);
         
@@ -219,6 +254,7 @@ namespace Scheduler {
         EarlyTerm::Print("[Scheduler] Created User Task ID: ");
         EarlyTerm::PrintDec(newTask->id);
         EarlyTerm::Print("\n");
+        return newTask->id;
     }
 
     void Sleep(uint64_t ms) {
@@ -232,17 +268,17 @@ namespace Scheduler {
     }
     
     void Yield() {
-        // Trigger interrupt 0x20 (timer) to force schedule
-        __asm__ volatile("int $0x20");
+        // Trigger software yield vector 0x81 (does not advance PIT clock or send PIC EOI)
+        __asm__ volatile("int $0x81");
     }
 
     void Exit(int exit_code) {
-        (void)exit_code;
         if (!currentTask || currentTask->id == 0) return;
 
         bool ints = HAL::Platform::AreInterruptsEnabled();
         HAL::Platform::DisableInterrupts();
 
+        currentTask->exit_code = exit_code;
         currentTask->state = TaskState::DEAD;
 
         if (ints) HAL::Platform::EnableInterrupts();
@@ -253,7 +289,38 @@ namespace Scheduler {
         }
     }
 
-    static void ReapDeadTasks() {
+    int WaitPid(uint64_t pid) {
+        if (pid == 0 || !currentTask || pid == currentTask->id) return -1;
+
+        while (true) {
+            bool ints = HAL::Platform::AreInterruptsEnabled();
+            HAL::Platform::DisableInterrupts();
+
+            for (int i = 0; i < EXIT_HISTORY_SIZE; i++) {
+                if (s_exitHistory[i].pid == pid) {
+                    int code = s_exitHistory[i].exit_code;
+                    if (ints) HAL::Platform::EnableInterrupts();
+                    return code;
+                }
+            }
+
+            Task* t = GetTaskById(pid);
+            if (!t) {
+                if (ints) HAL::Platform::EnableInterrupts();
+                return -1;
+            }
+            if (t->state == TaskState::DEAD) {
+                int code = t->exit_code;
+                if (ints) HAL::Platform::EnableInterrupts();
+                return code;
+            }
+
+            if (ints) HAL::Platform::EnableInterrupts();
+            Sleep(5);
+        }
+    }
+
+    static void ReapDeadTasks(Task* activeStackTask) {
         if (!tasksHead) return;
         
         Task* prev = tasksHead;
@@ -262,10 +329,20 @@ namespace Scheduler {
         int count = 0;
         while (curr != tasksHead && count < 64) {
             count++;
-            if (curr != currentTask && curr != idleTask && curr->state == TaskState::DEAD) {
+            // CRITICAL: Never reap activeStackTask while the CPU is still unwinding its kernel stack!
+            if (curr != currentTask && curr != activeStackTask && curr != idleTask && curr->state == TaskState::DEAD) {
+                // Record exit code for WaitPid callers
+                s_exitHistory[s_exitHistoryIdx].pid = curr->id;
+                s_exitHistory[s_exitHistoryIdx].exit_code = curr->exit_code;
+                s_exitHistoryIdx = (s_exitHistoryIdx + 1) % EXIT_HISTORY_SIZE;
+
                 // Unlink curr from circular list
                 prev->next = curr->next;
                 
+                // Tear down any windows or DRM shared buffers owned by this process
+                Compositor::DestroyWindowsByPID(curr->id);
+                BufferManager::DestroyBuffersByPID(curr->id);
+
                 // Close any open file descriptors
                 for (int fd = 3; fd < MAX_PROCESS_FDS; fd++) {
                     if (curr->fdTable[fd].in_use) {
@@ -277,12 +354,12 @@ namespace Scheduler {
                     }
                 }
                 
-                // Destroy user page table if distinct from boot CR3
+                // Destroy user page table and private physical pages if distinct from boot CR3
                 if (curr->cr3 && curr->cr3 != tasksHead->cr3) {
                     MMU::DestroyPageTable(curr->cr3);
                 }
                 
-                // Free kernel stack (allocated as 16384 bytes)
+                // Free kernel stack (allocated via kmalloc as 16384 bytes)
                 if (curr->kernel_stack_top) {
                     kfree((void*)(curr->kernel_stack_top - 16384));
                 }
@@ -352,6 +429,14 @@ namespace Scheduler {
              }
         }
         
+        if (start->state == TaskState::RUNNING) {
+            start->state = TaskState::READY;
+        }
+        if (next != start) {
+            __asm__ volatile("fxsave (%0)" :: "r"(start->GetFpuBuffer()) : "memory");
+            __asm__ volatile("fxrstor (%0)" :: "r"(next->GetFpuBuffer()) : "memory");
+        }
+
         currentTask = next;
         currentTask->state = TaskState::RUNNING;
         
@@ -368,8 +453,8 @@ namespace Scheduler {
         // CRITICAL: Update TSS RSP0 so next Interrupt/Syscall uses THIS task's stack
         TSS::SetKernelStack(currentTask->kernel_stack_top);
         
-        // Reclaim memory from any previously terminated tasks
-        ReapDeadTasks();
+        // Reclaim memory from any previously terminated tasks (excluding 'start' whose stack is active until iretq)
+        ReapDeadTasks(start);
 
         return currentTask->stack_pointer;
     }

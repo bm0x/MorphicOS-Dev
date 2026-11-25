@@ -162,30 +162,29 @@ void TerminalApp::OnKeyDown(char c) {
 }
 
 void TerminalApp::OnRender(MorphicAPI::Graphics& g) {
-    // Professional dark terminal background
-    g.Clear(0xFF0A0A0A);
-    
-    // Draw a subtle border
-    g.FillRect(0, 0, width, 2, 0xFF1A1A1A);
-    g.FillRect(0, height - 2, width, 2, 0xFF1A1A1A);
-    
-    const int CHAR_WIDTH = 6;   // 5 pixels + 1 spacing
-    const int CHAR_HEIGHT = 10; // 7 pixels + 3 spacing
-    const int PADDING_X = 8;
-    const int PADDING_Y = 6;
+    // Glass Dark Terminal Canvas
+    g.FillGradientV(0, 0, (int)width, (int)height, 0xFF0D1322, 0xFF090D16);
+    g.DrawHLine(0, 0, (int)width, 0x4438BDF8);
 
-    // Render each line
+    const int CHAR_HEIGHT = 18;
+    const int PADDING_X = 14;
+    const int PADDING_Y = 12;
+
     for (int row = 0; row < ROWS; row++) {
+        int y = PADDING_Y + (row * CHAR_HEIGHT);
+        if (y + 16 > (int)height - 8) break;
         if (lines[row][0] != '\0') {
-            int y = PADDING_Y + (row * CHAR_HEIGHT);
-            g.DrawText(PADDING_X, y, lines[row], 0xFF00DD00, 1);
+            uint32_t col = (lines[row][0] == '>') ? 0xFF38BDF8 : 0xFFE2E8F0;
+            g.DrawText(PADDING_X, y, lines[row], col, 1);
         }
     }
 
-    // Draw cursor (blinking effect via solid underline)
-    int cursorX = PADDING_X + (currentCol * CHAR_WIDTH);
-    int cursorY = PADDING_Y + (currentLine * CHAR_HEIGHT) + 8;
-    g.FillRect(cursorX, cursorY, CHAR_WIDTH, 2, 0xFF00FF00);
+    // Modern emerald cursor bar
+    int cursorX = PADDING_X + (currentCol * 9);
+    int cursorY = PADDING_Y + (currentLine * CHAR_HEIGHT);
+    if (cursorY + 16 <= (int)height - 8) {
+        g.FillRoundedRect(cursorX, cursorY + 1, 8, 14, 2, 0xFF34D399);
+    }
 }
 
 void TerminalApp::DrawChar(MorphicAPI::Graphics& g, int x, int y, char c, uint32_t color) {

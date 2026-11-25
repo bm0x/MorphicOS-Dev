@@ -173,12 +173,113 @@ namespace FAT32 {
         }
     }
 
-    // Find entry in a directory
+    static void ExtractLFNPart(const FAT32LFNEntry* lfn, char lfn_buf[256]) {
+        int seq = (int)(lfn->order & 0x3F);
+        if (seq < 1 || seq > 19) return;
+        if (lfn->order & 0x40) {
+            kmemset(lfn_buf, 0, 256);
+        }
+        int base = (seq - 1) * 13;
+        uint16_t chars[13];
+        for (int i = 0; i < 5; i++) chars[i] = lfn->name1[i];
+        for (int i = 0; i < 6; i++) chars[5 + i] = lfn->name2[i];
+        for (int i = 0; i < 2; i++) chars[11 + i] = lfn->name3[i];
+
+        for (int i = 0; i < 13 && (base + i) < 255; i++) {
+            uint16_t ch = chars[i];
+            if (ch == 0x0000 || ch == 0xFFFF) {
+                lfn_buf[base + i] = '\0';
+                break;
+            }
+            lfn_buf[base + i] = (ch < 128) ? (char)ch : '?';
+        }
+    }
+
+    static void Format83Name(const char* input, char outName[8], char outExt[3]) {
+        for (int i = 0; i < 8; i++) outName[i] = ' ';
+        for (int i = 0; i < 3; i++) outExt[i] = ' ';
+        if (!input) return;
+
+        const char* dot = nullptr;
+        for (const char* p = input; *p; p++) {
+            if (*p == '.') dot = p;
+        }
+
+        int ni = 0;
+        for (const char* p = input; *p && p != dot && ni < 8; p++) {
+            char c = *p;
+            if (c == ' ' || c == '.') continue;
+            if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+            outName[ni++] = c;
+        }
+        if (ni == 0) outName[0] = '_';
+
+        if (dot && *(dot + 1)) {
+            int ei = 0;
+            for (const char* p = dot + 1; *p && ei < 3; p++) {
+                char c = *p;
+                if (c == ' ' || c == '.') continue;
+                if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+                outExt[ei++] = c;
+            }
+        }
+    }
+
+    static bool SplitParentAndName(const char* path, char* parentOut, size_t maxParent, char* leafOut, size_t maxLeaf) {
+        if (!path || !parentOut || !leafOut || maxParent < 2 || maxLeaf < 2) return false;
+        while (*path == '/') path++;
+        if (*path == '\0') return false;
+
+        int len = (int)kstrlen(path);
+        while (len > 0 && path[len - 1] == '/') len--;
+        if (len == 0) return false;
+
+        int lastSlash = -1;
+        for (int i = 0; i < len; i++) {
+            if (path[i] == '/') lastSlash = i;
+        }
+
+        if (lastSlash < 0) {
+            parentOut[0] = '/';
+            parentOut[1] = '\0';
+            size_t copyLen = ((size_t)len < maxLeaf - 1) ? (size_t)len : (maxLeaf - 1);
+            kmemcpy(leafOut, path, copyLen);
+            leafOut[copyLen] = '\0';
+            return true;
+        }
+
+        size_t pLen = ((size_t)lastSlash < maxParent - 1) ? (size_t)lastSlash : (maxParent - 1);
+        kmemcpy(parentOut, path, pLen);
+        parentOut[pLen] = '\0';
+
+        const char* leafStart = path + lastSlash + 1;
+        size_t lLen = (size_t)(len - (lastSlash + 1));
+        if (lLen == 0) return false;
+        if (lLen >= maxLeaf) lLen = maxLeaf - 1;
+        kmemcpy(leafOut, leafStart, lLen);
+        leafOut[lLen] = '\0';
+        return true;
+    }
+
+    static void FreeClusterChain(FAT32State* state, uint32_t startCluster) {
+        uint32_t cluster = startCluster;
+        uint32_t guard = 0;
+        while (cluster >= 2 && cluster < FAT32_CLUSTER_EOF && guard < state->total_clusters) {
+            uint32_t next = GetNextCluster(state, cluster);
+            SetFATEntry(state, cluster, FAT32_CLUSTER_FREE);
+            cluster = next;
+            guard++;
+        }
+    }
+
+    // Find entry in a directory (supports both LFN and 8.3 short names)
     bool FindEntry(FAT32State* state, uint32_t dir_cluster, const char* name, FAT32FileInfo* out) {
         uint8_t* buffer = (uint8_t*)kmalloc(state->cluster_size);
         if (!buffer) return false;
         
         uint32_t cluster = dir_cluster;
+        char lfn_buf[256];
+        kmemset(lfn_buf, 0, sizeof(lfn_buf));
         
         while (cluster >= 2 && cluster < FAT32_CLUSTER_EOF) {
             if (!ReadCluster(state, cluster, buffer)) {
@@ -197,24 +298,33 @@ namespace FAT32 {
                 }
                 
                 // Skip deleted entries
-                if ((uint8_t)entries[i].name[0] == 0xE5) continue;
+                if ((uint8_t)entries[i].name[0] == 0xE5) {
+                    lfn_buf[0] = 0;
+                    continue;
+                }
                 
-                // Skip LFN entries for now
-                if ((entries[i].attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) continue;
+                // Accumulate LFN entries
+                if ((entries[i].attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) {
+                    ExtractLFNPart((const FAT32LFNEntry*)&entries[i], lfn_buf);
+                    continue;
+                }
                 
                 // Skip volume label
-                if (entries[i].attr & FAT32_ATTR_VOLUME_ID) continue;
+                if (entries[i].attr & FAT32_ATTR_VOLUME_ID) {
+                    lfn_buf[0] = 0;
+                    continue;
+                }
                 
-                // Parse the name
+                // Parse the 8.3 name
                 char parsed_name[13];
                 Parse83Name(&entries[i], parsed_name);
+                const char* effective_name = lfn_buf[0] ? lfn_buf : parsed_name;
                 
-                // Case-insensitive compare
-                if (kstricmp(parsed_name, name) == 0) {
-                    // Found it!
+                // Case-insensitive compare against LFN or 8.3 short name
+                if (kstricmp(effective_name, name) == 0 || kstricmp(parsed_name, name) == 0) {
                     int k = 0;
-                    while (parsed_name[k] && k < 255) {
-                        out->name[k] = parsed_name[k];
+                    while (effective_name[k] && k < 255) {
+                        out->name[k] = effective_name[k];
                         k++;
                     }
                     out->name[k] = 0;
@@ -227,6 +337,7 @@ namespace FAT32 {
                     kfree(buffer);
                     return true;
                 }
+                lfn_buf[0] = 0;
             }
             
             cluster = GetNextCluster(state, cluster);
@@ -437,34 +548,358 @@ namespace FAT32 {
         return bytes_read;
     }
 
-    static int fs_write(IFileSystem* self, const char* path, const void* buf, size_t size, size_t offset) {
-        // TODO: Implement file write
-        // 1. Parse path to find parent directory
-        // 2. Find or create file entry
-        // 3. Allocate clusters as needed
-        // 4. Write data to clusters
-        // 5. Update file size in directory entry
-        return -1; // Not implemented yet
+    static bool InsertDirEntry(FAT32State* state, uint32_t dir_cluster, const FAT32DirEntry& newEntry) {
+        uint8_t* buffer = (uint8_t*)kmalloc(state->cluster_size);
+        if (!buffer) return false;
+
+        uint32_t cluster = dir_cluster;
+        uint32_t last_cluster = dir_cluster;
+        int entries_per_cluster = state->cluster_size / sizeof(FAT32DirEntry);
+
+        while (cluster >= 2 && cluster < FAT32_CLUSTER_EOF) {
+            if (!ReadCluster(state, cluster, buffer)) {
+                kfree(buffer);
+                return false;
+            }
+            FAT32DirEntry* entries = (FAT32DirEntry*)buffer;
+            for (int i = 0; i < entries_per_cluster; i++) {
+                uint8_t first = (uint8_t)entries[i].name[0];
+                if (first == 0x00 || first == 0xE5) {
+                    entries[i] = newEntry;
+                    if (first == 0x00 && (i + 1) < entries_per_cluster) {
+                        entries[i + 1].name[0] = 0x00;
+                    }
+                    bool ok = WriteCluster(state, cluster, buffer);
+                    kfree(buffer);
+                    return ok;
+                }
+            }
+            last_cluster = cluster;
+            cluster = GetNextCluster(state, cluster);
+        }
+
+        // Directory clusters full: extend directory by 1 cluster
+        uint32_t extra = AllocateCluster(state);
+        if (extra == 0) {
+            kfree(buffer);
+            return false;
+        }
+        SetFATEntry(state, last_cluster, extra);
+        kmemset(buffer, 0, state->cluster_size);
+        FAT32DirEntry* entries = (FAT32DirEntry*)buffer;
+        entries[0] = newEntry;
+        bool ok = WriteCluster(state, extra, buffer);
+        kfree(buffer);
+        return ok;
+    }
+
+    static bool UpdateOrDeleteEntry(FAT32State* state, uint32_t dir_cluster, const char* target_name,
+                                    bool delete_entry, uint32_t new_cluster, uint32_t new_size) {
+        uint8_t* buffer = (uint8_t*)kmalloc(state->cluster_size);
+        if (!buffer) return false;
+
+        uint32_t cluster = dir_cluster;
+        char lfn_buf[256];
+        kmemset(lfn_buf, 0, sizeof(lfn_buf));
+        int entries_per_cluster = state->cluster_size / sizeof(FAT32DirEntry);
+
+        while (cluster >= 2 && cluster < FAT32_CLUSTER_EOF) {
+            if (!ReadCluster(state, cluster, buffer)) {
+                kfree(buffer);
+                return false;
+            }
+            FAT32DirEntry* entries = (FAT32DirEntry*)buffer;
+            int lfn_start_idx = -1;
+
+            for (int i = 0; i < entries_per_cluster; i++) {
+                if (entries[i].name[0] == 0x00) {
+                    kfree(buffer);
+                    return false;
+                }
+                if ((uint8_t)entries[i].name[0] == 0xE5) {
+                    lfn_buf[0] = 0;
+                    lfn_start_idx = -1;
+                    continue;
+                }
+                if ((entries[i].attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) {
+                    if (lfn_start_idx < 0) lfn_start_idx = i;
+                    ExtractLFNPart((const FAT32LFNEntry*)&entries[i], lfn_buf);
+                    continue;
+                }
+                if (entries[i].attr & FAT32_ATTR_VOLUME_ID) {
+                    lfn_buf[0] = 0;
+                    lfn_start_idx = -1;
+                    continue;
+                }
+
+                char parsed_name[13];
+                Parse83Name(&entries[i], parsed_name);
+                const char* effective_name = lfn_buf[0] ? lfn_buf : parsed_name;
+
+                if (kstricmp(effective_name, target_name) == 0 || kstricmp(parsed_name, target_name) == 0) {
+                    if (delete_entry) {
+                        if (lfn_start_idx >= 0) {
+                            for (int d = lfn_start_idx; d < i; d++) {
+                                entries[d].name[0] = (char)0xE5;
+                            }
+                        }
+                        entries[i].name[0] = (char)0xE5;
+                    } else {
+                        entries[i].cluster_high = (uint16_t)((new_cluster >> 16) & 0xFFFF);
+                        entries[i].cluster_low  = (uint16_t)(new_cluster & 0xFFFF);
+                        entries[i].file_size    = new_size;
+                    }
+                    bool ok = WriteCluster(state, cluster, buffer);
+                    kfree(buffer);
+                    return ok;
+                }
+                lfn_buf[0] = 0;
+                lfn_start_idx = -1;
+            }
+            cluster = GetNextCluster(state, cluster);
+        }
+
+        kfree(buffer);
+        return false;
     }
 
     static int fs_create(IFileSystem* self, const char* path, uint32_t mode) {
-        // TODO: Implement file creation
-        return -1;
+        (void)mode;
+        FAT32State* state = (FAT32State*)self->private_data;
+        if (!state || !path) return -1;
+
+        char parentPath[128];
+        char leafName[64];
+        if (!SplitParentAndName(path, parentPath, sizeof(parentPath), leafName, sizeof(leafName))) {
+            return -1;
+        }
+
+        FAT32FileInfo parentInfo;
+        if (!ParsePath(state, parentPath, &parentInfo) || !parentInfo.is_directory) {
+            return -1;
+        }
+
+        FAT32FileInfo existing;
+        if (FindEntry(state, parentInfo.cluster, leafName, &existing)) {
+            return -1; // Already exists
+        }
+
+        FAT32DirEntry entry;
+        kmemset(&entry, 0, sizeof(entry));
+        Format83Name(leafName, entry.name, entry.ext);
+        entry.attr = FAT32_ATTR_ARCHIVE;
+        entry.cluster_high = 0;
+        entry.cluster_low = 0;
+        entry.file_size = 0;
+
+        return InsertDirEntry(state, parentInfo.cluster, entry) ? 0 : -1;
+    }
+
+    static int fs_write(IFileSystem* self, const char* path, const void* buf, size_t size, size_t offset) {
+        FAT32State* state = (FAT32State*)self->private_data;
+        if (!state || !path || (!buf && size > 0)) return -1;
+        if (size == 0) return 0;
+
+        char parentPath[128];
+        char leafName[64];
+        if (!SplitParentAndName(path, parentPath, sizeof(parentPath), leafName, sizeof(leafName))) {
+            return -1;
+        }
+
+        FAT32FileInfo parentInfo;
+        if (!ParsePath(state, parentPath, &parentInfo) || !parentInfo.is_directory) {
+            return -1;
+        }
+
+        FAT32FileInfo fileInfo;
+        if (!FindEntry(state, parentInfo.cluster, leafName, &fileInfo)) {
+            if (fs_create(self, path, 0644) != 0) return -1;
+            if (!FindEntry(state, parentInfo.cluster, leafName, &fileInfo)) return -1;
+        }
+        if (fileInfo.is_directory) return -1;
+
+        uint32_t firstCluster = fileInfo.cluster;
+        if (firstCluster < 2) {
+            firstCluster = AllocateCluster(state);
+            if (firstCluster == 0) return -1;
+        }
+
+        uint8_t* clusterBuf = (uint8_t*)kmalloc(state->cluster_size);
+        if (!clusterBuf) return -1;
+
+        uint32_t curCluster = firstCluster;
+        size_t curClusterStart = 0;
+
+        // Walk/extend chain up to starting cluster for 'offset'
+        while (curClusterStart + state->cluster_size <= offset) {
+            uint32_t next = GetNextCluster(state, curCluster);
+            if (next < 2 || next >= FAT32_CLUSTER_EOF) {
+                next = AllocateCluster(state);
+                if (next == 0) {
+                    kfree(clusterBuf);
+                    return -1;
+                }
+                SetFATEntry(state, curCluster, next);
+            }
+            curCluster = next;
+            curClusterStart += state->cluster_size;
+        }
+
+        const uint8_t* src = (const uint8_t*)buf;
+        size_t written = 0;
+
+        while (written < size) {
+            size_t inClusterOff = (written == 0 && offset > curClusterStart) ? (offset - curClusterStart) : 0;
+            size_t chunk = state->cluster_size - inClusterOff;
+            if (chunk > (size - written)) chunk = size - written;
+
+            if (chunk < state->cluster_size) {
+                if (!ReadCluster(state, curCluster, clusterBuf)) {
+                    kmemset(clusterBuf, 0, state->cluster_size);
+                }
+            }
+            kmemcpy(clusterBuf + inClusterOff, src + written, chunk);
+            if (!WriteCluster(state, curCluster, clusterBuf)) {
+                kfree(clusterBuf);
+                break;
+            }
+
+            written += chunk;
+            curClusterStart += state->cluster_size;
+
+            if (written < size) {
+                uint32_t next = GetNextCluster(state, curCluster);
+                if (next < 2 || next >= FAT32_CLUSTER_EOF) {
+                    next = AllocateCluster(state);
+                    if (next == 0) break;
+                    SetFATEntry(state, curCluster, next);
+                }
+                curCluster = next;
+            }
+        }
+
+        kfree(clusterBuf);
+
+        uint32_t newSize = fileInfo.size;
+        if (offset + written > newSize) {
+            newSize = (uint32_t)(offset + written);
+        }
+        UpdateOrDeleteEntry(state, parentInfo.cluster, leafName, false, firstCluster, newSize);
+        return (written > 0) ? (int)written : -1;
     }
 
     static int fs_remove(IFileSystem* self, const char* path) {
-        // TODO: Implement file deletion
-        return -1;
+        FAT32State* state = (FAT32State*)self->private_data;
+        if (!state || !path) return -1;
+
+        char parentPath[128];
+        char leafName[64];
+        if (!SplitParentAndName(path, parentPath, sizeof(parentPath), leafName, sizeof(leafName))) {
+            return -1;
+        }
+
+        FAT32FileInfo parentInfo;
+        if (!ParsePath(state, parentPath, &parentInfo) || !parentInfo.is_directory) return -1;
+
+        FAT32FileInfo info;
+        if (!FindEntry(state, parentInfo.cluster, leafName, &info) || info.is_directory) return -1;
+
+        if (info.cluster >= 2) {
+            FreeClusterChain(state, info.cluster);
+        }
+        return UpdateOrDeleteEntry(state, parentInfo.cluster, leafName, true, 0, 0) ? 0 : -1;
     }
 
     static int fs_mkdir(IFileSystem* self, const char* path) {
-        // TODO: Implement directory creation
-        return -1;
+        FAT32State* state = (FAT32State*)self->private_data;
+        if (!state || !path) return -1;
+
+        char parentPath[128];
+        char leafName[64];
+        if (!SplitParentAndName(path, parentPath, sizeof(parentPath), leafName, sizeof(leafName))) {
+            return -1;
+        }
+
+        FAT32FileInfo parentInfo;
+        if (!ParsePath(state, parentPath, &parentInfo) || !parentInfo.is_directory) return -1;
+
+        FAT32FileInfo existing;
+        if (FindEntry(state, parentInfo.cluster, leafName, &existing)) return -1;
+
+        uint32_t dirCluster = AllocateCluster(state);
+        if (dirCluster == 0) return -1;
+
+        uint8_t* clusterBuf = (uint8_t*)kmalloc(state->cluster_size);
+        if (!clusterBuf) {
+            SetFATEntry(state, dirCluster, FAT32_CLUSTER_FREE);
+            return -1;
+        }
+        kmemset(clusterBuf, 0, state->cluster_size);
+        FAT32DirEntry* dotEntries = (FAT32DirEntry*)clusterBuf;
+
+        // "." entry
+        for (int i = 0; i < 8; i++) dotEntries[0].name[i] = (i == 0) ? '.' : ' ';
+        for (int i = 0; i < 3; i++) dotEntries[0].ext[i] = ' ';
+        dotEntries[0].attr = FAT32_ATTR_DIRECTORY;
+        dotEntries[0].cluster_high = (uint16_t)((dirCluster >> 16) & 0xFFFF);
+        dotEntries[0].cluster_low  = (uint16_t)(dirCluster & 0xFFFF);
+
+        // ".." entry
+        uint32_t dotDotCluster = (parentInfo.cluster == state->root_cluster) ? 0 : parentInfo.cluster;
+        for (int i = 0; i < 8; i++) dotEntries[1].name[i] = (i < 2) ? '.' : ' ';
+        for (int i = 0; i < 3; i++) dotEntries[1].ext[i] = ' ';
+        dotEntries[1].attr = FAT32_ATTR_DIRECTORY;
+        dotEntries[1].cluster_high = (uint16_t)((dotDotCluster >> 16) & 0xFFFF);
+        dotEntries[1].cluster_low  = (uint16_t)(dotDotCluster & 0xFFFF);
+
+        bool wroteInit = WriteCluster(state, dirCluster, clusterBuf);
+        kfree(clusterBuf);
+        if (!wroteInit) {
+            SetFATEntry(state, dirCluster, FAT32_CLUSTER_FREE);
+            return -1;
+        }
+
+        FAT32DirEntry newDir;
+        kmemset(&newDir, 0, sizeof(newDir));
+        Format83Name(leafName, newDir.name, newDir.ext);
+        newDir.attr = FAT32_ATTR_DIRECTORY;
+        newDir.cluster_high = (uint16_t)((dirCluster >> 16) & 0xFFFF);
+        newDir.cluster_low  = (uint16_t)(dirCluster & 0xFFFF);
+        newDir.file_size    = 0;
+
+        if (!InsertDirEntry(state, parentInfo.cluster, newDir)) {
+            SetFATEntry(state, dirCluster, FAT32_CLUSTER_FREE);
+            return -1;
+        }
+        return 0;
     }
 
     static int fs_rmdir(IFileSystem* self, const char* path) {
-        // TODO: Implement directory removal
-        return -1;
+        FAT32State* state = (FAT32State*)self->private_data;
+        if (!state || !path) return -1;
+
+        char parentPath[128];
+        char leafName[64];
+        if (!SplitParentAndName(path, parentPath, sizeof(parentPath), leafName, sizeof(leafName))) {
+            return -1;
+        }
+
+        FAT32FileInfo parentInfo;
+        if (!ParsePath(state, parentPath, &parentInfo) || !parentInfo.is_directory) return -1;
+
+        FAT32FileInfo dirInfo;
+        if (!FindEntry(state, parentInfo.cluster, leafName, &dirInfo) || !dirInfo.is_directory) return -1;
+
+        // Ensure directory is empty
+        struct TmpEntry { char name[64]; uint32_t type; uint32_t size; } tmp;
+        if (fs_readdir(self, path, &tmp, 1) > 0) {
+            return -1; // Not empty
+        }
+
+        if (dirInfo.cluster >= 2) {
+            FreeClusterChain(state, dirInfo.cluster);
+        }
+        return UpdateOrDeleteEntry(state, parentInfo.cluster, leafName, true, 0, 0) ? 0 : -1;
     }
 
     static int fs_stat(IFileSystem* self, const char* path, void* stat_buf) {
@@ -520,6 +955,8 @@ namespace FAT32 {
         if (!cluster_buf) return -1;
         
         uint32_t cluster = dir_info.cluster;
+        char lfn_buf[256];
+        kmemset(lfn_buf, 0, sizeof(lfn_buf));
         
         while (cluster >= 2 && cluster < FAT32_CLUSTER_EOF && count < max_entries) {
             if (!ReadCluster(state, cluster, cluster_buf)) break;
@@ -534,27 +971,41 @@ namespace FAT32 {
                 }
                 
                 // Skip deleted
-                if ((uint8_t)dir_entries[i].name[0] == 0xE5) continue;
+                if ((uint8_t)dir_entries[i].name[0] == 0xE5) {
+                    lfn_buf[0] = 0;
+                    continue;
+                }
                 
-                // Skip LFN
-                if ((dir_entries[i].attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) continue;
+                // Accumulate LFN
+                if ((dir_entries[i].attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) {
+                    ExtractLFNPart((const FAT32LFNEntry*)&dir_entries[i], lfn_buf);
+                    continue;
+                }
                 
                 // Skip volume label
-                if (dir_entries[i].attr & FAT32_ATTR_VOLUME_ID) continue;
+                if (dir_entries[i].attr & FAT32_ATTR_VOLUME_ID) {
+                    lfn_buf[0] = 0;
+                    continue;
+                }
                 
                 // Skip . and ..
-                if (dir_entries[i].name[0] == '.') continue;
+                if (dir_entries[i].name[0] == '.') {
+                    lfn_buf[0] = 0;
+                    continue;
+                }
                 
-                // Parse name
+                // Parse name (prefer LFN if available)
                 char parsed_name[13];
                 Parse83Name(&dir_entries[i], parsed_name);
+                const char* effective_name = lfn_buf[0] ? lfn_buf : parsed_name;
                 
                 int j = 0;
-                while (parsed_name[j] && j < 63) {
-                    out[count].name[j] = parsed_name[j];
+                while (effective_name[j] && j < 63) {
+                    out[count].name[j] = effective_name[j];
                     j++;
                 }
                 out[count].name[j] = 0;
+                lfn_buf[0] = 0;
                 
                 out[count].type = (dir_entries[i].attr & FAT32_ATTR_DIRECTORY) ? 1 : 0;
                 out[count].size = dir_entries[i].file_size;

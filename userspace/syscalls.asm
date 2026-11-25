@@ -314,3 +314,73 @@ sys_close:
     syscall
     ret
 
+global sys_malloc
+sys_malloc:
+    ; rdi = size
+    mov rax, 3
+    syscall
+    ret
+
+global sys_free
+sys_free:
+    ; rdi = ptr
+    mov rax, 4
+    syscall
+    ret
+
+global sys_write_file
+sys_write_file:
+    ; rdi = path, rsi = buffer, rdx = size
+    mov rax, 75
+    syscall
+    ret
+
+global sys_create_file
+sys_create_file:
+    ; rdi = path
+    mov rax, 76
+    syscall
+    ret
+
+global sys_delete_file
+sys_delete_file:
+    ; rdi = path
+    mov rax, 77
+    syscall
+    ret
+
+global sys_mkdir
+sys_mkdir:
+    ; rdi = path
+    mov rax, 78
+    syscall
+    ret
+
+global sys_stat
+sys_stat:
+    ; rdi = path, rsi = out_stat
+    mov rax, 79
+    syscall
+    ret
+
+global sys_waitpid
+sys_waitpid:
+    ; rdi = pid
+    mov rax, 85
+    syscall
+    ret
+
+global sys_vk_query_device
+sys_vk_query_device:
+    ; rdi = out_vk_device_info
+    mov rax, 102
+    syscall
+    ret
+
+global sys_vk_submit
+sys_vk_submit:
+    ; rdi = vk_submit_info
+    mov rax, 103
+    syscall
+    ret
+

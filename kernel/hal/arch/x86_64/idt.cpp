@@ -1,5 +1,7 @@
 #include "idt.h"
 
+extern "C" void isr_yield();
+
 IDTEntry IDT::idt[256];
 IDTR IDT::idtr;
 
@@ -19,6 +21,9 @@ void IDT::Init() {
         uint64_t isr_addr = (uint64_t)isr_stub_table[i];
         SetGate(i, isr_addr, 0x08, 0x8E);
     }
+
+    // Software Cooperative Yield Vector (0x81 - Ring 0 only, does not touch PIC/PIT)
+    SetGate(0x81, (uint64_t)isr_yield, 0x08, 0x8E);
 
     
     // Load IDT

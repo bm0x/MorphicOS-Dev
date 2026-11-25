@@ -62,12 +62,14 @@ EFI_LDFLAGS = /subsystem:efi_application /entry:EfiMain
 KERNEL_SOURCES = kernel/core/kernel_main.cpp \
                  kernel/core/bootconfig.cpp \
                  kernel/core/panic.cpp \
+                 kernel/core/selftest.cpp \
                  kernel/boot/boot_protocol.cpp \
                  kernel/hal/video/early_term.cpp \
                  kernel/hal/video/font.cpp \
                  kernel/hal/video/font_renderer.cpp \
                  kernel/hal/video/video_manager.cpp \
                  kernel/hal/video/graphics.cpp \
+                 kernel/hal/video/vulkan_layer.cpp \
                  kernel/hal/video/verbose.cpp \
                  kernel/hal/video/compositor.cpp \
                  kernel/hal/drm/drm.cpp \

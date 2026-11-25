@@ -39,8 +39,82 @@ namespace PartitionManager {
         
         // Check MBR signature
         if (mbr->signature != 0xAA55) {
-            // Not a valid MBR
             return 0;
+        }
+
+        // Detect Protective MBR (0xEE) -> Parse UEFI GPT Header at LBA 1
+        if (mbr->partitions[0].type == 0xEE) {
+            struct __attribute__((packed)) GPTHeader {
+                char signature[8];
+                uint32_t revision;
+                uint32_t header_size;
+                uint32_t header_crc32;
+                uint32_t reserved;
+                uint64_t current_lba;
+                uint64_t backup_lba;
+                uint64_t first_usable_lba;
+                uint64_t last_usable_lba;
+                uint8_t  disk_guid[16];
+                uint64_t part_entry_lba;
+                uint32_t num_part_entries;
+                uint32_t part_entry_size;
+                uint32_t part_array_crc32;
+            };
+            struct __attribute__((packed)) GPTEntry {
+                uint8_t  type_guid[16];
+                uint8_t  unique_guid[16];
+                uint64_t first_lba;
+                uint64_t last_lba;
+                uint64_t attributes;
+                uint16_t name[36];
+            };
+
+            uint8_t gpt_hdr_buf[512];
+            if (device->read_blocks(device, 1, 1, gpt_hdr_buf)) {
+                GPTHeader* hdr = (GPTHeader*)gpt_hdr_buf;
+                if (kstrncmp(hdr->signature, "EFI PART", 8) == 0 &&
+                    hdr->part_entry_size >= sizeof(GPTEntry) &&
+                    hdr->part_entry_size <= 512) {
+                    uint32_t maxEntries = hdr->num_part_entries;
+                    if (maxEntries > 128) maxEntries = 128;
+                    uint32_t entriesPerSector = 512 / hdr->part_entry_size;
+                    uint32_t sectorsToRead = (maxEntries + entriesPerSector - 1) / entriesPerSector;
+                    uint8_t sectorBuf[512];
+                    uint32_t gptFound = 0;
+
+                    for (uint32_t s = 0; s < sectorsToRead && partitionCount < MAX_PARTITIONS; s++) {
+                        if (!device->read_blocks(device, hdr->part_entry_lba + s, 1, sectorBuf)) break;
+                        for (uint32_t e = 0; e < entriesPerSector && partitionCount < MAX_PARTITIONS; e++) {
+                            GPTEntry* ge = (GPTEntry*)(sectorBuf + e * hdr->part_entry_size);
+                            bool nonZero = false;
+                            for (int b = 0; b < 16; b++) {
+                                if (ge->type_guid[b] != 0) { nonZero = true; break; }
+                            }
+                            if (!nonZero || ge->last_lba < ge->first_lba) continue;
+
+                            Partition* p = &partitions[partitionCount];
+                            int nameLen = 0;
+                            const char* devName = device->name;
+                            while (*devName && nameLen < 11) p->name[nameLen++] = *devName++;
+                            p->name[nameLen++] = 'p';
+                            uint32_t pNum = gptFound + 1;
+                            if (pNum >= 10) p->name[nameLen++] = (char)('0' + (pNum / 10));
+                            p->name[nameLen++] = (char)('0' + (pNum % 10));
+                            p->name[nameLen] = 0;
+
+                            p->parent = device;
+                            p->start_lba = ge->first_lba;
+                            p->sector_count = (ge->last_lba - ge->first_lba) + 1;
+                            p->type = PartitionType::UNKNOWN;
+                            p->bootable = false;
+
+                            partitionCount++;
+                            gptFound++;
+                        }
+                    }
+                    if (gptFound > 0) return gptFound;
+                }
+            }
         }
         
         uint32_t found = 0;

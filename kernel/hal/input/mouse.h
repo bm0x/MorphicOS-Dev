@@ -47,6 +47,7 @@ namespace Mouse {
     
     // Update position (called from IRQ handler) - FAST PATH ENABLED
     void OnInterrupt();
+    void ProcessByte(uint8_t data);
     
     // Get current position
     int16_t GetX();
