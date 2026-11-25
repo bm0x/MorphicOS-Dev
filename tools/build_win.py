@@ -68,6 +68,8 @@ KERNEL_CPP_SOURCES = [
     "kernel/drivers/x86/keyboard.cpp",
     "kernel/drivers/x86/uart_8250.cpp",
     "kernel/drivers/x86/ide.cpp",
+    "kernel/drivers/storage/ahci.cpp",
+    "kernel/drivers/storage/nvme.cpp",
     "kernel/drivers/ramdisk.cpp",
     "kernel/drivers/gpu/bga.cpp",
     "kernel/fs/drivers/ntfs.cpp",

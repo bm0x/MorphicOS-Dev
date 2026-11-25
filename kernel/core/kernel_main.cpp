@@ -12,6 +12,8 @@
 #include "../hal/audio/mixer.h"
 #include "../hal/serial/uart.h"
 #include "../hal/arch/x86_64/tsc.h"
+#include "../drivers/storage/ahci.h"
+#include "../drivers/storage/nvme.h"
 #include "../mm/pmm.h"
 #include "../mm/write_combining.h"
 #include "../hal/platform.h"
@@ -206,6 +208,8 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     BootScreen::Update(80, "Mounting Disks...");
     RAMDisk::Init();
     IDE::Init();
+    AHCI::Init();
+    NVMe::Init();
     UART::Write("[BOOT-TRACE] After Storage Init\n");
     
     // Auto-mount detected filesystems (FAT32 on debug_disk, etc.)

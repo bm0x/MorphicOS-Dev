@@ -972,15 +972,15 @@ static void UpdateMousePerFrame() {
                     w = externalWindows[i].w;
                     h = externalWindows[i].h;
                     
-                    // Mark OLD pos dirty (Trail fix)
-                    DirtyAdd(g_dirty, externalWindows[i].x - 2, externalWindows[i].y - 26, w + 4, h + 30);
+                    // Mark OLD pos dirty with full chrome + shadow padding (Zero drag trails)
+                    DirtyAdd(g_dirty, externalWindows[i].x - 12, externalWindows[i].y - 34, w + 24, h + 48);
                     
                     // Update local cache
                     externalWindows[i].x = targetX;
                     externalWindows[i].y = targetY;
                     
-                    // Mark NEW pos dirty
-                    DirtyAdd(g_dirty, targetX - 2, targetY - 26, w + 4, h + 30);
+                    // Mark NEW pos dirty with full chrome + shadow padding
+                    DirtyAdd(g_dirty, targetX - 12, targetY - 34, w + 24, h + 48);
                     
                     break;
                 }
@@ -1144,29 +1144,27 @@ extern "C" int main(void* asset_ptr) {
             DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
         }
 
-        // Add External Windows to Dirty (so they get composed/swapped)
-        // Compare current vs previous positions and mark both as dirty when changed
+        // Add External Windows to Dirty when they move, resize, or appear/disappear
         for(uint32_t i=0; i<externalWindowCount; i++) {
             WindowInfo& w = externalWindows[i];
             if (w.flags) {
-                // Current position
-                DirtyAdd(g_dirty, w.x - 2, w.y - 26, w.w + 4, w.h + 30);
-                
-                // Check if this window moved from previous frame
                 bool foundPrev = false;
                 for (uint32_t j = 0; j < prevExternalWindowCount; j++) {
                     if (prevExternalWindows[j].id == w.id) {
                         foundPrev = true;
-                        // If position changed, also mark the OLD position as dirty
                         if (prevExternalWindows[j].x != w.x || prevExternalWindows[j].y != w.y ||
-                            prevExternalWindows[j].w != w.w || prevExternalWindows[j].h != w.h) {
-                            DirtyAdd(g_dirty, prevExternalWindows[j].x - 2, prevExternalWindows[j].y - 26, 
-                                     prevExternalWindows[j].w + 4, prevExternalWindows[j].h + 30);
+                            prevExternalWindows[j].w != w.w || prevExternalWindows[j].h != w.h ||
+                            prevExternalWindows[j].flags != w.flags) {
+                            DirtyAdd(g_dirty, prevExternalWindows[j].x - 12, prevExternalWindows[j].y - 34,
+                                     prevExternalWindows[j].w + 24, prevExternalWindows[j].h + 48);
+                            DirtyAdd(g_dirty, w.x - 12, w.y - 34, w.w + 24, w.h + 48);
                         }
                         break;
                     }
                 }
-                // New window - already marked dirty above
+                if (!foundPrev) {
+                    DirtyAdd(g_dirty, w.x - 12, w.y - 34, w.w + 24, w.h + 48);
+                }
             }
         }
         
@@ -1180,9 +1178,8 @@ extern "C" int main(void* asset_ptr) {
                 }
             }
             if (!stillExists && prevExternalWindows[i].flags) {
-                // Window was closed - mark its old position as dirty
-                DirtyAdd(g_dirty, prevExternalWindows[i].x - 2, prevExternalWindows[i].y - 26,
-                         prevExternalWindows[i].w + 4, prevExternalWindows[i].h + 30);
+                DirtyAdd(g_dirty, prevExternalWindows[i].x - 12, prevExternalWindows[i].y - 34,
+                         prevExternalWindows[i].w + 24, prevExternalWindows[i].h + 48);
             }
         }
 
@@ -1193,18 +1190,17 @@ extern "C" int main(void* asset_ptr) {
             DirtyAdd(g_dirty, mouse_x - CURSOR_PAD, mouse_y - CURSOR_PAD, CURSOR_DIRTY_W, CURSOR_DIRTY_H);
         }
 
-        // Window moves (drag/max/min)
+        // Window moves (drag/max/min) — include full 16px Glass Dark soft drop shadow margin!
         for (int i = 0; i < window_count; i++) {
             if (windows[i].minimized != prev_min[i] || windows[i].maximized != prev_max[i]) {
-                // Minimize/restore doesn't change geometry, but it changes visibility.
-                DirtyAdd(g_dirty, prev_wx[i] - 2, prev_wy[i] - 2, prev_ww[i] + 4, prev_wh[i] + 4);
-                DirtyAdd(g_dirty, windows[i].x - 2, windows[i].y - 2, windows[i].width + 4, windows[i].height + 4);
+                DirtyAdd(g_dirty, prev_wx[i] - 20, prev_wy[i] - 20, prev_ww[i] + 40, prev_wh[i] + 44);
+                DirtyAdd(g_dirty, windows[i].x - 20, windows[i].y - 20, windows[i].width + 40, windows[i].height + 44);
                 ui_dirty = true;
             }
             if (windows[i].x != prev_wx[i] || windows[i].y != prev_wy[i] ||
                 windows[i].width != prev_ww[i] || windows[i].height != prev_wh[i]) {
-                DirtyAdd(g_dirty, prev_wx[i] - 2, prev_wy[i] - 2, prev_ww[i] + 4, prev_wh[i] + 4);
-                DirtyAdd(g_dirty, windows[i].x - 2, windows[i].y - 2, windows[i].width + 4, windows[i].height + 4);
+                DirtyAdd(g_dirty, prev_wx[i] - 20, prev_wy[i] - 20, prev_ww[i] + 40, prev_wh[i] + 44);
+                DirtyAdd(g_dirty, windows[i].x - 20, windows[i].y - 20, windows[i].width + 40, windows[i].height + 44);
             }
         }
 
