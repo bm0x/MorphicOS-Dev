@@ -64,6 +64,8 @@ static MorphicDateTime g_rtc = {};
 static MorphicSystemInfo g_sys = {};
 static MorphicVkPhysicalDeviceInfo g_vk = {};
 static bool g_vk_valid = false;
+static GraphicsUapiCaps g_gfx_caps = {};
+static bool g_gfx_caps_valid = false;
 static uint64_t g_last_rtc_ms = 0;
 static uint32_t g_last_clock_sec = 0;
 static uint64_t g_last_render_time = 0;
@@ -176,9 +178,10 @@ static void RefreshTimeAndSysinfo() {
         }
     }
 
-    if (g_last_drop_poll_ms == 0 || (now - g_last_drop_poll_ms) >= 1000) {
+    if (g_last_drop_poll_ms == 0 || (now - g_last_drop_poll_ms) >= 500) {
         g_last_input_drop_count = sys_get_input_drop_count();
         g_vk_valid = MorphicVK::QueryPhysicalDevice(&g_vk);
+        g_gfx_caps_valid = (MorphicGfx::QueryCaps(&g_gfx_caps) != 0);
         g_last_drop_poll_ms = now;
     }
 }
@@ -1329,11 +1332,17 @@ extern "C" int main(void* asset_ptr) {
                     ty += 20;
 
                     pos = 0;
+                    uint32_t dispHz = (g_gfx_caps_valid && g_gfx_caps.refresh_hz) ? g_gfx_caps.refresh_hz : 60u;
+                    uint32_t dispFps = g_gfx_caps_valid ? g_gfx_caps.measured_fps : 0u;
                     append_str(buf, pos, 64, "Display: ");
                     write_u64(buf, pos, g_sys.fb_width);
                     append_str(buf, pos, 64, "x");
                     write_u64(buf, pos, g_sys.fb_height);
-                    append_str(buf, pos, 64, "  @ 60Hz");
+                    append_str(buf, pos, 64, " @ ");
+                    write_u64(buf, pos, dispHz);
+                    append_str(buf, pos, 64, "Hz (");
+                    write_u64(buf, pos, dispFps);
+                    append_str(buf, pos, 64, " FPS)");
                     buf[pos] = '\0';
                     Compositor::DrawText(tx, ty, buf, 0xFF94A3B8, 1);
                     ty += 20;
@@ -1499,11 +1508,18 @@ extern "C" int main(void* asset_ptr) {
         // Restore rendering to back buffer for next frame UI
         Compositor::SetRenderTarget(Compositor::RenderTarget::BACK_BUFFER);
         
-        // E. 60 Hz Frame Pacing (always cap even when VMSVGA/OVMF VSync returns immediately)
-        uint64_t end_time = sys_get_time_ms();
-        uint64_t elapsed = end_time - start_time;
-        if (elapsed < (uint64_t)FRAME_TIME_MS) {
-            sys_sleep((uint32_t)(FRAME_TIME_MS - elapsed));
+        // E. High-Refresh Frame Pacing:
+        // When DRM VSync is active, WaitForRetrace() already phase-locks to 60..240 Hz in kernel.
+        // Only apply a coarse sleep fallback if VSync did not run.
+        if (!vsynced) {
+            uint32_t targetHz = (g_gfx_caps_valid && g_gfx_caps.refresh_hz >= 30) ? g_gfx_caps.refresh_hz : 60u;
+            uint64_t budgetMs = 1000ULL / targetHz;
+            if (budgetMs < 1) budgetMs = 1;
+            uint64_t end_time = sys_get_time_ms();
+            uint64_t elapsed = end_time - start_time;
+            if (elapsed < budgetMs) {
+                sys_sleep((uint32_t)(budgetMs - elapsed));
+            }
         }
 
         // Update prev state

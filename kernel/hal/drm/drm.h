@@ -293,4 +293,8 @@ namespace DRM {
      * @param mode Buffer mode to use
      */
     void SetBufferMode(CRTC::BufferMode mode);
+
+    // High-refresh native V-Sync configuration (30..240 Hz)
+    bool SetDisplayMode(uint32_t refresh_hz, uint32_t vsync_mode);
+    uint32_t GetRefreshRate();
 }

@@ -5,6 +5,8 @@
 #include "../fs/vfs.h"
 #include "../hal/arch/x86_64/pci.h"
 #include "../hal/video/vulkan_layer.h"
+#include "../hal/video/vsync.h"
+#include "../hal/arch/x86_64/tsc.h"
 #include "../hal/video/early_term.h"
 #include "../hal/serial/uart.h"
 #include "../process/scheduler.h"
@@ -134,12 +136,20 @@ namespace SelfTest {
         if (!cur) return false;
         if (((uintptr_t)cur->GetFpuBuffer() & 0xFULL) != 0) return false;
 
+        uint64_t us0 = TSC::GetMicroseconds();
         uint64_t t0 = PIT_GetTicks();
         for (volatile int i = 0; i < 2000000; i++) {
-            if (PIT_GetTicks() > t0) return true;
+            if (PIT_GetTicks() > t0) break;
         }
-        // Even on ultra-fast TCG/KVM, verify ticks are valid
-        return PIT_GetTicks() >= t0;
+        uint64_t us1 = TSC::GetMicroseconds();
+        bool tscOk = (TSC::GetFreqMHz() >= 100 && us1 > us0);
+
+        uint32_t origHz = VSync::GetRefreshRate();
+        bool hzOk = VSync::SetRefreshRate(144) && VSync::GetRefreshRate() == 144 &&
+                    VSync::SetRefreshRate(240) && VSync::GetRefreshRate() == 240 &&
+                    VSync::SetRefreshRate(origHz);
+
+        return (PIT_GetTicks() >= t0) && tscOk && hzOk;
     }
 
     Report RunAll() {

@@ -11,6 +11,7 @@
 #include "../hal/audio/audio_device.h"
 #include "../hal/audio/mixer.h"
 #include "../hal/serial/uart.h"
+#include "../hal/arch/x86_64/tsc.h"
 #include "../mm/pmm.h"
 #include "../mm/write_combining.h"
 #include "../hal/platform.h"
@@ -94,6 +95,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     // ... Platform Init ...
     UART::Write("[BOOT] Platform::Init...\n");
     HAL::Platform::Init();
+    TSC::Init();
     
     UART::Write("[BOOT] PMM::Init...\n");
     PMM::Init(bootInfo);

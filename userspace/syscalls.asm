@@ -384,3 +384,10 @@ sys_vk_submit:
     syscall
     ret
 
+global sys_drm_set_display_mode
+sys_drm_set_display_mode:
+    ; rdi = refresh_hz, rsi = vsync_mode
+    mov rax, 104
+    syscall
+    ret
+

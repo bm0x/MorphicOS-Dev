@@ -115,10 +115,16 @@ public:
         btnCalc      = {bx + (bw + 10) * 2, by, bw, 32};
         btnFiles     = {bx + (bw + 10) * 3, by, bw, 32};
 
+        char hzLbl[20];
+        int hp = 0;
+        AppendU64(hzLbl, hp, 20, refreshHz);
+        AppendText(hzLbl, hp, 20, " Hz");
+        hzLbl[hp] = '\0';
+
         DrawButton(g, btnInstaller, "Installer", ButtonStyle::PRIMARY, btnInstaller.Contains(mouseX, mouseY));
         DrawButton(g, btnTerminal,  "Terminal",  ButtonStyle::SECONDARY, btnTerminal.Contains(mouseX, mouseY));
         DrawButton(g, btnCalc,      "Calc",      ButtonStyle::SECONDARY, btnCalc.Contains(mouseX, mouseY));
-        DrawButton(g, btnFiles,     "Files",     ButtonStyle::SECONDARY, btnFiles.Contains(mouseX, mouseY));
+        DrawButton(g, btnFiles,     hzLbl,       ButtonStyle::SUCCESS,   btnFiles.Contains(mouseX, mouseY));
     }
 
     void OnMouseDown(int x, int y, int btn) override {
@@ -126,7 +132,18 @@ public:
         if (btnInstaller.Contains(x, y)) { MorphicHW::Package::Launch("/initrd/installer.mpk"); return; }
         if (btnTerminal.Contains(x, y))  { MorphicHW::Package::Launch("/initrd/terminal.mpk"); return; }
         if (btnCalc.Contains(x, y))      { MorphicHW::Package::Launch("/initrd/calculator.mpk"); return; }
-        if (btnFiles.Contains(x, y))     { MorphicHW::Package::Launch("/initrd/filemanager.mpk"); return; }
+        if (btnFiles.Contains(x, y)) {
+            static const uint32_t kRates[] = {60, 75, 120, 144, 165, 240};
+            uint32_t nextHz = 60;
+            for (int i = 0; i < 6; i++) {
+                if (kRates[i] == refreshHz) { nextHz = kRates[(i + 1) % 6]; break; }
+            }
+            if (MorphicHW::Display::SetRefreshRate(nextHz, GRAPHICS_VSYNC_ADAPTIVE)) {
+                refreshHz = nextHz;
+                Invalidate();
+            }
+            return;
+        }
     }
 
     void OnKeyDown(char c) override {
@@ -143,6 +160,7 @@ private:
     uint64_t lastRefreshMs;
     bool linked;
     bool statusDirty;
+    uint32_t refreshHz = 60;
 
     MorphicUI::Rect btnInstaller, btnTerminal, btnCalc, btnFiles;
 
@@ -150,6 +168,7 @@ private:
         currentPid = sys_get_pid();
         compositorPid = sys_get_compositor_pid();
         linked = (currentPid != 0 && compositorPid != 0 && currentPid != compositorPid);
+        refreshHz = MorphicHW::Display::GetRefreshRate();
         statusDirty = true;
     }
 };

@@ -1,6 +1,7 @@
 #include "drm.h"
 #include "buffer_manager.h"
 #include "../video/graphics.h"
+#include "../video/vsync.h"
 #include "../serial/uart.h"
 #include "../../mm/heap.h"
 #include "../../mm/pmm.h"
@@ -194,6 +195,10 @@ namespace DRM {
             dirty_rects[i].active = false;
         }
         
+        // Initialize native High-Refresh V-Sync engine (60-240 Hz)
+        VSync::Init();
+        primary_crtc->refresh_hz = VSync::GetRefreshRate();
+
         UART::Write("[DRM] Init complete: ");
         UART::WriteDec(width);
         UART::Write("x");
@@ -332,14 +337,19 @@ namespace DRM {
                                GRAPHICS_CAP_DIRTY_RECT |
                                GRAPHICS_CAP_VSYNC_PRESENT |
                                GRAPHICS_CAP_VBLANK_EVENT |
-                               GRAPHICS_CAP_ATOMIC_COMMIT;
+                               GRAPHICS_CAP_ATOMIC_COMMIT |
+                               GRAPHICS_CAP_HIGH_REFRESH;
         out_caps->max_width = screen_width;
         out_caps->max_height = screen_height;
         out_caps->preferred_format = GRAPHICS_FORMAT_XRGB8888;
         out_caps->supported_formats_mask = GRAPHICS_FORMAT_BIT_ARGB8888 |
                                            GRAPHICS_FORMAT_BIT_XRGB8888 |
                                            GRAPHICS_FORMAT_BIT_RGB888;
-        out_caps->reserved0 = 0;
+        out_caps->refresh_hz = VSync::GetRefreshRate();
+        out_caps->max_refresh_hz = VSync::GetMaxRefreshRate();
+        out_caps->vsync_mode = (uint32_t)VSync::GetMode();
+        out_caps->measured_fps = VSync::GetMeasuredFps();
+        out_caps->last_frame_us = (uint32_t)VSync::GetLastFrameUs();
 
         return true;
     }
@@ -402,13 +412,7 @@ namespace DRM {
     
     void WaitVBlank(CRTC* crtc) {
         (void)crtc;
-        
-        // Use GPU driver if available, otherwise VGA ports
-        if (gpu_enabled) {
-            bga_driver.WaitVSync();
-        } else {
-            WaitVBlankVGA();
-        }
+        VSync::WaitForRetrace();
     }
     
     uint64_t GetVBlankCount(CRTC* crtc) {
@@ -641,15 +645,17 @@ namespace DRM {
         primary_crtc->avg_frame_time_us = 
             (primary_crtc->avg_frame_time_us * 7 + render_time_us) / 8;
         
-        // Dynamic buffer mode switching
-        if (primary_crtc->avg_frame_time_us > TRIPLE_BUFFER_THRESHOLD) {
-            // Heavy load - switch to triple buffering
+        // Dynamic buffer mode switching scaled to active target refresh rate
+        uint64_t target_us = VSync::GetTargetFrameUs();
+        uint64_t triple_thresh = (target_us * 70ULL) / 100ULL;
+        uint64_t double_thresh = (target_us * 40ULL) / 100ULL;
+
+        if (primary_crtc->avg_frame_time_us > triple_thresh) {
             if (primary_crtc->buffer_mode == CRTC::DOUBLE_BUFFER) {
                 primary_crtc->buffer_mode = CRTC::TRIPLE_BUFFER;
                 UART::Write("[DRM] Switched to triple buffering\n");
             }
-        } else if (primary_crtc->avg_frame_time_us < DOUBLE_BUFFER_THRESHOLD) {
-            // Light load - switch back to double buffering
+        } else if (primary_crtc->avg_frame_time_us < double_thresh) {
             if (primary_crtc->buffer_mode == CRTC::TRIPLE_BUFFER) {
                 primary_crtc->buffer_mode = CRTC::DOUBLE_BUFFER;
                 UART::Write("[DRM] Switched to double buffering\n");
@@ -665,5 +671,21 @@ namespace DRM {
         if (primary_crtc) {
             primary_crtc->buffer_mode = mode;
         }
+    }
+
+    bool SetDisplayMode(uint32_t refresh_hz, uint32_t vsync_mode) {
+        if (refresh_hz != 0) {
+            if (!VSync::SetRefreshRate(refresh_hz)) return false;
+            if (primary_crtc) primary_crtc->refresh_hz = VSync::GetRefreshRate();
+        }
+        if (vsync_mode <= (uint32_t)VSync::MODE_OFF) {
+            VSync::SetMode((VSync::Mode)vsync_mode);
+            if (primary_crtc) primary_crtc->vsync_enabled = (vsync_mode != (uint32_t)VSync::MODE_OFF);
+        }
+        return true;
+    }
+
+    uint32_t GetRefreshRate() {
+        return VSync::GetRefreshRate();
     }
 }

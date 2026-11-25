@@ -104,6 +104,9 @@ int      sys_drm_atomic_commit(uint32_t packed_pos, uint32_t packed_size, uint32
 int      sys_vk_query_device(void* out_vk_device_info);
 int      sys_vk_submit(const void* vk_submit_info);
 
+// High-Refresh Native V-Sync Control (30..240 Hz)
+int      sys_drm_set_display_mode(uint32_t refresh_hz, uint32_t vsync_mode);
+
 #ifdef __cplusplus
 }
 #endif

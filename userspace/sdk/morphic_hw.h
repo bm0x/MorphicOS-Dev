@@ -66,6 +66,25 @@ namespace MorphicHW {
         static inline bool QueryCaps(GraphicsUapiCaps* outCaps) {
             return MorphicGfx::QueryCaps(outCaps);
         }
+
+        static inline uint32_t GetRefreshRate() {
+            GraphicsUapiCaps caps = {};
+            return MorphicGfx::QueryCaps(&caps) && caps.refresh_hz ? caps.refresh_hz : 60u;
+        }
+
+        static inline uint32_t GetMeasuredFps() {
+            GraphicsUapiCaps caps = {};
+            return MorphicGfx::QueryCaps(&caps) ? caps.measured_fps : 0u;
+        }
+
+        static inline uint32_t GetLastFrameUs() {
+            GraphicsUapiCaps caps = {};
+            return MorphicGfx::QueryCaps(&caps) ? caps.last_frame_us : 0u;
+        }
+
+        static inline bool SetRefreshRate(uint32_t hz, uint32_t vsyncMode = GRAPHICS_VSYNC_ADAPTIVE) {
+            return MorphicGfx::SetDisplayMode(hz, vsyncMode) != 0;
+        }
     }
 
     namespace GPU {

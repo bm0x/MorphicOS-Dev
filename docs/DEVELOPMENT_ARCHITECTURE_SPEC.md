@@ -164,6 +164,7 @@ static inline bool IsValidUserRange(uint64_t addr, size_t size) {
 | `90`–`101` | `SYS_DRM_*` | Varios (`id`, `caps`, `atomic`) | Estado / dirección | Subsistema DRM de buffers compartidos (`0x7080...`) y commit atómico. |
 | `102` | `SYS_VK_QUERY_DEVICE` | `rdi = MorphicVkPhysicalDeviceInfo*` | `1` / `0` | Descubre GPU PCI (NVIDIA/AMD/Intel/VirtIO) y telemetría `MorphicVK 1.3`. |
 | `103` | `SYS_VK_SUBMIT` | `rdi = const MorphicVkSubmitInfo*` | Comandos traducidos / -1 | Traducción en tiempo real de command buffers Vulkan sobre SIMD/GOP. |
+| `104` | `SYS_DRM_SET_DISPLAY_MODE` | `rdi = refresh_hz`, `rsi = vsync_mode` | `1` / `0` | Configura tasa de refresco nativa (30–240 Hz) y modo V-Sync (Adaptive/HW/Off). |
 
 > [!CAUTION]
 > El archivo `kernel/api/morphic_api.cpp` y sus definiciones huérfanas quedan formalmente **deprecados y marcados para eliminación**. No deben agregarse nuevas funciones en dicho módulo.

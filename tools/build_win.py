@@ -61,6 +61,7 @@ KERNEL_CPP_SOURCES = [
     "kernel/hal/arch/x86_64/interrupt_handlers.cpp",
     "kernel/hal/arch/x86_64/irq_dispatcher.cpp",
     "kernel/hal/arch/x86_64/platform.cpp",
+    "kernel/hal/arch/x86_64/tsc.cpp",
     "kernel/hal/arch/x86_64/pci.cpp",
     "kernel/hal/arch/x86_64/mmu.cpp",
     "kernel/drivers/x86/pit.cpp",

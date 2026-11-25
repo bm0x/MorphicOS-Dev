@@ -72,4 +72,8 @@ inline int AtomicCommitFull(bool wait_vsync) {
     return sys_drm_atomic_commit(0, 0, flags);
 }
 
+inline int SetDisplayMode(uint32_t refresh_hz, uint32_t vsync_mode = GRAPHICS_VSYNC_ADAPTIVE) {
+    return sys_drm_set_display_mode(refresh_hz, vsync_mode);
+}
+
 }

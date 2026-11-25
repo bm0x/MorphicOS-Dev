@@ -1607,6 +1607,13 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
       return (done >= 0) ? (uint64_t)done : (uint64_t)-1;
     }
 
+    case SYS_DRM_SET_DISPLAY_MODE:
+    {
+      uint32_t refresh_hz = (uint32_t)arg1;
+      uint32_t vsync_mode = (uint32_t)arg2;
+      return DRM::SetDisplayMode(refresh_hz, vsync_mode) ? 1 : 0;
+    }
+
   default:
     return (uint64_t)-1;
   }
