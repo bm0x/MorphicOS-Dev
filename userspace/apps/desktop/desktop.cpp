@@ -638,15 +638,16 @@ void HandleEvent(const OSEvent& ev) {
             }
             return;
         }
-        // Global desktop shortcuts.
-        if (ev.ascii == 'm' || ev.ascii == 'M') {
-            CycleMouseProfile();
+        // Forward keyboard input to the focused app FIRST so letters like 'm'/'M'
+        // always work inside Terminal and all .mpk applications.
+        if (active_pid != 0) {
+            OSEvent fwd = ev;
+            sys_post_message(active_pid, &fwd);
             return;
         }
-
-        if (active_pid != 0) {
-            OSEvent fwd = ev; // Copy
-            sys_post_message(active_pid, &fwd);
+        // Bare desktop shortcut (only when no app window has keyboard focus)
+        if (ev.ascii == 'm' || ev.ascii == 'M') {
+            CycleMouseProfile();
             return;
         }
         if (window_count > 0) {

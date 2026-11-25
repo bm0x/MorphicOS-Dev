@@ -14,6 +14,7 @@
 #include "../hal/arch/x86_64/tsc.h"
 #include "../drivers/storage/ahci.h"
 #include "../drivers/storage/nvme.h"
+#include "../drivers/usb/xhci.h"
 #include "../mm/pmm.h"
 #include "../mm/write_combining.h"
 #include "../hal/platform.h"
@@ -204,6 +205,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     
     Keyboard::Init();
     UART::Write("[BOOT-TRACE] After Keyboard::Init\n");
+    xHCI::Init();
     
     BootScreen::Update(80, "Mounting Disks...");
     RAMDisk::Init();
