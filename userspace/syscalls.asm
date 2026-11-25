@@ -391,3 +391,10 @@ sys_drm_set_display_mode:
     syscall
     ret
 
+global sys_net_info
+sys_net_info:
+    ; rdi = out_net_info
+    mov rax, 105
+    syscall
+    ret
+

@@ -348,6 +348,7 @@ Structs compartidos (kernel ↔ userspace):
 - `90..101 SYS_DRM_*` → buffers compartidos DRM (`PMM` + `PAGE_USER`) y commit atómico
 - `102..103 SYS_VK_QUERY_DEVICE / SYS_VK_SUBMIT` → reconocimiento PCI GPU (NVIDIA/AMD/Intel/VirtIO) y capa de traducción Vulkan 1.3 en tiempo real (`MorphicVK`)
 - `104 SYS_DRM_SET_DISPLAY_MODE` → control nativo de frecuencia de refresco (60–240 Hz) y modo V-Sync (`Phase-Locked TSC / Hardware VBlank / Off`)
+- `105 SYS_NET_INFO` → telemetría de red nativa Intel e1000 (MAC, estado de enlace, paquetes TX/RX) para `MorphicHW::Network` y Terminal v2
 
 ## Rendimiento: qué se optimiza y por qué
 

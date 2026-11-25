@@ -107,6 +107,9 @@ int      sys_vk_submit(const void* vk_submit_info);
 // High-Refresh Native V-Sync Control (30..240 Hz)
 int      sys_drm_set_display_mode(uint32_t refresh_hz, uint32_t vsync_mode);
 
+// Network Hardware Info (Intel e1000)
+int      sys_net_info(void* out_net_info);
+
 #ifdef __cplusplus
 }
 #endif

@@ -72,6 +72,7 @@ KERNEL_CPP_SOURCES = [
     "kernel/drivers/storage/nvme.cpp",
     "kernel/drivers/usb/usb_hid.cpp",
     "kernel/drivers/usb/xhci.cpp",
+    "kernel/drivers/net/e1000.cpp",
     "kernel/drivers/ramdisk.cpp",
     "kernel/drivers/gpu/bga.cpp",
     "kernel/fs/drivers/ntfs.cpp",

@@ -15,6 +15,7 @@
 #include "../drivers/storage/ahci.h"
 #include "../drivers/storage/nvme.h"
 #include "../drivers/usb/xhci.h"
+#include "../drivers/net/e1000.h"
 #include "../mm/pmm.h"
 #include "../mm/write_combining.h"
 #include "../hal/platform.h"
@@ -206,6 +207,7 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     Keyboard::Init();
     UART::Write("[BOOT-TRACE] After Keyboard::Init\n");
     xHCI::Init();
+    NetE1000::Init();
     
     BootScreen::Update(80, "Mounting Disks...");
     RAMDisk::Init();

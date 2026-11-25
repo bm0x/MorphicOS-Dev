@@ -5,6 +5,7 @@
 #include "morphic_system_info.h"
 #include "morphic_vulkan.h"
 #include "graphics_uapi.h"
+#include "../../shared/net_uapi.h"
 
 // ============================================================================
 // MorphicHW - Proprietary Hardware & Package Control API for Morphic OS Apps
@@ -95,6 +96,18 @@ namespace MorphicHW {
         static inline bool IsAccelerated() {
             MorphicVkPhysicalDeviceInfo info = {};
             return QueryDevice(&info) && info.vendor_id != 0;
+        }
+    }
+
+    namespace Network {
+        static inline bool GetInfo(MorphicNetInfo* outInfo) {
+            if (!outInfo) return false;
+            return sys_net_info(outInfo) != 0;
+        }
+
+        static inline bool IsLinkUp() {
+            MorphicNetInfo ni = {};
+            return GetInfo(&ni) && ni.link_up != 0;
         }
     }
 
