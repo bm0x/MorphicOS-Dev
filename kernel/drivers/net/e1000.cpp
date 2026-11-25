@@ -1,6 +1,7 @@
 #include "e1000.h"
 #include "../../hal/arch/x86_64/pci.h"
 #include "../../arch/common/mmu.h"
+#include "../../hal/net/network_manager.h"
 #include "../../hal/serial/uart.h"
 #include "../../mm/pmm.h"
 #include "../../utils/std.h"
@@ -169,6 +170,13 @@ namespace NetE1000 {
                 g_info.device_id = dev.device_id;
                 const char* drv = "Intel e1000 Gigabit";
                 for (int k = 0; drv[k] && k < 23; k++) g_info.driver_name[k] = drv[k];
+
+                static INetworkDevice s_e1000_dev = {};
+                const char* dn = "eth0";
+                for (int k = 0; dn[k] && k < 15; k++) s_e1000_dev.name[k] = dn[k];
+                s_e1000_dev.send_packet = [](INetworkDevice*, const void* d, uint16_t l) { return SendPacket(d, l); };
+                s_e1000_dev.get_info    = [](INetworkDevice*, MorphicNetInfo* o) { return GetInfo(o); };
+                NetworkManager::RegisterDevice(&s_e1000_dev);
 
                 UART::Write("[NET] Intel e1000 ready BAR0=");
                 UART::WriteHex(bar0);

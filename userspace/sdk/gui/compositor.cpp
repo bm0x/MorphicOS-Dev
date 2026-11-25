@@ -23,6 +23,16 @@ int Compositor::bpp = 32;
 static Compositor::BackendType g_backend_requested = Compositor::BackendType::SOFTWARE;
 static Compositor::BackendType g_backend_active = Compositor::BackendType::SOFTWARE;
 static bool g_backend_gpu_atomic_supported = false;
+static int  g_wallpaper_theme = 0; // 0=Aurora Cyan, 1=Midnight Violet, 2=Deep Obsidian
+
+void Compositor::SetWallpaperTheme(int themeId) {
+  g_wallpaper_theme = ((themeId % 3) + 3) % 3;
+  BuildWallpaper();
+}
+
+int Compositor::GetWallpaperTheme() {
+  return g_wallpaper_theme;
+}
 
 bool Compositor::clipEnabled = false;
 int Compositor::clipX = 0;
@@ -129,26 +139,26 @@ void Compositor::BuildWallpaper() {
       uint32_t g = baseG;
       uint32_t b = baseB;
 
-      // Aurora 1: Electric Cyan glow (top-left)
+      // Aurora 1 glow (theme-selectable)
       int64_t dx1 = (int64_t)(x - ax1);
       int64_t d1 = dx1 * dx1 + dy1_2;
       if (d1 < r1_2) {
         uint32_t w1 = (uint32_t)(((r1_2 - d1) * 255) / r1_2);
-        w1 = (w1 * w1) >> 8; // smooth quadratic falloff
-        r += (w1 * 12) >> 8;
-        g += (w1 * 74) >> 8;
-        b += (w1 * 116) >> 8;
+        w1 = (w1 * w1) >> 8;
+        if (g_wallpaper_theme == 0) { r += (w1 * 12) >> 8; g += (w1 * 74) >> 8; b += (w1 * 116) >> 8; }
+        else if (g_wallpaper_theme == 1) { r += (w1 * 88) >> 8; g += (w1 * 28) >> 8; b += (w1 * 124) >> 8; }
+        else { r += (w1 * 18) >> 8; g += (w1 * 24) >> 8; b += (w1 * 34) >> 8; }
       }
 
-      // Aurora 2: Indigo-Violet glow (bottom-right)
+      // Aurora 2 glow (theme-selectable)
       int64_t dx2 = (int64_t)(x - ax2);
       int64_t d2 = dx2 * dx2 + dy2_2;
       if (d2 < r2_2) {
         uint32_t w2 = (uint32_t)(((r2_2 - d2) * 255) / r2_2);
         w2 = (w2 * w2) >> 8;
-        r += (w2 * 58) >> 8;
-        g += (w2 * 38) >> 8;
-        b += (w2 * 118) >> 8;
+        if (g_wallpaper_theme == 0) { r += (w2 * 58) >> 8; g += (w2 * 38) >> 8; b += (w2 * 118) >> 8; }
+        else if (g_wallpaper_theme == 1) { r += (w2 * 120) >> 8; g += (w2 * 24) >> 8; b += (w2 * 82) >> 8; }
+        else { r += (w2 * 14) >> 8; g += (w2 * 20) >> 8; b += (w2 * 30) >> 8; }
       }
 
       // Aurora 3: Soft Teal highlight (upper-center)

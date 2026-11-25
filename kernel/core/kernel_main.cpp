@@ -15,7 +15,9 @@
 #include "../drivers/storage/ahci.h"
 #include "../drivers/storage/nvme.h"
 #include "../drivers/usb/xhci.h"
+#include "../hal/net/network_manager.h"
 #include "../drivers/net/e1000.h"
+#include "../drivers/net/virtio_net.h"
 #include "../mm/pmm.h"
 #include "../mm/write_combining.h"
 #include "../hal/platform.h"
@@ -207,7 +209,9 @@ extern "C" void kernel_main(BootInfo* bootInfo) {
     Keyboard::Init();
     UART::Write("[BOOT-TRACE] After Keyboard::Init\n");
     xHCI::Init();
+    NetworkManager::Init();
     NetE1000::Init();
+    VirtIONet::Init();
     
     BootScreen::Update(80, "Mounting Disks...");
     RAMDisk::Init();

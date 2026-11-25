@@ -72,7 +72,9 @@ KERNEL_CPP_SOURCES = [
     "kernel/drivers/storage/nvme.cpp",
     "kernel/drivers/usb/usb_hid.cpp",
     "kernel/drivers/usb/xhci.cpp",
+    "kernel/hal/net/network_manager.cpp",
     "kernel/drivers/net/e1000.cpp",
+    "kernel/drivers/net/virtio_net.cpp",
     "kernel/drivers/ramdisk.cpp",
     "kernel/drivers/gpu/bga.cpp",
     "kernel/fs/drivers/ntfs.cpp",
@@ -107,6 +109,7 @@ USERSPACE_APPS = [
     ("terminal", "userspace/apps/terminal", ["main.cpp", "terminal.cpp", "mcl.cpp"], []),
     ("filemanager", "userspace/apps/filemanager", ["main.cpp", "filemanager.cpp"], []),
     ("installer", "userspace/apps/installer", ["main.cpp"], []),
+    ("browser", "userspace/apps/browser", ["main.cpp"], []),
     ("display_probe", "userspace/apps/display_probe", ["main.cpp"], []),
 ]
 

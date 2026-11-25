@@ -24,7 +24,7 @@
 #include "../../drm/drm.h"
 #include "../../drm/buffer_manager.h"
 #include "../../video/vulkan_layer.h"
-#include "../../../drivers/net/e1000.h"
+#include "../../net/network_manager.h"
 
 extern "C" uint64_t PIT_GetTicks();
 
@@ -1618,7 +1618,7 @@ extern "C" uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
     case SYS_NET_INFO:
     {
       MorphicNetInfo ni = {};
-      bool ok = NetE1000::GetInfo(&ni);
+      bool ok = NetworkManager::GetPrimaryInfo(&ni);
       if (!CopyToUser(arg1, &ni, sizeof(MorphicNetInfo)))
         return 0;
       return ok ? 1 : 0;

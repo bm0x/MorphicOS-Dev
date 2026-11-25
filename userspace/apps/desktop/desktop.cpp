@@ -109,6 +109,91 @@ static uint64_t g_total_surface_overruns = 0;
 
 static Launcher g_launcher;
 
+// Desktop Icon Grid + Desktop Right-Click Context Menu
+struct DesktopIcon {
+    char name[32];
+    char mpk_path[64];
+    uint32_t colorTop;
+    uint32_t colorBot;
+};
+static constexpr int MAX_DESKTOP_ICONS = 16;
+static DesktopIcon g_desktop_icons[MAX_DESKTOP_ICONS];
+static int  g_desktop_icon_count = 0;
+static bool g_show_desktop_icons = true;
+static bool g_compact_icon_grid  = false;
+static bool g_desk_ctx_open      = false;
+static int  g_desk_ctx_x         = 0;
+static int  g_desk_ctx_y         = 0;
+
+static void AddDesktopIcon(const char* name, const char* path) {
+    if (!name || !path || g_desktop_icon_count >= MAX_DESKTOP_ICONS) return;
+    for (int i = 0; i < g_desktop_icon_count; i++) {
+        const char* a = g_desktop_icons[i].mpk_path; const char* b = path;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (*a == *b) return; // Already pinned
+    }
+    DesktopIcon& ic = g_desktop_icons[g_desktop_icon_count++];
+    int p = 0; while (name[p] && p < 31) { ic.name[p] = name[p]; p++; } ic.name[p] = 0;
+    p = 0; while (path[p] && p < 63) { ic.mpk_path[p] = path[p]; p++; } ic.mpk_path[p] = 0;
+    if (name[0] == 'B') { ic.colorTop = 0xFF38BDF8; ic.colorBot = 0xFF0284C7; }
+    else if (name[0] == 'I') { ic.colorTop = 0xFFF472B6; ic.colorBot = 0xFFDB2777; }
+    else if (name[0] == 'T') { ic.colorTop = 0xFF818CF8; ic.colorBot = 0xFF4F46E5; }
+    else if (name[0] == 'C') { ic.colorTop = 0xFF34D399; ic.colorBot = 0xFF059669; }
+    else { ic.colorTop = 0xFFFBBF24; ic.colorBot = 0xFFD97706; }
+}
+
+static void InitDesktopIcons() {
+    g_desktop_icon_count = 0;
+    AddDesktopIcon("Browser",    "/initrd/browser.mpk");
+    AddDesktopIcon("Installer",  "/initrd/installer.mpk");
+    AddDesktopIcon("Terminal",   "/initrd/terminal.mpk");
+    AddDesktopIcon("Calculator", "/initrd/calculator.mpk");
+}
+
+static void RenderDesktopIcons() {
+    if (!g_show_desktop_icons || menu_open) return;
+    int cellW = g_compact_icon_grid ? 76 : 92;
+    int cellH = g_compact_icon_grid ? 82 : 98;
+    int iconSz = g_compact_icon_grid ? 44 : 54;
+    int startX = Compositor::GetWidth() - cellW - 22;
+    int startY = 44;
+
+    for (int i = 0; i < g_desktop_icon_count; i++) {
+        int row = i % 6;
+        int col = i / 6;
+        int x = startX - col * (cellW + 10);
+        int y = startY + row * (cellH + 10);
+
+        Compositor::DrawRoundedRect(x, y, cellW, cellH, 12, 0x66111827);
+        Compositor::DrawRoundedBorder(x, y, cellW, cellH, 12, 0x26FFFFFF);
+        int ix = x + (cellW - iconSz) / 2;
+        int iy = y + 8;
+        Compositor::DrawRoundedGradientV(ix, iy, iconSz, iconSz, 14, g_desktop_icons[i].colorTop, g_desktop_icons[i].colorBot);
+        char mono[3] = {g_desktop_icons[i].name[0], g_desktop_icons[i].name[1] ? g_desktop_icons[i].name[1] : '\0', '\0'};
+        int mw = Compositor::MeasureText(mono, 2);
+        Compositor::DrawText(ix + (iconSz - mw) / 2, iy + (iconSz - 32) / 2, mono, 0xFFFFFFFF, 2);
+        int tw = Compositor::MeasureText(g_desktop_icons[i].name, 1);
+        Compositor::DrawText(x + (cellW - tw) / 2, iy + iconSz + 6, g_desktop_icons[i].name, 0xFFE2E8F0, 1);
+    }
+}
+
+static void RenderDesktopContextMenu() {
+    if (!g_desk_ctx_open || menu_open) return;
+    int cw = 204, ch = 196;
+    int x = g_desk_ctx_x, y = g_desk_ctx_y;
+    if (x + cw > Compositor::GetWidth() - 10) x = Compositor::GetWidth() - cw - 10;
+    if (y + ch > Compositor::GetHeight() - 64) y = Compositor::GetHeight() - ch - 64;
+    Compositor::DrawSoftShadow(x, y, cw, ch, 12, 10, 95);
+    Compositor::DrawRoundedRect(x, y, cw, ch, 12, 0xF5151E32);
+    Compositor::DrawRoundedBorder(x, y, cw, ch, 12, 0x4438BDF8);
+    Compositor::DrawText(x + 14, y + 12,  g_show_desktop_icons ? "Hide Desktop Icons" : "Show Desktop Icons", 0xFFF1F5F9, 1);
+    Compositor::DrawText(x + 14, y + 44,  g_compact_icon_grid  ? "Grid: Normal Size"  : "Grid: Compact Size", 0xFFF1F5F9, 1);
+    Compositor::DrawText(x + 14, y + 76,  "Next Wallpaper Theme", 0xFF38BDF8, 1);
+    Compositor::DrawText(x + 14, y + 108, "Cycle VSync (60-240Hz)", 0xFF34D399, 1);
+    Compositor::DrawText(x + 14, y + 140, "Open Morphic Browser", 0xFFE2E8F0, 1);
+    Compositor::DrawText(x + 14, y + 170, "Open Terminal",        0xFFE2E8F0, 1);
+}
+
 // Interaction State
 int drag_target_idx = -1;
 int drag_offset_x = 0;
@@ -117,6 +202,7 @@ int drag_offset_y = 0;
 void InitWindows() {
     windows[0] = {80, 76, 460, 344, 0xFF38BDF8, "System Monitor", false, false, false, 0,0,0,0};
     window_count = 1;
+    InitDesktopIcons();
 }
 
 static void BringToFront(int idx) {
@@ -669,7 +755,27 @@ void HandleEvent(const OSEvent& ev) {
             return;
         }
         
-        // Only process on button DOWN transition (not release)
+        // Handle Right-Click (Context Menus for Launcher & Desktop)
+        static bool prev_right_down = false;
+        bool right_down = (ev.buttons & 2) != 0;
+        if (right_down && !prev_right_down && (sys_get_time_ms() - g_startup_time_ms) >= 500) {
+            prev_right_down = true;
+            const int rcx = (int)(mouse_target_x16 >> 16);
+            const int rcy = (int)(mouse_target_y16 >> 16);
+            if (menu_open) {
+                if (g_launcher.HandleRightClick(rcx, rcy) > 0) ui_dirty = true;
+            } else {
+                g_desk_ctx_open = true;
+                g_desk_ctx_x = rcx;
+                g_desk_ctx_y = rcy;
+                ui_dirty = true;
+                DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+            }
+            return;
+        }
+        prev_right_down = right_down;
+
+        // Only process left-click on button DOWN transition (not release)
         if (!left_down) {
             drag_target_idx = -1;
             drag_target_external_id = 0;
@@ -684,17 +790,50 @@ void HandleEvent(const OSEvent& ev) {
         drag_target_idx = -1;
         drag_target_external_id = 0;
 
-        // Startup grace period: ignore all click actions for the first 500ms.
-        // Prevents phantom clicks queued by QEMU/firmware during kernel boot
-        // from triggering UI actions (launcher open → shutdown) immediately.
         if ((sys_get_time_ms() - g_startup_time_ms) < 500) {
             return;
+        }
+
+        // PRIORITY 0: Open Desktop Context Menu
+        if (g_desk_ctx_open && !menu_open) {
+            int cw = 204, ch = 196;
+            int cx = g_desk_ctx_x, cy = g_desk_ctx_y;
+            if (cx + cw > Compositor::GetWidth() - 10) cx = Compositor::GetWidth() - cw - 10;
+            if (cy + ch > Compositor::GetHeight() - 64) cy = Compositor::GetHeight() - ch - 64;
+            g_desk_ctx_open = false;
+            ui_dirty = true;
+            DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), Compositor::GetHeight());
+            if (HitRect(click_x, click_y, cx, cy, cw, ch)) {
+                int row = (click_y - cy) / 32;
+                if (row == 0) g_show_desktop_icons = !g_show_desktop_icons;
+                else if (row == 1) g_compact_icon_grid = !g_compact_icon_grid;
+                else if (row == 2) Compositor::SetWallpaperTheme(Compositor::GetWallpaperTheme() + 1);
+                else if (row == 3) {
+                    static const uint32_t kHz[] = {60, 120, 144, 240};
+                    uint32_t cur = g_gfx_caps.refresh_hz ? g_gfx_caps.refresh_hz : 60;
+                    uint32_t nxt = 120;
+                    for (int k = 0; k < 4; k++) if (kHz[k] == cur) { nxt = kHz[(k + 1) % 4]; break; }
+                    MorphicGfx::SetDisplayMode(nxt, GRAPHICS_VSYNC_ADAPTIVE);
+                }
+                else if (row == 4) sys_spawn("/initrd/browser.mpk");
+                else if (row == 5) sys_spawn("/initrd/terminal.mpk");
+                return;
+            }
         }
 
         // ========================================
         // PRIORITY 1: Launcher (captures ALL clicks when open)
         // ========================================
         if (menu_open) {
+            if (g_launcher.IsContextOpen()) {
+                char pinName[32] = {}, pinPath[64] = {};
+                int act = g_launcher.HandleContextAction(click_x, click_y, pinName, pinPath);
+                if (act == 2) { menu_open = false; }
+                else if (act == 3) { AddDesktopIcon(pinName, pinPath); }
+                ui_dirty = true;
+                g_launcher.spawnPending = false;
+                return;
+            }
             uint64_t now_click_ms = sys_get_time_ms();
             // Debounce opening click: prevents immediate close/reopen loops.
             if ((now_click_ms - g_menu_open_ms) < 140) {
@@ -820,7 +959,7 @@ void HandleEvent(const OSEvent& ev) {
                      return;
                  }
 
-                 // 2. Hit Test Title Bar for Drag (If not button)
+                 // 2. Hit Test Title Bar for Drag + Raise to Front (Z-Order)
                  if (click_x >= (int)w.x && click_x < (int)(w.x + w.w) &&
                      click_y >= (int)w.y - titleH && click_y < (int)(w.y)) {
                      
@@ -828,22 +967,29 @@ void HandleEvent(const OSEvent& ev) {
                      drag_offset_x = click_x - w.x;
                      drag_offset_y = click_y - w.y;
                      active_pid = w.pid;
+                     uint64_t xy = ((uint64_t)w.x << 32) | w.y;
+                     uint64_t wh_flags = ((uint64_t)w.w << 40) | ((uint64_t)w.h << 16) | 3; // visible + RAISE
+                     sys_update_window(w.id, xy, wh_flags);
+                     DirtyAdd(g_dirty, w.x - 12, w.y - 34, w.w + 24, w.h + 48);
                      return;
                  }
 
-                 // 3. Forward Client Area Clicks (Content)
+                 // 3. Forward Client Area Clicks + Raise to Front (Z-Order)
                  if (click_x >= (int)w.x && click_x < (int)(w.x + w.w) &&
                      click_y >= (int)w.y && click_y < (int)(w.y + w.h)) {
                      
-                     // Construct Event
+                     uint64_t xy = ((uint64_t)w.x << 32) | w.y;
+                     uint64_t wh_flags = ((uint64_t)w.w << 40) | ((uint64_t)w.h << 16) | 3; // visible + RAISE
+                     sys_update_window(w.id, xy, wh_flags);
+                     DirtyAdd(g_dirty, w.x - 12, w.y - 34, w.w + 24, w.h + 48);
+
                      OSEvent ev;
                      ev.type = OSEvent::MOUSE_CLICK;
-                     ev.dx = click_x - w.x; // Local X
-                     ev.dy = click_y - w.y; // Local Y
-                     ev.buttons = 1; // Left Click
-                     
+                     ev.dx = click_x - w.x;
+                     ev.dy = click_y - w.y;
+                     ev.buttons = 1;
                      sys_post_message(w.pid, &ev);
-                     active_pid = w.pid; // Set Focus
+                     active_pid = w.pid;
                      return;
                  }
             }
@@ -913,6 +1059,24 @@ void HandleEvent(const OSEvent& ev) {
                     break;
                 }
             }
+            // Desktop Icon Grid click (launch pinned .mpk app)
+            if (g_show_desktop_icons) {
+                int cellW = g_compact_icon_grid ? 76 : 92;
+                int cellH = g_compact_icon_grid ? 82 : 98;
+                int startX = Compositor::GetWidth() - cellW - 22;
+                int startY = 44;
+                for (int i = 0; i < g_desktop_icon_count; i++) {
+                    int row = i % 6;
+                    int col = i / 6;
+                    int ix = startX - col * (cellW + 10);
+                    int iy = startY + row * (cellH + 10);
+                    if (HitRect(click_x, click_y, ix, iy, cellW, cellH)) {
+                        sys_spawn(g_desktop_icons[i].mpk_path);
+                        return;
+                    }
+                }
+            }
+            active_pid = 0; // Clicked bare desktop: clear focused app
         return; // End of MOUSE_CLICK handling
     }
 
@@ -1274,6 +1438,7 @@ extern "C" int main(void* asset_ptr) {
             }
         } else {
             Compositor::RenderScene(windows, window_count, mouse_x, mouse_y);
+            RenderDesktopIcons();
             Compositor::RenderTaskbar(windows, window_count,
                                     externalWindows, externalWindowCount,
                                     menu_open, g_rtc);
@@ -1464,6 +1629,7 @@ extern "C" int main(void* asset_ptr) {
 
         if (!menu_open) {
             DrawProtocolSurfaceBadges();
+            RenderDesktopContextMenu();
         }
 
         // 3b. Draw Cursor (userspace-owned, always on top)

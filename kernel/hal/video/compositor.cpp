@@ -818,12 +818,33 @@ namespace Compositor {
             // Update Position (signed coordinates allow off-screen placement)
             SetLayerPosition(win->layer, sx, sy);
             
-            // Handle Flags
-            // Flag 0 (bit 0 off) = Hidden/Minimized
+            // Handle Flags: bit0 = visible, bit1 = raise to front (Z-order)
             if ((flags & 1) == 0) {
                 win->layer->visible = false;
             } else {
                 win->layer->visible = true;
+            }
+
+            if (flags & 2) {
+                static int32_t s_top_z = 200;
+                win->layer->z_order = ++s_top_z;
+                // Move window's layer to end of layers[] so ComposeAppWindowsOnly & hit-test stay Z-sorted
+                for (int i = 0; i < layerCount; i++) {
+                    if (layers[i] == win->layer) {
+                        for (int j = i; j < layerCount - 1; j++) layers[j] = layers[j + 1];
+                        layers[layerCount - 1] = win->layer;
+                        break;
+                    }
+                }
+                // Also move Window entry to end of windows[] so GetWindowList matches visual Z-order
+                for (int i = 0; i < windowCount; i++) {
+                    if (windows[i].id == window_id) {
+                        Window moved = windows[i];
+                        for (int j = i; j < windowCount - 1; j++) windows[j] = windows[j + 1];
+                        windows[windowCount - 1] = moved;
+                        break;
+                    }
+                }
             }
 
             // TODO: Resize not fully implemented yet

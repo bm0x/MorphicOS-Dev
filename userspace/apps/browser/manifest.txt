@@ -1,0 +1,5 @@
+name=Browser
+version=1.0
+entry=main
+category=Internet
+description=Morphic Web Browser & Edge WebView2 Bridge Client

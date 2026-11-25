@@ -162,7 +162,77 @@ public:
         Compositor::DrawRoundedGradientV(rebootX, btnY, btnW, btnH, 10, 0xFF38BDF8, 0xFF0284C7);
         Compositor::DrawRoundedBorder(rebootX, btnY, btnW, btnH, 10, 0x44FFFFFF);
         Compositor::DrawText(rebootX + 16, btnY + 9, "Reiniciar", 0xFF06101C, 1);
+
+        // Right-Click Context Menu on App Card
+        if (ctxOpen && ctxAppIdx >= 0 && ctxAppIdx < appCount) {
+            int cw = 186, ch = 108;
+            int mx = ctxX, my = ctxY;
+            if (mx + cw > screenW - 10) mx = screenW - cw - 10;
+            if (my + ch > screenH - 64) my = screenH - ch - 64;
+            Compositor::DrawSoftShadow(mx, my, cw, ch, 10, 8, 90);
+            Compositor::DrawRoundedRect(mx, my, cw, ch, 10, 0xF5151E32);
+            Compositor::DrawRoundedBorder(mx, my, cw, ch, 10, 0x5538BDF8);
+            Compositor::DrawText(mx + 14, my + 12, "Open App",       0xFFF1F5F9, 1);
+            Compositor::DrawText(mx + 14, my + 44, "Add to Desktop", 0xFF38BDF8, 1);
+            Compositor::DrawText(mx + 14, my + 76, "Uninstall .mpk", 0xFFFB7185, 1);
+        }
     }
+
+    // Returns: 0=nothing, 1=opened/closed ctx, 2=launched app, 3=pin to desktop (check LastPinName/Path), 4=uninstalled
+    int HandleRightClick(int mx, int my) {
+        for (int i = 0; i < appCount; i++) {
+            if (apps[i].w > 0 && mx >= apps[i].x && mx < apps[i].x + apps[i].w &&
+                my >= apps[i].y && my < apps[i].y + apps[i].h) {
+                ctxOpen = true;
+                ctxAppIdx = i;
+                ctxX = mx;
+                ctxY = my;
+                return 1;
+            }
+        }
+        ctxOpen = false;
+        ctxAppIdx = -1;
+        return 0;
+    }
+
+    int HandleContextAction(int mx, int my, char* outPinName, char* outPinPath) {
+        if (!ctxOpen || ctxAppIdx < 0 || ctxAppIdx >= appCount) return 0;
+        int screenW = Compositor::GetWidth(), screenH = Compositor::GetHeight();
+        int cw = 186, ch = 108;
+        int cx = ctxX, cy = ctxY;
+        if (cx + cw > screenW - 10) cx = screenW - cw - 10;
+        if (cy + ch > screenH - 64) cy = screenH - ch - 64;
+
+        if (mx < cx || mx >= cx + cw || my < cy || my >= cy + ch) {
+            ctxOpen = false;
+            return 1;
+        }
+        int row = (my - cy) / 36;
+        AppItem& target = apps[ctxAppIdx];
+        ctxOpen = false;
+
+        if (row == 0) {
+            if (target.mpk_path[0] && !spawnPending) {
+                spawnPending = true;
+                sys_spawn(target.mpk_path);
+                return 2;
+            }
+        } else if (row == 1) {
+            if (outPinName) { int i = 0; while (target.name[i] && i < 31) { outPinName[i] = target.name[i]; i++; } outPinName[i] = 0; }
+            if (outPinPath) { int i = 0; while (target.mpk_path[i] && i < 63) { outPinPath[i] = target.mpk_path[i]; i++; } outPinPath[i] = 0; }
+            return 3;
+        } else if (row == 2) {
+            sys_delete_file(target.mpk_path);
+            // Hide from launcher until reinstalled via Installer.mpk
+            for (int k = ctxAppIdx; k < appCount - 1; k++) apps[k] = apps[k + 1];
+            appCount--;
+            return 4;
+        }
+        return 1;
+    }
+
+    bool IsContextOpen() const { return ctxOpen; }
+    void CloseContext() { ctxOpen = false; ctxAppIdx = -1; }
 
     bool HandleClick(int mx, int my) {
         int screenW = Compositor::GetWidth();
@@ -204,6 +274,10 @@ private:
     int appCount;
     char searchQuery[32];
     int searchLen;
+    bool ctxOpen = false;
+    int ctxAppIdx = -1;
+    int ctxX = 0;
+    int ctxY = 0;
 
     static char ToLower(char c) {
         return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;

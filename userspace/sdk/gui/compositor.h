@@ -78,6 +78,8 @@ public:
 
     static void SetClip(int x, int y, int w, int h);
     static void ClearClip();
+    static void SetWallpaperTheme(int themeId);
+    static int  GetWallpaperTheme();
 
 private:
     static uint32_t* frontBuffer;
