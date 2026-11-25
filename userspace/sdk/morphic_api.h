@@ -427,9 +427,23 @@ namespace MorphicAPI {
             } else {
                 for (int r = 0; r < 16; r++) {
                     unsigned char row_bits = glyph[r];
+                    unsigned char prev_bits = (r > 0) ? glyph[r - 1] : 0;
+                    unsigned char next_bits = (r < 15) ? glyph[r + 1] : 0;
                     for (int col = 0; col < 8; col++) {
-                        if (row_bits & (0x80 >> col)) {
+                        bool on = (row_bits & (0x80 >> col)) != 0;
+                        if (on) {
                             FillRect(x + col * scale, y + r * scale, scale, scale, color);
+                        } else if (scale == 2) {
+                            bool up    = (prev_bits & (0x80 >> col)) != 0;
+                            bool down  = (next_bits & (0x80 >> col)) != 0;
+                            bool left  = (col > 0) && ((row_bits & (0x80 >> (col - 1))) != 0);
+                            bool right = (col < 7) && ((row_bits & (0x80 >> (col + 1))) != 0);
+                            uint32_t aa = Color::WithAlpha(color, 0x58);
+                            int bx = x + col * 2, by = y + r * 2;
+                            if (up && left)    BlendPixel(bx,     by,     aa);
+                            if (up && right)   BlendPixel(bx + 1, by,     aa);
+                            if (down && left)  BlendPixel(bx,     by + 1, aa);
+                            if (down && right) BlendPixel(bx + 1, by + 1, aa);
                         }
                     }
                 }

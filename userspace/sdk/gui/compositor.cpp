@@ -667,13 +667,28 @@ void Compositor::DrawChar(int x, int y, char ch, uint32_t color, int scale) {
 
   for (int row = 0; row < 16; row++) {
     uint8_t bits = glyph[row];
-    if (!bits) continue;
+    uint8_t prevBits = (row > 0) ? glyph[row - 1] : 0;
+    uint8_t nextBits = (row < 15) ? glyph[row + 1] : 0;
     for (int col = 0; col < 8; col++) {
-      if ((bits & (0x80 >> col)) == 0) continue;
+      bool on = (bits & (0x80 >> col)) != 0;
       if (scale == 1) {
+        if (!on) continue;
         BlendPixelClipped(x + col, y + row, color);
-      } else {
+      } else if (on) {
         FillRectClipped(x + col * scale, y + row * scale, scale, scale, color);
+      } else if (scale == 2) {
+        // Subtle 2x anti-aliased corner rounding for smooth large headers & monograms
+        bool up    = (prevBits & (0x80 >> col)) != 0;
+        bool down  = (nextBits & (0x80 >> col)) != 0;
+        bool left  = (col > 0) && ((bits & (0x80 >> (col - 1))) != 0);
+        bool right = (col < 7) && ((bits & (0x80 >> (col + 1))) != 0);
+        uint32_t aaCol = WithAlphaARGB(color, 0x58);
+        int bx = x + col * 2;
+        int by = y + row * 2;
+        if (up && left)    BlendPixelClipped(bx,     by,     aaCol);
+        if (up && right)   BlendPixelClipped(bx + 1, by,     aaCol);
+        if (down && left)  BlendPixelClipped(bx,     by + 1, aaCol);
+        if (down && right) BlendPixelClipped(bx + 1, by + 1, aaCol);
       }
     }
   }

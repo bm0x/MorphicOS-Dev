@@ -33,12 +33,12 @@ struct MouseProfile {
 };
 
 static constexpr MouseProfile k_mouse_profiles[] = {
-    {"SMOOTH", 2, 8 << 16, 8 << 16},
-    {"BALANCED", 3, 12 << 16, 12 << 16},
-    {"FAST", 4, 16 << 16, 16 << 16},
+    {"RAW 1:1", 1, 4096 << 16, 4096 << 16},
+    {"DIRECT",  2, 4096 << 16, 4096 << 16},
+    {"FAST",    3, 4096 << 16, 4096 << 16},
 };
 static constexpr int k_mouse_profile_count = (int)(sizeof(k_mouse_profiles) / sizeof(k_mouse_profiles[0]));
-static int g_mouse_profile_index = 1; // BALANCED default
+static int g_mouse_profile_index = 1; // DIRECT (zero-lag 1:1) default
 
 static const MouseProfile& GetMouseProfile() {
     return k_mouse_profiles[g_mouse_profile_index];
@@ -624,6 +624,20 @@ void HandleEvent(const OSEvent& ev) {
 
     // Pass keyboard events to the focused window (topmost)
     if (ev.type == OSEvent::KEY_PRESS) {
+        if (menu_open) {
+            if (ev.ascii == 27) { // ESC closes launcher
+                menu_open = false;
+                g_launcher.ResetSearch();
+                ui_dirty = true;
+            } else {
+                int act = g_launcher.HandleKey(ev.ascii);
+                if (act == 2) {
+                    menu_open = false;
+                }
+                if (act > 0) ui_dirty = true;
+            }
+            return;
+        }
         // Global desktop shortcuts.
         if (ev.ascii == 'm' || ev.ascii == 'M') {
             CycleMouseProfile();
@@ -934,27 +948,12 @@ void HandleEvent(const OSEvent& ev) {
 // DirtyRect definitions moved up before HandleEvent
 
 static void UpdateMousePerFrame() {
-    // Low-latency bounded smoothing: absorbs packet bursts without adding drag lag.
-    const MouseProfile& profile = GetMouseProfile();
-    const int32_t MAX_STEP_X16 = profile.max_step_x16;
-    const int32_t MAX_STEP_Y16 = profile.max_step_y16;
+    // True real-time 1:1 hardware cursor synchronization (zero smoothing lag, zero velocity cap)
+    mouse_x16 = mouse_target_x16;
+    mouse_y16 = mouse_target_y16;
 
-    int32_t dx16 = mouse_target_x16 - mouse_x16;
-    int32_t dy16 = mouse_target_y16 - mouse_y16;
-
-    if (dx16 > MAX_STEP_X16) dx16 = MAX_STEP_X16;
-    if (dx16 < -MAX_STEP_X16) dx16 = -MAX_STEP_X16;
-    if (dy16 > MAX_STEP_Y16) dy16 = MAX_STEP_Y16;
-    if (dy16 < -MAX_STEP_Y16) dy16 = -MAX_STEP_Y16;
-
-    mouse_x16 += dx16;
-    mouse_y16 += dy16;
-
-    const int32_t render_x16 = mouse_x16;
-    const int32_t render_y16 = mouse_y16;
-
-    mouse_x = (int)(render_x16 >> 16);
-    mouse_y = (int)(render_y16 >> 16);
+    mouse_x = (int)(mouse_x16 >> 16);
+    mouse_y = (int)(mouse_y16 >> 16);
 
     if (left_down) {
         if (drag_target_idx != -1) {
@@ -1136,9 +1135,9 @@ extern "C" int main(void* asset_ptr) {
         bool hasExternalWindows = (externalWindowCount > 0);
         bool externalJustClosed = (prevExternalWindowCount > 0 && !hasExternalWindows);
         bool menuStateChanged = (menu_open != prev_menu_open);
-        // Only do a full flush when launcher opens/closes, or when desktop has external windows.
-        // While launcher stays open, BACK_BUFFER retains the launcher image and only cursor dirty rects flush!
-        bool needsFullFlush = menuStateChanged || (!menu_open && (hasExternalWindows || externalJustClosed));
+        // Dirty-rect fast path: only force full 1920x1080 flush on startup, launcher toggle, or window close.
+        // Stationary external windows use dirty rects (<0.5ms/frame -> unlocks true 120/144/240 FPS!).
+        bool needsFullFlush = first_frame || menuStateChanged || (!menu_open && externalJustClosed);
 
         // If we'll do a full flush, force full dirty so we don't copy stale backbuffer regions.
         if (needsFullFlush) {
@@ -1230,13 +1229,23 @@ extern "C" int main(void* asset_ptr) {
             DirtyAdd(g_dirty, 0, 0, Compositor::GetWidth(), 30);
         }
         
-        // C. Render (skip redundant idle frames so Flips stay <= 60/s active, ~1/s idle)
+        // Dynamic frame budget from active kernel VSync target (60..240 Hz)
+        uint32_t activeHz = (g_gfx_caps_valid && g_gfx_caps.refresh_hz >= 30) ? g_gfx_caps.refresh_hz : 60u;
+        uint64_t activeBudgetMs = 1000ULL / activeHz;
+        if (activeBudgetMs < 1) activeBudgetMs = 1;
+
+        // Refresh System Monitor card smoothly on clock/telemetry tick so live FPS & Hz update immediately
+        if (!menu_open && (now_sec != prev_clock_sec || ui_dirty) && window_count > 0 && !windows[0].minimized) {
+            DirtyAdd(g_dirty, windows[0].x - 16, windows[0].y - 16, windows[0].width + 32, windows[0].height + 36);
+        }
+
+        // C. Render (skip redundant idle frames, wake at full active refresh rate for zero-lag input)
         bool frameChanged = first_frame || needsFullFlush || ui_dirty || g_dirty.valid;
         if (!frameChanged) {
             uint64_t end_idle = sys_get_time_ms();
             uint64_t elapsed_idle = end_idle - start_time;
-            if (elapsed_idle < (uint64_t)FRAME_TIME_MS) {
-                sys_sleep((uint32_t)(FRAME_TIME_MS - elapsed_idle));
+            if (elapsed_idle < activeBudgetMs) {
+                sys_sleep((uint32_t)(activeBudgetMs - elapsed_idle));
             }
             continue;
         }

@@ -18,7 +18,42 @@ public:
 
     void Init() {
         spawnPending = false;
+        searchLen = 0;
+        searchQuery[0] = '\0';
         ScanApps();
+    }
+
+    void ResetSearch() {
+        searchLen = 0;
+        searchQuery[0] = '\0';
+    }
+
+    // Returns 0=ignored, 1=query updated, 2=app launched via Enter
+    int HandleKey(char c) {
+        if (c == '\b' || c == 127) {
+            if (searchLen > 0) {
+                searchQuery[--searchLen] = '\0';
+                return 1;
+            }
+            return 0;
+        }
+        if (c == '\n' || c == '\r') {
+            for (int i = 0; i < appCount; i++) {
+                if (MatchesQuery(apps[i].name) && apps[i].mpk_path[0] && !spawnPending) {
+                    spawnPending = true;
+                    sys_spawn(apps[i].mpk_path);
+                    ResetSearch();
+                    return 2;
+                }
+            }
+            return 0;
+        }
+        if (c >= 32 && c <= 126 && searchLen < 28) {
+            searchQuery[searchLen++] = c;
+            searchQuery[searchLen] = '\0';
+            return 1;
+        }
+        return 0;
     }
 
     void ScanApps() {
@@ -45,10 +80,27 @@ public:
         Compositor::DrawRoundedRect(searchX, searchY, searchW, searchH, 20, 0xFF141D30);
         Compositor::DrawRoundedBorder(searchX, searchY, searchW, searchH, 20, 0x4438BDF8);
         Compositor::DrawCircle(searchX + 20, searchY + 20, 5, 0xFF38BDF8);
-        Compositor::DrawText(searchX + 36, searchY + 12, "Select an application to launch...", 0xFF94A3B8, 1);
+        if (searchLen > 0) {
+            Compositor::DrawText(searchX + 36, searchY + 12, searchQuery, 0xFFF1F5F9, 1);
+            int curX = searchX + 36 + Compositor::MeasureText(searchQuery, 1) + 2;
+            Compositor::DrawRect(curX, searchY + 11, 2, 18, 0xFF38BDF8);
+        } else {
+            Compositor::DrawText(searchX + 36, searchY + 12, "Type to filter apps (Enter to launch)...", 0xFF94A3B8, 1);
+        }
+
+        // Count visible filtered apps
+        int visIndices[20];
+        int visCount = 0;
+        for (int i = 0; i < appCount; i++) {
+            apps[i].w = 0;
+            apps[i].h = 0;
+            if (MatchesQuery(apps[i].name)) {
+                visIndices[visCount++] = i;
+            }
+        }
 
         // App Grid (up to 5 columns, centered)
-        int cols = appCount < 5 ? (appCount > 0 ? appCount : 1) : 5;
+        int cols = visCount < 5 ? (visCount > 0 ? visCount : 1) : 5;
         int cardW = 116;
         int cardH = 124;
         int iconSize = 68;
@@ -59,9 +111,10 @@ public:
         int gridStartX = (screenW - totalRowW) / 2;
         int gridStartY = 184;
 
-        for (int i = 0; i < appCount; i++) {
-            int col = i % 5;
-            int row = i / 5;
+        for (int vi = 0; vi < visCount; vi++) {
+            int i = visIndices[vi];
+            int col = vi % 5;
+            int row = vi / 5;
             int cx = gridStartX + col * (cardW + gapX);
             int cy = gridStartY + row * (cardH + gapY);
 
@@ -149,6 +202,24 @@ public:
 private:
     AppItem apps[20];
     int appCount;
+    char searchQuery[32];
+    int searchLen;
+
+    static char ToLower(char c) {
+        return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
+    }
+
+    bool MatchesQuery(const char* name) const {
+        if (searchLen == 0) return true;
+        for (int i = 0; name[i]; i++) {
+            int j = 0;
+            while (j < searchLen && name[i + j] && ToLower(name[i + j]) == ToLower(searchQuery[j])) {
+                j++;
+            }
+            if (j == searchLen) return true;
+        }
+        return false;
+    }
 
     void ScanDirectory(const char* dirPath) {
         DirEntry entries[32];

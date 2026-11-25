@@ -184,7 +184,12 @@ namespace VSync {
         if (hz < MIN_REFRESH_HZ || hz > MAX_REFRESH_HZ) return false;
         g_refresh_hz = hz;
         g_target_frame_us = 1000000ULL / hz;
-        g_next_vblank_us = TSC::GetMicroseconds() + g_target_frame_us;
+        uint64_t now = TSC::GetMicroseconds();
+        g_next_vblank_us = now + g_target_frame_us;
+        g_fps_frames = 0;
+        g_fps_window_start_us = now;
+        g_measured_fps = hz;
+        g_last_frame_us = g_target_frame_us;
         return true;
     }
 
