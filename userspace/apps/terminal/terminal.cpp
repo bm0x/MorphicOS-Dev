@@ -294,6 +294,19 @@ void TerminalApp::ExecuteCommand(const char* raw) {
         return;
     }
 
+    if (s_starts(raw, "keymap ")) {
+        const char* id = raw + 7;
+        while (*id == ' ') id++;
+        if (MorphicHW::Input::SetKeymap(id)) {
+            activeColor = MorphicUI::Theme::SUCCESS;
+            Print("Keyboard layout set to: "); PrintLine(id);
+        } else {
+            activeColor = MorphicUI::Theme::DANGER;
+            PrintLine("Usage: keymap la | es | us");
+        }
+        return;
+    }
+
     if (s_starts(raw, "hz ")) {
         uint32_t hz = (uint32_t)MorphicLua::ParseInt64(raw + 3);
         if (MorphicHW::Display::SetRefreshRate(hz)) {

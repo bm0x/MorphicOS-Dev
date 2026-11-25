@@ -190,8 +190,8 @@ static void RenderDesktopContextMenu() {
     Compositor::DrawText(x + 14, y + 44,  g_compact_icon_grid  ? "Grid: Normal Size"  : "Grid: Compact Size", 0xFFF1F5F9, 1);
     Compositor::DrawText(x + 14, y + 76,  "Next Wallpaper Theme", 0xFF38BDF8, 1);
     Compositor::DrawText(x + 14, y + 108, "Cycle VSync (60-240Hz)", 0xFF34D399, 1);
-    Compositor::DrawText(x + 14, y + 140, "Open Morphic Browser", 0xFFE2E8F0, 1);
-    Compositor::DrawText(x + 14, y + 170, "Open Terminal",        0xFFE2E8F0, 1);
+    Compositor::DrawText(x + 14, y + 140, "Keymap: LA / ES / US",   0xFFFBBF24, 1);
+    Compositor::DrawText(x + 14, y + 170, "Open Morphic Browser",   0xFFE2E8F0, 1);
 }
 
 // Interaction State
@@ -815,8 +815,8 @@ void HandleEvent(const OSEvent& ev) {
                     for (int k = 0; k < 4; k++) if (kHz[k] == cur) { nxt = kHz[(k + 1) % 4]; break; }
                     MorphicGfx::SetDisplayMode(nxt, GRAPHICS_VSYNC_ADAPTIVE);
                 }
-                else if (row == 4) sys_spawn("/initrd/browser.mpk");
-                else if (row == 5) sys_spawn("/initrd/terminal.mpk");
+                else if (row == 4) CycleKeymap();
+                else if (row == 5) sys_spawn("/initrd/browser.mpk");
                 return;
             }
         }

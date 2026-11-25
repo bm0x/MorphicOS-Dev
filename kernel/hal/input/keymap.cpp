@@ -22,6 +22,7 @@ namespace KeymapHAL {
         keymapUS.id[0] = 'U'; keymapUS.id[1] = 'S'; keymapUS.id[2] = 0;
         
         // Normal keys (no modifiers)
+        keymapUS.normal[0x01] = 27; // ESC
         keymapUS.normal[0x02] = '1'; keymapUS.normal[0x03] = '2';
         keymapUS.normal[0x04] = '3'; keymapUS.normal[0x05] = '4';
         keymapUS.normal[0x06] = '5'; keymapUS.normal[0x07] = '6';
@@ -74,27 +75,28 @@ namespace KeymapHAL {
     }
     
     void InitKeymapES() {
-        // Spanish ISO keyboard layout - different from US ANSI
+        // Spanish (Spain ISO) keyboard layout with full AltGr programming symbols
         kmemset(&keymapES, 0, sizeof(Keymap));
         keymapES.id[0] = 'E'; keymapES.id[1] = 'S'; keymapES.id[2] = 0;
-        
-        // Number row - Spanish layout
-        keymapES.normal[0x02] = '1'; keymapES.shift[0x02] = '!';
+
+        keymapES.normal[0x01] = 27; // ESC
+        // Number row
+        keymapES.normal[0x02] = '1'; keymapES.shift[0x02] = '!'; keymapES.altgr[0x02] = '|';
         keymapES.normal[0x03] = '2'; keymapES.shift[0x03] = '"'; keymapES.altgr[0x03] = '@';
-        keymapES.normal[0x04] = '3'; keymapES.shift[0x04] = '#'; keymapES.altgr[0x04] = '#';
-        keymapES.normal[0x05] = '4'; keymapES.shift[0x05] = '$';
+        keymapES.normal[0x04] = '3'; keymapES.shift[0x04] = '.'; keymapES.altgr[0x04] = '#';
+        keymapES.normal[0x05] = '4'; keymapES.shift[0x05] = '$'; keymapES.altgr[0x05] = '~';
         keymapES.normal[0x06] = '5'; keymapES.shift[0x06] = '%';
         keymapES.normal[0x07] = '6'; keymapES.shift[0x07] = '&';
         keymapES.normal[0x08] = '7'; keymapES.shift[0x08] = '/';
         keymapES.normal[0x09] = '8'; keymapES.shift[0x09] = '(';
         keymapES.normal[0x0A] = '9'; keymapES.shift[0x0A] = ')';
         keymapES.normal[0x0B] = '0'; keymapES.shift[0x0B] = '=';
-        keymapES.normal[0x0C] = '\''; keymapES.shift[0x0C] = '?';
-        keymapES.normal[0x0D] = '!'; keymapES.shift[0x0D] = '?'; // inverted
+        keymapES.normal[0x0C] = '\''; keymapES.shift[0x0C] = '?'; keymapES.altgr[0x0C] = '\\';
+        keymapES.normal[0x0D] = '!'; keymapES.shift[0x0D] = '?';
         keymapES.normal[0x0E] = '\b';
         keymapES.normal[0x0F] = '\t';
-        
-        // Top letter row QWERTY
+
+        // QWERTY row
         keymapES.normal[0x10] = 'q'; keymapES.shift[0x10] = 'Q';
         keymapES.normal[0x11] = 'w'; keymapES.shift[0x11] = 'W';
         keymapES.normal[0x12] = 'e'; keymapES.shift[0x12] = 'E';
@@ -105,11 +107,11 @@ namespace KeymapHAL {
         keymapES.normal[0x17] = 'i'; keymapES.shift[0x17] = 'I';
         keymapES.normal[0x18] = 'o'; keymapES.shift[0x18] = 'O';
         keymapES.normal[0x19] = 'p'; keymapES.shift[0x19] = 'P';
-        keymapES.normal[0x1A] = '`'; keymapES.shift[0x1A] = '^';
-        keymapES.normal[0x1B] = '+'; keymapES.shift[0x1B] = '*';
+        keymapES.normal[0x1A] = '`'; keymapES.shift[0x1A] = '^'; keymapES.altgr[0x1A] = '[';
+        keymapES.normal[0x1B] = '+'; keymapES.shift[0x1B] = '*'; keymapES.altgr[0x1B] = ']';
         keymapES.normal[0x1C] = '\n';
-        
-        // Middle letter row ASDF
+
+        // ASDF row
         keymapES.normal[0x1E] = 'a'; keymapES.shift[0x1E] = 'A';
         keymapES.normal[0x1F] = 's'; keymapES.shift[0x1F] = 'S';
         keymapES.normal[0x20] = 'd'; keymapES.shift[0x20] = 'D';
@@ -119,12 +121,12 @@ namespace KeymapHAL {
         keymapES.normal[0x24] = 'j'; keymapES.shift[0x24] = 'J';
         keymapES.normal[0x25] = 'k'; keymapES.shift[0x25] = 'K';
         keymapES.normal[0x26] = 'l'; keymapES.shift[0x26] = 'L';
-        keymapES.normal[0x27] = 0xF1; keymapES.shift[0x27] = 0xD1;  // ñ Ñ
-        keymapES.normal[0x28] = '\''; keymapES.shift[0x28] = '"';
-        keymapES.normal[0x29] = '|'; keymapES.shift[0x29] = '\\';
-        keymapES.normal[0x2B] = 0xE7; keymapES.shift[0x2B] = 0xC7;  // ç Ç
-        
-        // Bottom letter row ZXCV
+        keymapES.normal[0x27] = 'n'; keymapES.shift[0x27] = 'N'; // ASCII-safe ñ fallback for 7-bit terminals
+        keymapES.normal[0x28] = '\''; keymapES.shift[0x28] = '"'; keymapES.altgr[0x28] = '{';
+        keymapES.normal[0x29] = '\\'; keymapES.shift[0x29] = '|'; keymapES.altgr[0x29] = '\\';
+        keymapES.normal[0x2B] = '}'; keymapES.shift[0x2B] = ']'; keymapES.altgr[0x2B] = '}';
+
+        // ZXCV row
         keymapES.normal[0x2C] = 'z'; keymapES.shift[0x2C] = 'Z';
         keymapES.normal[0x2D] = 'x'; keymapES.shift[0x2D] = 'X';
         keymapES.normal[0x2E] = 'c'; keymapES.shift[0x2E] = 'C';
@@ -135,81 +137,80 @@ namespace KeymapHAL {
         keymapES.normal[0x33] = ','; keymapES.shift[0x33] = ';';
         keymapES.normal[0x34] = '.'; keymapES.shift[0x34] = ':';
         keymapES.normal[0x35] = '-'; keymapES.shift[0x35] = '_';
-        
-        // Space
         keymapES.normal[0x39] = ' ';
-        
-        // Extra key on ISO keyboard (between left shift and Z)
         keymapES.normal[0x56] = '<'; keymapES.shift[0x56] = '>';
     }
-    
+
     void InitKeymapLA() {
-        // Copy ES keymap (which is already initialized)
+        // Spanish Latin America (es-LA) layout
         kmemcpy(&keymapLA, &keymapES, sizeof(Keymap));
-        
-        // Set LA identifier
         keymapLA.id[0] = 'L'; keymapLA.id[1] = 'A'; keymapLA.id[2] = 0;
-        
-        // Regenerate uppercase letters 
-        for (int i = 0x10; i <= 0x19; i++) {
-            if (keymapLA.normal[i] >= 'a' && keymapLA.normal[i] <= 'z')
-                keymapLA.shift[i] = keymapLA.normal[i] - 32;
-        }
-        for (int i = 0x1E; i <= 0x26; i++) {
-            if (keymapLA.normal[i] >= 'a' && keymapLA.normal[i] <= 'z')
-                keymapLA.shift[i] = keymapLA.normal[i] - 32;
-        }
-        for (int i = 0x2C; i <= 0x32; i++) {
-            if (keymapLA.normal[i] >= 'a' && keymapLA.normal[i] <= 'z')
-                keymapLA.shift[i] = keymapLA.normal[i] - 32;
-        }
+
+        // Latin America specific keys: |°¬ on 0x29, @ on AltGr+Q, \ on AltGr+', [ ] { } on right side
+        keymapLA.normal[0x04] = '3'; keymapLA.shift[0x04] = '#'; keymapLA.altgr[0x04] = '#';
+        keymapLA.normal[0x10] = 'q'; keymapLA.shift[0x10] = 'Q'; keymapLA.altgr[0x10] = '@';
+        keymapLA.normal[0x29] = '|'; keymapLA.shift[0x29] = '~'; keymapLA.altgr[0x29] = '\\';
+        keymapLA.normal[0x1A] = '\''; keymapLA.shift[0x1A] = '"'; keymapLA.altgr[0x1A] = '[';
+        keymapLA.normal[0x1B] = '+'; keymapLA.shift[0x1B] = '*'; keymapLA.altgr[0x1B] = '~';
+        keymapLA.normal[0x28] = '{'; keymapLA.shift[0x28] = '['; keymapLA.altgr[0x28] = '^';
+        keymapLA.normal[0x2B] = '}'; keymapLA.shift[0x2B] = ']'; keymapLA.altgr[0x2B] = '`';
+        keymapLA.normal[0x56] = '<'; keymapLA.shift[0x56] = '>';
     }
 
     void Init() {
-
         InitKeymapUS();
         InitKeymapES();
         InitKeymapLA();
-        
-        keymaps[0] = &keymapUS;
+
+        keymaps[0] = &keymapLA;
         keymaps[1] = &keymapES;
-        keymaps[2] = &keymapLA;
+        keymaps[2] = &keymapUS;
         keymapCount = 3;
-        
-        currentKeymap = &keymapUS;  // Default
-        
-        EarlyTerm::Print("[Keymap] Initialized: US, ES, LA\n");
+
+        currentKeymap = &keymapLA; // Default: Spanish Latin America (LA)
+
+        EarlyTerm::Print("[Keymap] Initialized: LA (Default), ES, US\n");
     }
-    
+
     bool SetKeymap(const char* id) {
+        if (!id) return false;
+        // Accept common aliases (es-la, es-es, en-us, lowercase)
+        const char* target = id;
+        if (kstrcmp(id, "la") == 0 || kstrcmp(id, "es-la") == 0 || kstrcmp(id, "ES-LA") == 0 || kstrcmp(id, "latam") == 0) target = "LA";
+        else if (kstrcmp(id, "es") == 0 || kstrcmp(id, "es-es") == 0 || kstrcmp(id, "ES-ES") == 0) target = "ES";
+        else if (kstrcmp(id, "us") == 0 || kstrcmp(id, "en") == 0 || kstrcmp(id, "en-us") == 0 || kstrcmp(id, "EN-US") == 0) target = "US";
+
         for (uint32_t i = 0; i < keymapCount; i++) {
-            if (kstrcmp(keymaps[i]->id, id) == 0) {
+            if (kstrcmp(keymaps[i]->id, target) == 0) {
                 currentKeymap = keymaps[i];
                 EarlyTerm::Print("[Keymap] Switched to: ");
-                EarlyTerm::Print(id);
+                EarlyTerm::Print(target);
                 EarlyTerm::Print("\n");
                 return true;
             }
         }
         return false;
     }
-    
+
     const Keymap* GetCurrentKeymap() {
         return currentKeymap;
     }
-    
+
     uint16_t Translate(uint8_t scancode, bool shift, bool altgr, bool caps) {
         if (!currentKeymap || scancode >= 128) return 0;
-        
+
         if (altgr && currentKeymap->altgr[scancode]) {
             return currentKeymap->altgr[scancode];
         }
-        if (shift || caps) {
-            if (currentKeymap->shift[scancode]) {
-                return currentKeymap->shift[scancode];
-            }
+
+        uint16_t base = currentKeymap->normal[scancode];
+        bool isLetter = (base >= 'a' && base <= 'z');
+        bool useShift = isLetter ? (shift ^ caps) : shift;
+
+        if (useShift && currentKeymap->shift[scancode]) {
+            return currentKeymap->shift[scancode];
         }
-        return currentKeymap->normal[scancode];
+        return base;
     }
     
     const Keymap* GetKeymap(const char* id) {

@@ -93,8 +93,9 @@ namespace PS2Keyboard {
         } else {
             event.type = InputEventType::KEY_PRESS;
             if (isExtended) {
-                // Extended navigation keys (Arrows, Delete, Home, End) do not map to keypad digits
-                event.ascii = 0;
+                if (keyCode == 0x35) event.ascii = '/';       // Numpad '/'
+                else if (keyCode == 0x1C) event.ascii = '\n'; // Numpad Enter
+                else event.ascii = 0;
             } else {
                 uint16_t translated = KeymapHAL::Translate(keyCode, shiftPressed, altPressed, capsLock);
                 event.ascii = (translated < 256) ? (char)translated : 0;
